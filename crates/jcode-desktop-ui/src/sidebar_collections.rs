@@ -22,8 +22,6 @@ pub(super) fn id_from_key(key: &str) -> Option<&str> {
     key.strip_prefix(KEY_PREFIX)
 }
 
-pub(super) const COLLECTION_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="black" stroke-width="1.6" stroke-linejoin="round"><rect x="3" y="8" width="18" height="12" rx="2.5"/><path d="M6 5h12M8.5 2.5h7"/></g></svg>"#;
-
 /// One persisted change, applied locally and then replayed on disk.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Change {
@@ -92,13 +90,13 @@ pub(super) struct Form {
 
 #[derive(Default)]
 pub(super) struct State {
-    pub(super) store: Collections,
+    store: Collections,
     /// Where the store comes from. Tests and screenshots use a private file.
     path: Option<PathBuf>,
-    pub(super) form: Option<Form>,
-    pub(super) error: Option<String>,
+    form: Option<Form>,
+    error: Option<String>,
     /// Session whose "Move to collection" menu is open.
-    pub(super) menu: Option<String>,
+    menu: Option<String>,
     /// Background writes, in order, so a later change never lands first.
     writes: Vec<gpui::Task<()>>,
     loaded: bool,
@@ -120,6 +118,95 @@ impl State {
 
     pub(super) fn collection_of(&self, session_id: &str) -> Option<&Collection> {
         self.store.collection_of(session_id)
+    }
+
+    pub(super) fn store(&self) -> &Collections {
+        &self.store
+    }
+
+    pub(super) fn form(&self) -> Option<&Form> {
+        self.form.as_ref()
+    }
+
+    pub(super) fn form_mut(&mut self) -> Option<&mut Form> {
+        self.form.as_mut()
+    }
+
+    /// Open the editor, closing the row menu and forgetting an old error.
+    pub(super) fn open_form(&mut self, form: Form) {
+        self.menu = None;
+        self.error = None;
+        self.form = Some(form);
+    }
+
+    /// Close the editor. Returns whether one was open.
+    pub(super) fn close_form(&mut self) -> bool {
+        let was_open = self.form.take().is_some();
+        if was_open {
+            self.error = None;
+        }
+        was_open
+    }
+
+    pub(super) fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    pub(super) fn fail(&mut self, message: String) {
+        self.error = Some(message);
+    }
+
+    pub(super) fn open_menu(&mut self, session_id: String) {
+        self.menu = Some(session_id);
+    }
+
+    pub(super) fn close_menu(&mut self) {
+        self.menu = None;
+    }
+
+    pub(super) fn menu_is_open_for(&self, session_id: &str) -> bool {
+        self.menu.as_deref() == Some(session_id)
+    }
+
+    /// Claim the one-time load. Returns the file to read the first time only.
+    fn begin_load(&mut self) -> Option<PathBuf> {
+        if std::mem::replace(&mut self.loaded, true) {
+            return None;
+        }
+        Some(self.path())
+    }
+
+    /// Adopt a store read back from disk, or record why it could not be.
+    fn absorb(&mut self, result: anyhow::Result<Collections>, failure: &str) {
+        match result {
+            Ok(store) => self.store = store,
+            Err(error) => {
+                eprintln!("{failure}: {error:#}");
+                self.error = Some(format!("{error:#}"));
+            }
+        }
+    }
+
+    /// Apply a change to the in-memory copy. A rejected change leaves the
+    /// store untouched and records why.
+    fn apply_locally(&mut self, change: &Change) -> bool {
+        let mut next = self.store.clone();
+        if let Err(error) = change.apply(&mut next) {
+            self.error = Some(format!("{error:#}"));
+            return false;
+        }
+        self.store = next;
+        self.error = None;
+        true
+    }
+
+    /// Hand over the queued writes so a new one can run after them.
+    fn take_writes(&mut self) -> Vec<gpui::Task<()>> {
+        std::mem::take(&mut self.writes)
+    }
+
+    fn queue_write(&mut self, write: gpui::Task<()>) {
+        self.writes.push(write);
     }
 }
 
@@ -204,7 +291,7 @@ impl Workspace {
         }
         // Visual review of the row menu without synthetic input.
         if std::env::var("JCODE_DESKTOP_SCREENSHOT_COLLECTIONS").as_deref() == Ok("menu") {
-            self.collections.menu = Some("collections-fixture-lint".into());
+            self.collections.open_menu("collections-fixture-lint".into());
         }
     }
 
@@ -216,10 +303,10 @@ impl Workspace {
     ) {
         if harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_COLLECTIONS").as_deref() == Ok("form")
-            && self.collections.form.is_none()
+            && self.collections.form().is_none()
         {
             self.begin_new_collection(None, window, cx);
-            if let Some(form) = &self.collections.form {
+            if let Some(form) = self.collections.form() {
                 let (name, instructions) = (form.name.clone(), form.instructions.clone());
                 name.update(cx, |input, cx| input.set_content("Client X".into(), cx));
                 instructions.update(cx, |input, cx| {
@@ -231,24 +318,16 @@ impl Workspace {
 
     /// Load collections once, off the UI thread.
     pub(super) fn load_collections(&mut self, cx: &mut Context<Self>) {
-        if self.collections.loaded {
+        let Some(path) = self.collections.begin_load() else {
             return;
-        }
-        self.collections.loaded = true;
-        let path = self.collections.path();
+        };
         let task = cx
             .background_executor()
             .spawn(async move { jcode_sdk::collections::load_from(&path) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
-                match result {
-                    Ok(store) => this.collections.store = store,
-                    Err(error) => {
-                        eprintln!("could not load collections: {error:#}");
-                        this.collections.error = Some(format!("{error:#}"));
-                    }
-                }
+                this.collections.absorb(result, "could not load collections");
                 cx.notify();
             });
         })
@@ -258,16 +337,12 @@ impl Workspace {
     /// Apply a change now and persist it in the background. A rejected change
     /// leaves memory untouched and reports why.
     pub(super) fn change_collections(&mut self, change: Change, cx: &mut Context<Self>) -> bool {
-        let mut next = self.collections.store.clone();
-        if let Err(error) = change.apply(&mut next) {
-            self.collections.error = Some(format!("{error:#}"));
+        if !self.collections.apply_locally(&change) {
             cx.notify();
             return false;
         }
-        self.collections.store = next;
-        self.collections.error = None;
         let path = self.collections.path();
-        let previous = std::mem::take(&mut self.collections.writes);
+        let previous = self.collections.take_writes();
         let write = cx.background_executor().spawn(async move {
             for task in previous {
                 task.await;
@@ -275,22 +350,14 @@ impl Workspace {
             jcode_sdk::collections::update_at(&path, |store| change.apply(store))
                 .map(|(store, ())| store)
         });
-        self.collections
-            .writes
-            .push(cx.spawn(async move |this, cx| {
-                let result = write.await;
-                let _ = this.update(cx, |this, cx| {
-                    match result {
-                        // The file may hold edits from other windows too.
-                        Ok(store) => this.collections.store = store,
-                        Err(error) => {
-                            eprintln!("could not save collections: {error:#}");
-                            this.collections.error = Some(format!("{error:#}"));
-                        }
-                    }
-                    cx.notify();
-                });
-            }));
+        self.collections.queue_write(cx.spawn(async move |this, cx| {
+            let result = write.await;
+            let _ = this.update(cx, |this, cx| {
+                // The file may hold edits from other windows too.
+                this.collections.absorb(result, "could not save collections");
+                cx.notify();
+            });
+        }));
         cx.notify();
         true
     }
@@ -298,7 +365,7 @@ impl Workspace {
     /// Wait for queued background writes (tests only).
     #[cfg(test)]
     pub(super) fn collection_writes(&mut self) -> Vec<gpui::Task<()>> {
-        std::mem::take(&mut self.collections.writes)
+        self.collections.take_writes()
     }
 
     pub(super) fn assign_session_collection(
@@ -307,7 +374,7 @@ impl Workspace {
         collection: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        self.collections.menu = None;
+        self.collections.close_menu();
         if let Some(id) = &collection {
             self.sidebar_projects.collapsed.insert(key(id), false);
         }
@@ -373,7 +440,7 @@ impl Workspace {
     ) {
         let existing = editing
             .as_deref()
-            .and_then(|id| self.collections.store.get(id))
+            .and_then(|id| self.collections.store().get(id))
             .cloned()
             .unwrap_or_default();
         let name = self.form_input("e.g. Q4 research", &existing.name, window, cx);
@@ -391,9 +458,7 @@ impl Workspace {
         );
         window.focus(&name.read(cx).focus_handle.clone(), cx);
         self.focus_pending = false;
-        self.collections.menu = None;
-        self.collections.error = None;
-        self.collections.form = Some(Form {
+        self.collections.open_form(Form {
             editing,
             name,
             directory,
@@ -405,15 +470,14 @@ impl Workspace {
     }
 
     pub(super) fn close_collection_form(&mut self, cx: &mut Context<Self>) {
-        if self.collections.form.take().is_some() {
-            self.collections.error = None;
+        if self.collections.close_form() {
             self.focus_pending = true;
             cx.notify();
         }
     }
 
     pub(super) fn save_collection_form(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = &self.collections.form else {
+        let Some(form) = self.collections.form() else {
             return;
         };
         let name = form.name.read(cx).content.to_string();
@@ -422,7 +486,8 @@ impl Workspace {
         if let Some(dir) = default_dir.as_deref()
             && !Path::new(&expand_home(dir)).is_dir()
         {
-            self.collections.error = Some(format!("\"{dir}\" is not a folder on this computer."));
+            self.collections
+                .fail(format!("\"{dir}\" is not a folder on this computer."));
             cx.notify();
             return;
         }
@@ -439,7 +504,7 @@ impl Workspace {
                 id,
             ),
             None => {
-                let id = self.collections.store.new_id();
+                let id = self.collections.store().new_id();
                 (
                     Change::Create {
                         id: id.clone(),
@@ -471,7 +536,7 @@ impl Workspace {
     pub(super) fn new_chat_in_collection(&mut self, id: String, cx: &mut Context<Self>) {
         let directory = self
             .collections
-            .store
+            .store()
             .get(&id)
             .and_then(|c| c.default_dir.clone())
             .or_else(|| self.default_working_dir());
@@ -524,7 +589,7 @@ impl Workspace {
         let id = id_from_key(&project.key).unwrap_or_default().to_owned();
         let has_instructions = self
             .collections
-            .store
+            .store()
             .get(&id)
             .is_some_and(|c| c.instructions.is_some());
         let tooltip = format!(
@@ -588,7 +653,7 @@ impl Workspace {
                     .text_color(theme.TEXT_DIM)
                     .child(if collapsed { "›" } else { "⌄" }),
             )
-            .child(sidebar_worktrees::icon(COLLECTION_ICON, 11.0))
+            .child(sidebar_atoms::icon(sidebar_atoms::COLLECTION_ICON, 11.0))
             .child(
                 div()
                     .flex_shrink(1.0)
@@ -611,9 +676,9 @@ impl Workspace {
                     .child(count.to_string()),
             )
             .child(
-                sidebar_worktrees::hover_actions(group, 24.0)
+                sidebar_atoms::hover_actions(group, 24.0)
                     .child(
-                        sidebar_worktrees::header_action(
+                        sidebar_atoms::header_action(
                             format!("sidebar-collection-edit-{index}").into(),
                             "Edit collection: name, folder, instructions",
                             div().child("⋯").into_any_element(),
@@ -630,7 +695,7 @@ impl Workspace {
                         ),
                     )
                     .child(
-                        sidebar_worktrees::header_action(
+                        sidebar_atoms::header_action(
                             format!("sidebar-collection-new-{index}").into(),
                             "New chat in this collection",
                             div().child("+").into_any_element(),
@@ -710,7 +775,7 @@ impl Workspace {
                             Tooltip::text("Empty collection · Click to start a chat").builder(),
                         )
                         .child(div().w(px(12.0)).flex_none())
-                        .child(sidebar_worktrees::icon(COLLECTION_ICON, 11.0))
+                        .child(sidebar_atoms::icon(sidebar_atoms::COLLECTION_ICON, 11.0))
                         .child(
                             div()
                                 .flex_1()
@@ -731,8 +796,8 @@ impl Workspace {
                                 .child("0"),
                         )
                         .child(
-                            sidebar_worktrees::hover_actions(group, 24.0).child(
-                                sidebar_worktrees::header_action(
+                            sidebar_atoms::hover_actions(group, 24.0).child(
+                                sidebar_atoms::header_action(
                                     format!("sidebar-empty-collection-edit-{index}").into(),
                                     "Edit collection: name, folder, instructions",
                                     div().child("⋯").into_any_element(),
@@ -794,7 +859,7 @@ impl Workspace {
             .flex_col()
             .gap(px(1.0))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.collections.menu = None;
+                this.collections.close_menu();
                 cx.notify();
             }))
             .child(
@@ -807,7 +872,7 @@ impl Workspace {
                     .text_color(theme.TEXT_FAINT)
                     .child("Move to collection"),
             );
-        for (index, collection) in self.collections.store.collections.iter().enumerate() {
+        for (index, collection) in self.collections.store().collections.iter().enumerate() {
             let chosen = current.as_deref() == Some(collection.id.as_str());
             let target = collection.id.clone();
             let session = session_id.to_owned();
@@ -817,7 +882,7 @@ impl Workspace {
                     format!("sidebar-collection-choice-{index}"),
                 )
                 .when(chosen, |el| el.bg(theme.ACCENT_DIM))
-                .child(sidebar_worktrees::icon(COLLECTION_ICON, 11.0))
+                .child(sidebar_atoms::icon(sidebar_atoms::COLLECTION_ICON, 11.0))
                 .child(
                     div()
                         .flex_1()
@@ -884,7 +949,7 @@ impl Workspace {
         &self,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let form = self.collections.form.as_ref()?;
+        let form = self.collections.form()?;
         let theme = Theme::global();
         let editing = form.editing.clone();
         let label = |text: &'static str| {
@@ -959,7 +1024,7 @@ impl Workspace {
                         cx.listener(move |this, _, window, cx| {
                             window.prevent_default();
                             cx.stop_propagation();
-                            let Some(form) = this.collections.form.as_mut() else {
+                            let Some(form) = this.collections.form_mut() else {
                                 return;
                             };
                             if form.confirm_delete {
@@ -1035,7 +1100,7 @@ impl Workspace {
                         .gap_1()
                         .text_size(px(11.0))
                         .text_color(theme.TEXT_DIM)
-                        .child(sidebar_worktrees::icon(COLLECTION_ICON, 12.0))
+                        .child(sidebar_atoms::icon(sidebar_atoms::COLLECTION_ICON, 12.0))
                         .child(if editing.is_some() {
                             "Edit collection"
                         } else {
@@ -1056,7 +1121,7 @@ impl Workspace {
                 )
                 .children(reorder)
                 .child(actions)
-                .children(self.collections.error.clone().map(|error| {
+                .children(self.collections.error().map(str::to_owned).map(|error| {
                     div()
                         .id("collection-form-error")
                         .debug_selector(|| "collection-form-error".into())

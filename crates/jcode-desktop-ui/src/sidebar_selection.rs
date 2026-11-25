@@ -2,13 +2,25 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct Selection {
-    pub ids: HashSet<String>,
+    ids: HashSet<String>,
     anchor: Option<String>,
 }
 
 impl Selection {
     pub fn contains(&self, id: &str) -> bool {
         self.ids.contains(id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    pub fn remove(&mut self, id: &str) {
+        self.ids.remove(id);
     }
 
     pub fn retain(&mut self, order: &[String]) {
@@ -62,7 +74,7 @@ impl Workspace {
                 self.set_active(index, cx);
                 self.close_panel(&ClosePanel, window, cx);
             }
-            self.sidebar_selection.ids.remove(&id);
+            self.sidebar_selection.remove(&id);
         }
         if let Some(index) = self
             .slots

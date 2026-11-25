@@ -76,12 +76,12 @@ impl Workspace {
             "canvas_width": self.last_canvas_width,
 
             "header_height": 0,
-            "version_header_width": self.live_tabs.version_width,
+            "version_header_width": self.live_tabs.version_width(),
             "active_row": self.active_row,
             "focused_slot": focused,
             "keyboard_panel": keyboard_panel,
-            "tab_targets": self.live_tabs.hit_targets.iter()
-                .map(|(index, x)| (*index, x + self.live_tabs.header_offset))
+            "tab_targets": self.live_tabs.hit_targets().iter()
+                .map(|(index, x)| (*index, x + self.live_tabs.header_offset()))
                 .collect::<Vec<_>>(),
             "tab_motion": self.live_tabs.is_animating(),
             "camera_motion": self.camera_started[self.active_row].is_some() || self.row_progress.is_animating(),

@@ -155,6 +155,11 @@ impl ManifestWriter {
             || now.duration_since(pending.first_change) >= MAX_DEBOUNCE)
     }
 
+    /// True while a changed snapshot waits for its debounce to elapse.
+    fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     fn save_pending(&mut self, path: &Path, window: u64) -> anyhow::Result<()> {
         let Some(pending) = self.pending.as_ref() else {
             return Ok(());
@@ -210,7 +215,7 @@ pub(crate) fn install(workspace: &Entity<Workspace>, window: &mut Window, app: &
                 let workspace = workspace.upgrade()?;
                 let workspace = workspace.read(app);
                 let snapshot = workspace.snapshot(window, app).ok()?;
-                let launch = LaunchSnapshot::from(&workspace.launch);
+                let launch = workspace.launch_snapshot();
                 Some((snapshot, launch, window.is_window_active()))
             });
             let (snapshot, launch, focused) = match captured {
@@ -239,7 +244,7 @@ pub(crate) fn install(workspace: &Entity<Workspace>, window: &mut Window, app: &
             if let Err(error) = result {
                 eprintln!("restart manifest write failed: {error:#}");
             }
-            let delay = if focused || writer.pending.is_some() {
+            let delay = if focused || writer.has_pending() {
                 MANIFEST_INTERVAL
             } else {
                 INACTIVE_INTERVAL

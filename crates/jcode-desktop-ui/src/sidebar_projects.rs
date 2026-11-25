@@ -381,7 +381,7 @@ impl Workspace {
                     .bg(theme.TOOL_BG)
                     .text_size(px(9.0))
                     .text_color(theme.TEXT_DIM)
-                    .child(sidebar_worktrees::icon(sidebar_worktrees::BRANCH_ICON, 9.0))
+                    .child(sidebar_atoms::icon(sidebar_atoms::BRANCH_ICON, 9.0))
                     .child(div().min_w_0().truncate().child(branch))
             }))
             .child(div().flex_1())
@@ -396,14 +396,14 @@ impl Workspace {
             )
             // Actions overlay the row end on hover instead of reserving width.
             .when(git || local.is_some(), |el| {
-                let mut actions = sidebar_worktrees::hover_actions(group, 24.0);
+                let mut actions = sidebar_atoms::hover_actions(group, 24.0);
                 if git {
                     let directory = local.clone().unwrap_or_default();
                     actions = actions.child(
-                        sidebar_worktrees::header_action(
+                        sidebar_atoms::header_action(
                             format!("sidebar-project-worktree-{index}").into(),
                             "New worktree: start a branch in its own checkout",
-                            sidebar_worktrees::icon(sidebar_worktrees::BRANCH_ICON, 11.0),
+                            sidebar_atoms::icon(sidebar_atoms::BRANCH_ICON, 11.0),
                             true,
                             group,
                         )
@@ -420,7 +420,7 @@ impl Workspace {
                 if let Some(directory) = local.clone() {
                     let key = project.key.clone();
                     actions = actions.child(
-                        sidebar_worktrees::header_action(
+                        sidebar_atoms::header_action(
                             format!("sidebar-project-new-{index}").into(),
                             "New thread in this project",
                             div().child("+").into_any_element(),
@@ -487,11 +487,11 @@ impl Workspace {
             .text_size(px(11.0))
             .text_color(theme.TEXT_DIM)
             .tooltip(Tooltip::text(tooltip.clone()).builder())
-            .child(sidebar_worktrees::icon(
+            .child(sidebar_atoms::icon(
                 if checkout.is_some_and(|c| c.linked) {
-                    sidebar_worktrees::BRANCH_ICON
+                    sidebar_atoms::BRANCH_ICON
                 } else {
-                    sidebar_worktrees::FOLDER_ICON
+                    sidebar_atoms::FOLDER_ICON
                 },
                 11.0,
             ))
@@ -516,8 +516,8 @@ impl Workspace {
             })
             .when_some(path, |el, path| {
                 el.child(
-                    sidebar_worktrees::hover_actions(group, 4.0).child(
-                        sidebar_worktrees::header_action(
+                    sidebar_atoms::hover_actions(group, 4.0).child(
+                        sidebar_atoms::header_action(
                             format!("sidebar-checkout-new-{index}").into(),
                             "New thread on this branch",
                             div().child("+").into_any_element(),

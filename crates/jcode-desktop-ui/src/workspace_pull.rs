@@ -58,7 +58,7 @@ impl Workspace {
         });
         let target =
             if held && !self.gesture.switched && self.outgoing_row.is_none() && !self.overview {
-                let pull = (self.gesture.pull / STRIP_BREAK).clamp(-1.0, 1.0) * PREVIEW_ROWS;
+                let pull = self.gesture.break_progress() * PREVIEW_ROWS;
                 // The first/last workspace has no neighboring row to reveal.
                 (self.active_row as f32 + pull).clamp(0.0, (STRIP_COUNT - 1) as f32)
                     - self.active_row as f32

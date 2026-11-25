@@ -404,9 +404,9 @@ pub(super) struct TabMotion {
     tabs: HashMap<u64, TabTween>,
     close_focus: HashMap<u64, gpui::FocusHandle>,
     available: Option<f32>,
-    pub(super) hit_targets: Vec<(usize, f32)>,
-    pub(super) header_offset: f32,
-    pub(super) version_width: f32,
+    hit_targets: Vec<(usize, f32)>,
+    header_offset: f32,
+    version_width: f32,
     /// Motion key of the tab under the pointer, popped out for inspection.
     hovered: Option<u64>,
     overflow_open: bool,
@@ -445,6 +445,88 @@ impl TabMotion {
                 tween.sample(now)
             })
             .collect()
+    }
+
+    /// The focus handle of a tab's close control, created on first use.
+    fn close_focus(&mut self, key: u64, cx: &App) -> gpui::FocusHandle {
+        self.close_focus
+            .entry(key)
+            .or_insert_with(|| cx.focus_handle())
+            .clone()
+    }
+
+    /// The focus handle of the overflow trigger, created on first use.
+    fn overflow_focus(&mut self, cx: &App) -> gpui::FocusHandle {
+        self.overflow_focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone()
+    }
+
+    /// Return focus to the overflow trigger, if it was ever shown.
+    fn refocus_overflow(&self, window: &mut Window, cx: &mut App) {
+        if let Some(focus) = &self.overflow_focus {
+            focus.focus(window, cx);
+        }
+    }
+
+    fn overflow_open(&self) -> bool {
+        self.overflow_open
+    }
+
+    fn toggle_overflow(&mut self) {
+        self.overflow_open = !self.overflow_open;
+    }
+
+    fn close_overflow(&mut self) {
+        self.overflow_open = false;
+    }
+
+    /// Follow the pointer over a tab. Returns whether the popped tab changed.
+    /// Leaving a tab clears the hover only while it still owns it.
+    fn hover(&mut self, key: u64, entered: bool) -> bool {
+        let next = if entered {
+            Some(key)
+        } else if self.hovered == Some(key) {
+            None
+        } else {
+            return false;
+        };
+        let changed = self.hovered != next;
+        self.hovered = next;
+        changed
+    }
+
+    fn hovered(&self) -> Option<u64> {
+        self.hovered
+    }
+
+    /// Start recording where the tab header paints this frame.
+    fn begin_header(&mut self, track_left: f32, version_width: f32) {
+        self.header_offset = track_left;
+        self.version_width = version_width;
+        self.hit_targets.clear();
+    }
+
+    fn record_hit_target(&mut self, index: usize, x: f32) {
+        self.hit_targets.push((index, x));
+    }
+
+    /// Where each visible tab's center sits, relative to the header track.
+    pub(super) fn hit_targets(&self) -> &[(usize, f32)] {
+        &self.hit_targets
+    }
+
+    pub(super) fn header_offset(&self) -> f32 {
+        self.header_offset
+    }
+
+    /// Re-express the header track in canvas coordinates.
+    pub(super) fn shift_header(&mut self, by: f32) {
+        self.header_offset += by;
+    }
+
+    pub(super) fn version_width(&self) -> f32 {
+        self.version_width
     }
 
     pub(super) fn is_animating(&self) -> bool {
@@ -610,12 +692,8 @@ impl Workspace {
         row_width: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let focus = self
-            .live_tabs
-            .overflow_focus
-            .get_or_insert_with(|| cx.focus_handle())
-            .clone();
-        let open = self.live_tabs.overflow_open;
+        let focus = self.live_tabs.overflow_focus(cx);
+        let open = self.live_tabs.overflow_open();
         let theme = Theme::global();
         let root = div()
             .id("tab-overflow-popover")
@@ -649,7 +727,7 @@ impl Workspace {
         .tooltip(tab_tooltip("Hidden session tabs").builder())
         .on_click(cx.listener(move |this, _, window, cx| {
             cx.stop_propagation();
-            this.live_tabs.overflow_open = !this.live_tabs.overflow_open;
+            this.live_tabs.toggle_overflow();
             focus.focus(window, cx);
             cx.notify();
         }))
@@ -663,15 +741,13 @@ impl Workspace {
         root.child(trigger)
             .when(open, |root| {
                 root.on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.live_tabs.overflow_open = false;
+                    this.live_tabs.close_overflow();
                     cx.notify();
                 }))
                 .key_context(crate::menu::CONTEXT)
                 .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
-                    this.live_tabs.overflow_open = false;
-                    if let Some(focus) = &this.live_tabs.overflow_focus {
-                        focus.focus(window, cx);
-                    }
+                    this.live_tabs.close_overflow();
+                    this.live_tabs.refocus_overflow(window, cx);
                     cx.notify();
                 }))
                 .child(
@@ -710,7 +786,7 @@ impl Workspace {
                                 .on_click(move |_, window, cx| {
                                     cx.stop_propagation();
                                     let _ = entity.update(cx, |this, cx| {
-                                        this.live_tabs.overflow_open = false;
+                                        this.live_tabs.close_overflow();
                                         this.activate_live_tab(index, window, cx);
                                     });
                                 })
@@ -813,7 +889,7 @@ impl Workspace {
         };
         available = (available - overflow_width).max(0.0);
         if hidden.is_empty() {
-            self.live_tabs.overflow_open = false;
+            self.live_tabs.close_overflow();
         }
         let rows: Vec<_> = entries.iter().map(|(_, row, _)| *row).collect();
         let layout = TabLayout::grouped(available, &rows, selected);
@@ -880,9 +956,8 @@ impl Workspace {
             .left(px(track_left))
             .right(px(controls_width + overflow_width + drag_width))
             .h(px(FOLDER_CONTENT_INSET));
-        self.live_tabs.header_offset = track_left;
-        self.live_tabs.version_width = version_header_width(available);
-        self.live_tabs.hit_targets.clear();
+        self.live_tabs
+            .begin_header(track_left, version_header_width(available));
         let paint_order = TabLayout::hover_paint_order(entries.len(), selected, hovered);
         let mut tab_bodies = Vec::with_capacity(entries.len());
         let mut slots = Vec::with_capacity(entries.len());
@@ -912,7 +987,7 @@ impl Workspace {
             };
             if let Some(index) = index {
                 let x = rest_left + rest_width / 2.0;
-                self.live_tabs.hit_targets.push((index, x));
+                self.live_tabs.record_hit_target(index, x);
             }
             let padding = (visible / 12.0).min(6.0);
             let (title, emoji, ring, outline) = match index {
@@ -947,13 +1022,7 @@ impl Workspace {
             let close_index = index.filter(|_| {
                 !compact && visible >= diameter + 24.0 && exposed_left + visible >= right - 0.01
             });
-            let close_focus = close_index.map(|_| {
-                self.live_tabs
-                    .close_focus
-                    .entry(key)
-                    .or_insert_with(|| cx.focus_handle())
-                    .clone()
-            });
+            let close_focus = close_index.map(|_| self.live_tabs.close_focus(key, cx));
             let show_close = close_focus.as_ref().is_some_and(|handle| {
                 hot || (window.last_input_was_keyboard() && handle.is_focused(window))
             });
@@ -1149,15 +1218,7 @@ impl Workspace {
                     })
                     .when(index.is_some(), |el| {
                         el.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                            let next = if *hovered {
-                                Some(key)
-                            } else if this.live_tabs.hovered == Some(key) {
-                                None
-                            } else {
-                                return;
-                            };
-                            if this.live_tabs.hovered != next {
-                                this.live_tabs.hovered = next;
+                            if this.live_tabs.hover(key, *hovered) {
                                 cx.notify();
                             }
                         }))
@@ -1689,7 +1750,7 @@ mod tests {
                         );
                     }
                 }
-                let targets = workspace.read_with(vcx, |w, _| w.live_tabs.hit_targets.clone());
+                let targets = workspace.read_with(vcx, |w, _| w.live_tabs.hit_targets().to_vec());
                 assert_eq!(targets.len(), 9);
                 for &(index, _) in &targets {
                     let tab = vcx
@@ -2171,7 +2232,7 @@ mod tests {
                 });
                 vcx.run_until_parked();
                 let track = vcx.debug_bounds("live-session-tabs").unwrap();
-                let targets = workspace.read_with(vcx, |w, _| w.live_tabs.hit_targets.clone());
+                let targets = workspace.read_with(vcx, |w, _| w.live_tabs.hit_targets().to_vec());
                 assert_eq!(targets.len(), 8, "off-screen panels must retain their tabs");
                 for &(index, x) in &targets {
                     let tab = vcx
@@ -2293,7 +2354,7 @@ mod tests {
                     assert_eq!(w.slots.len(), 5, "surface is still fading");
                     assert_eq!(w.live_tabs.tabs.len(), 4);
                     assert!(!w.live_tabs.tabs.contains_key(&closed_id));
-                    assert!(w.live_tabs.hit_targets.iter().all(|(i, _)| *i != initial));
+                    assert!(w.live_tabs.hit_targets().iter().all(|(i, _)| *i != initial));
                     assert!(
                         w.camera_target[0] <= before_camera + 0.01,
                         "closing must not pan right toward the successor's old position"
@@ -2345,7 +2406,7 @@ mod tests {
                 w.close_panel(&ClosePanel, window, cx);
                 let _ = w.render_workspace_bar(1200.0, false, 0.0, window, cx);
                 assert_eq!(w.slots.len(), 1);
-                assert!(w.live_tabs.hit_targets.is_empty());
+                assert!(w.live_tabs.hit_targets().is_empty());
                 assert_eq!(w.live_tabs.tabs.len(), 1);
                 assert!(w.live_tabs.tabs.contains_key(&u64::MAX));
                 assert!(w.focus_handle.is_focused(window));

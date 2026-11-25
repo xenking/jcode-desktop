@@ -49,6 +49,18 @@ pub(super) struct State {
     opened_url: Option<String>,
 }
 
+impl State {
+    /// A Jcode account is already saved on this computer.
+    pub(super) fn is_connected(&self) -> bool {
+        self.connected
+    }
+
+    /// The email sign-in field is offered.
+    pub(super) fn offers_email(&self) -> bool {
+        self.email
+    }
+}
+
 struct Demo {
     panel: Entity<Panel>,
     _replay: gpui::Task<()>,
@@ -958,49 +970,6 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn render_account_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let connected = self.account_sign_in.connected;
-        if !self.account_sign_in.email && !connected {
-            return div();
-        }
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .py_3()
-            .child(div().text_size(px(12.0)).child("Jcode account"))
-            .child(
-                div()
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child(if connected {
-                        "Account saved on this computer"
-                    } else {
-                        "Optional · Separate from your AI providers"
-                    }),
-            )
-            .child(
-                account_button(
-                    "settings-account-sign-in",
-                    if connected {
-                        "Manage account"
-                    } else {
-                        "Sign in with email"
-                    },
-                    false,
-                    false,
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    if connected {
-                        if !this.account_menu.open {
-                            this.toggle_account_menu(cx);
-                        }
-                    } else {
-                        this.open_account_sign_in(window, cx);
-                    }
-                })),
-            )
-    }
-
     pub(super) fn render_account_sign_in(
         &mut self,
         window: &mut Window,
@@ -1881,7 +1850,7 @@ fn theme_swatch(preset: ThemePreset, active: bool) -> gpui::Div {
         )
 }
 
-fn account_button(
+pub(super) fn account_button(
     id: &'static str,
     label: &'static str,
     primary: bool,

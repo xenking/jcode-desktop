@@ -210,7 +210,7 @@ fn downward_workspace_swipes_never_preview_or_navigate(cx: &mut gpui::TestAppCon
             swipe(&workspace, vcx, target, dy, phase);
             workspace.read_with(vcx, |w, _| {
                 assert_eq!(w.active_row, 1);
-                assert_eq!(w.gesture.pull, 0.0);
+                assert_eq!(w.gesture.break_progress(), 0.0);
                 assert_eq!(w.workspace_pull.value, 0.0);
                 assert!(w.outgoing_row.is_none());
             });

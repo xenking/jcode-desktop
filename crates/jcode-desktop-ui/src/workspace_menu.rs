@@ -107,7 +107,7 @@ mod tests {
     fn standalone_new_session_opens_window_without_mutating_current_chat(
         cx: &mut gpui::TestAppContext,
     ) {
-        single_panel::NEW_SESSION_WINDOWS.with(|count| count.set(0));
+        window_launch::NEW_SESSION_WINDOWS.with(|count| count.set(0));
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.single_panel = true;
@@ -122,7 +122,7 @@ mod tests {
             window.dispatch_action(Box::new(NewPanel), cx);
         });
         vcx.run_until_parked();
-        single_panel::NEW_SESSION_WINDOWS.with(|count| assert_eq!(count.get(), 1));
+        window_launch::NEW_SESSION_WINDOWS.with(|count| assert_eq!(count.get(), 1));
         workspace.read_with(vcx, |w, _| {
             assert_eq!(w.slots.len(), 1);
             assert_eq!(w.slots[0].panel.entity_id(), original);

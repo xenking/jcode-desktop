@@ -914,7 +914,7 @@ fn empty_workspace_requires_a_shortcut_to_move_down(cx: &mut gpui::TestAppContex
         cx.run_until_parked();
         workspace.read_with(cx, |w, _| {
             assert_eq!(w.active_row, 0);
-            assert_eq!(w.gesture.pull, 0.0);
+            assert_eq!(w.gesture.break_progress(), 0.0);
         });
     }
     cx.simulate_keystrokes("super-down");

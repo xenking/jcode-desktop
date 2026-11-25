@@ -135,6 +135,15 @@ struct Check {
     started: Instant,
 }
 
+/// How a wake request begins.
+#[allow(dead_code)]
+enum WakeStart {
+    /// A fresh readiness proof covers this request.
+    Reuse,
+    /// A wake must run, answering this readiness generation.
+    Wake(u64),
+}
+
 #[derive(Default)]
 struct State {
     status: Option<(Status, Instant)>,
@@ -264,6 +273,144 @@ impl State {
             }
             _ => self.invalidate_ready(),
         }
+    }
+
+    /// Start a wake, or learn that a fresh readiness proof already covers it.
+    #[allow(dead_code)]
+    fn begin_wake(&mut self, identity: Option<&LocalIdentity>, now: Instant) -> WakeStart {
+        if self.recently_ready(identity, now) {
+            return WakeStart::Reuse;
+        }
+        self.invalidate_ready();
+        self.waking = true;
+        WakeStart::Wake(self.ready_generation)
+    }
+
+    /// Settle a wake. Returns whether an earlier proof was reused (never, for
+    /// a wake that ran) or why the new proof cannot be trusted.
+    #[allow(dead_code)]
+    fn finish_wake(
+        &mut self,
+        generation: u64,
+        before: Option<LocalIdentity>,
+        after: Option<LocalIdentity>,
+        result: Result<Receipt, String>,
+    ) -> Result<bool, String> {
+        let result = result.and_then(|receipt| {
+            if self.ready_generation != generation || before != after {
+                return Err("Cloud readiness changed while waking. Retry Connect.".into());
+            }
+            let identity = after.ok_or("Cloud readiness identity unavailable.")?;
+            receipt.into_ready(identity, Instant::now(), Instant::now(), SystemTime::now())
+        });
+        self.waking = false;
+        match result {
+            Ok(ready) => {
+                self.ready_generation = self.ready_generation.wrapping_add(1);
+                self.ready = Some(ready);
+                Ok(false)
+            }
+            Err(error) => {
+                self.invalidate_ready();
+                Err(error)
+            }
+        }
+    }
+
+    /// Apply a finished background check, if one is waiting.
+    fn settle_check(&mut self, identity: Option<LocalIdentity>, now: Instant, wall: SystemTime) {
+        if let Some((check, result)) = self.check_result.take() {
+            self.finish_check(check, result, identity, now, wall);
+        }
+    }
+
+    fn store_check_result(&mut self, check: Check, result: Result<Receipt, String>) {
+        self.check_result = Some((check, result));
+    }
+
+    /// Queue a progress line, keeping only the newest for its request.
+    /// Never relabel a stale request as a newer panel's update.
+    #[allow(dead_code)]
+    fn replace_update(&mut self, message: String, failed: bool, request_id: Option<String>) {
+        self.updates.retain(|(_, _, id)| id != &request_id);
+        self.updates.push((message, failed, request_id));
+    }
+
+    #[allow(dead_code)]
+    fn push_update(&mut self, message: String, failed: bool, request_id: Option<String>) {
+        self.updates.push((message, failed, request_id));
+    }
+
+    fn take_updates(&mut self) -> Vec<(String, bool, Option<String>)> {
+        std::mem::take(&mut self.updates)
+    }
+
+    #[allow(dead_code)]
+    fn model_sync_supported(&self) -> bool {
+        self.ready
+            .as_ref()
+            .is_some_and(|ready| ready.model_sync_supported)
+    }
+
+    /// Record how a connect ended. A fresh wake also forgets the last status
+    /// refresh so the next one is not rate limited.
+    #[allow(dead_code)]
+    fn finish_connect(
+        &mut self,
+        message: String,
+        failed: bool,
+        request_id: Option<String>,
+        reused: bool,
+    ) {
+        self.error = failed.then(|| message.clone());
+        self.replace_update(message, failed, request_id);
+        if !reused {
+            self.last_refresh = None;
+        }
+    }
+
+    /// Claim the status refresh. Returns the readiness generation it answers.
+    fn begin_refresh(&mut self) -> Option<u64> {
+        if self.refreshing
+            || self
+                .last_refresh
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(60))
+        {
+            return None;
+        }
+        self.refreshing = true;
+        self.last_refresh = Some(Instant::now());
+        Some(self.ready_generation)
+    }
+
+    fn finish_refresh(&mut self, generation: u64, result: Result<Status, String>, now: Instant) {
+        self.refreshing = false;
+        self.record_status_reply(generation, result, now);
+    }
+
+    fn lease_warning(&self) -> Option<String> {
+        let (status, fetched) = self.status.as_ref()?;
+        if status.state != "running" {
+            return None;
+        }
+        let monthly = status.allowance_minutes.saturating_sub(status.used_minutes);
+        if monthly <= 10 {
+            return Some(format!("Cloud allowance ≤{monthly}m. Save work!"));
+        }
+        let seconds = status.remaining_lease(fetched.elapsed())?;
+        (seconds <= 600).then(|| format!("Cloud cutoff ≤{}m. Save work!", seconds.div_ceil(60)))
+    }
+
+    fn summary(&self) -> String {
+        let mut text = self
+            .status
+            .as_ref()
+            .map(|(status, fetched)| status.summary(fetched.elapsed()))
+            .unwrap_or_else(|| format!("Cloud status not yet available. {CUTOFF}"));
+        if let Some(error) = &self.error {
+            text.push_str(&format!(" Status unavailable: {error}"));
+        }
+        text
     }
 
     fn record_status_reply(
@@ -589,37 +736,19 @@ impl Lifecycle {
         let before = identity();
         let generation = {
             let mut state = self.state.lock().unwrap();
-            if state.recently_ready(before.as_ref(), Instant::now()) {
-                drop(state);
-                progress(REUSING_READY.into());
-                return Ok(true);
+            match state.begin_wake(before.as_ref(), Instant::now()) {
+                WakeStart::Reuse => {
+                    drop(state);
+                    progress(REUSING_READY.into());
+                    return Ok(true);
+                }
+                WakeStart::Wake(generation) => generation,
             }
-            state.invalidate_ready();
-            state.waking = true;
-            state.ready_generation
         };
         let result = wake(&mut progress);
         let after = identity();
         let mut state = self.state.lock().unwrap();
-        let result = result.and_then(|receipt| {
-            if state.ready_generation != generation || before != after {
-                return Err("Cloud readiness changed while waking. Retry Connect.".into());
-            }
-            let identity = after.ok_or("Cloud readiness identity unavailable.")?;
-            receipt.into_ready(identity, Instant::now(), Instant::now(), SystemTime::now())
-        });
-        state.waking = false;
-        match result {
-            Ok(ready) => {
-                state.ready_generation = state.ready_generation.wrapping_add(1);
-                state.ready = Some(ready);
-                Ok(false)
-            }
-            Err(error) => {
-                state.invalidate_ready();
-                Err(error)
-            }
-        }
+        state.finish_wake(generation, before, after, result)
     }
 
     // The UI supplies the current panel set and consumes results before any
@@ -628,15 +757,7 @@ impl Lifecycle {
         let mut state = self.state.lock().unwrap();
         state.set_active(panels);
         let identity = runtime_identity();
-        if let Some((check, result)) = state.check_result.take() {
-            state.finish_check(
-                check,
-                result,
-                identity.clone(),
-                Instant::now(),
-                SystemTime::now(),
-            );
-        }
+        state.settle_check(identity.clone(), Instant::now(), SystemTime::now());
         if harness::screenshot_mode() || cfg!(test) {
             return;
         }
@@ -646,7 +767,11 @@ impl Lifecycle {
         let lifecycle = self.clone();
         std::thread::spawn(move || {
             let result = run_helper("check-ready").and_then(|json| Receipt::parse(&json));
-            lifecycle.state.lock().unwrap().check_result = Some((check, result));
+            lifecycle
+                .state
+                .lock()
+                .unwrap()
+                .store_check_result(check, result);
         });
     }
 
@@ -654,24 +779,23 @@ impl Lifecycle {
     pub(super) fn connect(&self, bridge: harness::Bridge, request_id: Option<String>) {
         let lifecycle = self.clone();
         let update_request_id = request_id.clone();
-        self.state.lock().unwrap().updates.push((
+        self.state.lock().unwrap().push_update(
             format!("Waiting for shared VM {HOST}…"),
             false,
             update_request_id.clone(),
-        ));
+        );
         std::thread::spawn(move || {
             let mut reused = false;
             let result = wake_then_connect(&bridge, request_id, || {
                 reused = lifecycle.ensure_ready(
                     runtime_identity,
                     |message| {
-                        let mut state = lifecycle.state.lock().unwrap();
                         // Retain only the newest pending phase for this request.
-                        // Never relabel a stale request as a newer panel's update.
-                        state.updates.retain(|(_, _, id)| id != &update_request_id);
-                        state
-                            .updates
-                            .push((message, false, update_request_id.clone()));
+                        lifecycle.state.lock().unwrap().replace_update(
+                            message,
+                            false,
+                            update_request_id.clone(),
+                        );
                     },
                     |progress| {
                         run_helper_with_progress("wake-ready", progress)
@@ -680,13 +804,7 @@ impl Lifecycle {
                 )?;
                 // Readiness is cached, model credentials are not. The helper
                 // hashes allowlisted local inputs, avoiding AWS/SSH when fresh.
-                let sync_supported = lifecycle
-                    .state
-                    .lock()
-                    .unwrap()
-                    .ready
-                    .as_ref()
-                    .is_some_and(|ready| ready.model_sync_supported);
+                let sync_supported = lifecycle.state.lock().unwrap().model_sync_supported();
                 lifecycle.sync_reused_ready(reused && sync_supported, runtime_identity, || {
                     run_helper("sync-models").map(|_| ())
                 })
@@ -700,70 +818,40 @@ impl Lifecycle {
                     true,
                 ),
             };
-            state.error = failed.then(|| message.clone());
-            state.updates.retain(|(_, _, id)| id != &update_request_id);
-            state.updates.push((message, failed, update_request_id));
-            if !reused {
-                state.last_refresh = None;
-            }
+            state.finish_connect(message, failed, update_request_id, reused);
         });
     }
 
     pub(super) fn take_updates(&self) -> Vec<(String, bool, Option<String>)> {
-        std::mem::take(&mut self.state.lock().unwrap().updates)
+        self.state.lock().unwrap().take_updates()
     }
 
     pub(super) fn refresh(&self) {
-        let mut state = self.state.lock().unwrap();
-        if state.refreshing
-            || state
-                .last_refresh
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(60))
-        {
+        let Some(generation) = self.state.lock().unwrap().begin_refresh() else {
             return;
-        }
-        state.refreshing = true;
-        let generation = state.ready_generation;
-        state.last_refresh = Some(Instant::now());
+        };
         let lifecycle = self.clone();
         std::thread::spawn(move || {
             let result = run_helper("status").and_then(|json| {
                 serde_json::from_str::<Status>(&json)
                     .map_err(|e| format!("Invalid cloud status: {e}"))
             });
-            let mut state = lifecycle.state.lock().unwrap();
-            state.refreshing = false;
-            state.record_status_reply(generation, result, Instant::now());
+            lifecycle
+                .state
+                .lock()
+                .unwrap()
+                .finish_refresh(generation, result, Instant::now());
         });
     }
 
     /// Kept in the persistent Machines switcher, so active work gets a warning
     /// without opening the management panel. This never requests a stop.
     pub(super) fn lease_warning(&self) -> Option<String> {
-        let state = self.state.lock().unwrap();
-        let (status, fetched) = state.status.as_ref()?;
-        if status.state != "running" {
-            return None;
-        }
-        let monthly = status.allowance_minutes.saturating_sub(status.used_minutes);
-        if monthly <= 10 {
-            return Some(format!("Cloud allowance ≤{monthly}m. Save work!"));
-        }
-        let seconds = status.remaining_lease(fetched.elapsed())?;
-        (seconds <= 600).then(|| format!("Cloud cutoff ≤{}m. Save work!", seconds.div_ceil(60)))
+        self.state.lock().unwrap().lease_warning()
     }
 
     pub(super) fn summary(&self) -> String {
-        let state = self.state.lock().unwrap();
-        let mut text = state
-            .status
-            .as_ref()
-            .map(|(status, fetched)| status.summary(fetched.elapsed()))
-            .unwrap_or_else(|| format!("Cloud status not yet available. {CUTOFF}"));
-        if let Some(error) = &state.error {
-            text.push_str(&format!(" Status unavailable: {error}"));
-        }
-        text
+        self.state.lock().unwrap().summary()
     }
 }
 

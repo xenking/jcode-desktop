@@ -415,9 +415,7 @@ pub(crate) fn install(workspace: &Entity<Workspace>, window: &mut Window, app: &
                             workspace.sync_applet_panels(window, cx);
                             // Transcript, sidebar and overlay placements
                             // render from the runtime, so repaint them.
-                            for slot in &workspace.slots {
-                                slot.panel.update_chat(cx, |_, cx| cx.notify());
-                            }
+                            workspace.repaint_chats(cx);
                             cx.notify();
                         });
                     }

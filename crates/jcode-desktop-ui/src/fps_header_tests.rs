@@ -137,7 +137,7 @@ fn workspace_controls_share_one_row_without_fps_or_footer_metadata(cx: &mut gpui
                     assert!(
                         (tabs.left()
                             - canvas.left()
-                            - px(workspace.read_with(vcx, |w, _| w.live_tabs.header_offset)))
+                            - px(workspace.read_with(vcx, |w, _| w.live_tabs.header_offset())))
                         .abs()
                             < px(1.0),
                         "native navigation coordinates exclude footer metadata"

@@ -2,12 +2,9 @@
 //! worktree mode: every checkout of a project, and the threads (including
 //! swarm agents) running in it, share one hierarchy of
 //! project, then branch or worktree, then threads.
+use super::sidebar_atoms::{BRANCH_ICON, icon};
 use super::*;
-use crate::components::Tooltip;
 
-pub(super) const BRANCH_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="black" stroke-width="1.6"><circle cx="6" cy="5" r="2.5"/><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><path d="M6 7.5v9M18 7.5c0 6-12 2-12 8"/></g></svg>"#;
-pub(super) const FOLDER_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Zm0 3h18" fill="none" stroke="black" stroke-width="1.6" stroke-linejoin="round"/></svg>"#;
-pub(super) const HIDE_SIDEBAR_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="black" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16M16 9.5 13.5 12l2.5 2.5"/></g></svg>"#;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -17,66 +14,6 @@ pub(super) struct State {
     /// Checkout the new worktree branches from.
     pub(super) input_directory: Option<String>,
     creation: Option<gpui::Task<()>>,
-}
-
-/// A compact pill button used by sidebar project and checkout headers. It acts
-/// on mouse-down and stops propagation so the header never toggles as well.
-pub(super) fn header_action(
-    id: gpui::SharedString,
-    tooltip: &'static str,
-    content: gpui::AnyElement,
-    visible: bool,
-    group: &'static str,
-) -> gpui::Stateful<gpui::Div> {
-    let selector = id.to_string();
-    div()
-        .id(id)
-        .debug_selector(move || selector.clone())
-        .flex_none()
-        .size(px(20.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .cursor_pointer()
-        .text_size(px(13.0))
-        .text_color(Theme::global().TEXT_DIM)
-        .opacity(if visible { 1.0 } else { 0.0 })
-        .group_hover(group, |el| el.opacity(1.0))
-        .hover(|el| {
-            el.bg(Theme::global().PANEL_BG)
-                .text_color(Theme::global().TEXT)
-        })
-        .tooltip(Tooltip::text(tooltip).builder())
-        .child(content)
-}
-
-/// Hover-only header actions. They float over the right end of the row, so the
-/// label and branch pill use the full width until the pointer arrives. The
-/// parent must be `relative()`; `right` leaves room for trailing content.
-pub(super) fn hover_actions(group: &'static str, right: f32) -> gpui::Div {
-    div()
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .right(px(right))
-        .flex()
-        .items_center()
-        .gap_1()
-        .pl_1()
-        .rounded_full()
-        .bg(Theme::global().TOOL_BG)
-        .opacity(0.0)
-        .group_hover(group, |el| el.opacity(1.0))
-}
-
-pub(super) fn icon(data: &'static [u8], size: f32) -> gpui::AnyElement {
-    gpui::svg()
-        .data(data)
-        .size(px(size))
-        .flex_none()
-        .text_color(Theme::global().TEXT_DIM)
-        .into_any_element()
 }
 
 impl Workspace {
@@ -268,133 +205,6 @@ impl Workspace {
                 }))
                 .into_any_element(),
         )
-    }
-
-    /// Always-visible entry points at the top of the thread list.
-    pub(super) fn render_sidebar_quick_actions(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let pill = |id: &'static str, label: &'static str, glyph: gpui::AnyElement| {
-            let tip = match id {
-                "sidebar-open-project" => "Open a project folder",
-                _ => "New thread in the default directory",
-            };
-            div()
-                .id(id)
-                .debug_selector(move || id.into())
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .h(px(26.0))
-                .px_2()
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap_1()
-                .rounded_full()
-                .cursor_pointer()
-                .bg(Theme::global().TOOL_BG)
-                .text_size(px(11.0))
-                .text_color(Theme::global().TEXT_DIM)
-                .hover(|el| {
-                    el.bg(Theme::global().PANEL_BG)
-                        .text_color(Theme::global().TEXT)
-                })
-                .tooltip(Tooltip::text(tip).builder())
-                .child(glyph)
-                .child(div().min_w_0().truncate().child(label))
-        };
-        div()
-            .flex_none()
-            .w_full()
-            .min_w_0()
-            .pl_2()
-            .pr(px(crate::scrollbar::GUTTER + 4.0))
-            .pt_2()
-            .flex()
-            .gap_2()
-            .child(
-                pill(
-                    "sidebar-new-thread",
-                    "Thread",
-                    div().child("+").into_any_element(),
-                )
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                        this.missed("new_panel", cx);
-                        this.open_new_session(cx);
-                    }),
-                ),
-            )
-            .child(
-                pill("sidebar-open-project", "Project", icon(FOLDER_ICON, 12.0)).on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                        this.open_folder(&OpenFolder, window, cx);
-                    }),
-                ),
-            )
-            .child(
-                // Icon-only, like hide: four labelled pills do not fit 224px.
-                div()
-                    .id("sidebar-new-collection")
-                    .debug_selector(|| "sidebar-new-collection".into())
-                    .flex_none()
-                    .size(px(26.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .bg(Theme::global().TOOL_BG)
-                    .hover(|el| el.bg(Theme::global().PANEL_BG))
-                    .tooltip(Tooltip::text("New collection: group chats your own way").builder())
-                    .child(icon(sidebar_collections::COLLECTION_ICON, 13.0))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.begin_new_collection(None, window, cx);
-                        }),
-                    ),
-            )
-            .child(
-                div()
-                    .id("sidebar-hide")
-                    .debug_selector(|| "sidebar-hide".into())
-                    .flex_none()
-                    .size(px(26.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .bg(Theme::global().TOOL_BG)
-                    .hover(|el| el.bg(Theme::global().PANEL_BG))
-                    .tooltip(Tooltip::text("Hide sidebar").key_hint("Ctrl+B").builder())
-                    .child(icon(HIDE_SIDEBAR_ICON, 14.0))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            if this.compact_sidebar_open {
-                                // Narrow windows show the sidebar as a drawer:
-                                // just dismiss it and keep the menu button.
-                                this.compact_sidebar_open = false;
-                                this.focus_pending = true;
-                                cx.notify();
-                            } else {
-                                this.toggle_sidebar(&ToggleSidebar, window, cx);
-                            }
-                        }),
-                    ),
-            )
-            .into_any_element()
     }
 }
 

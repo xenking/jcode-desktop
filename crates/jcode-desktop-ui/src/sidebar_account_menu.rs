@@ -11,6 +11,7 @@
 //!   The menu watches the account and updates by itself once payment lands.
 //! - An expired sign-in never signs anyone out. It offers "Sign in again",
 //!   which replaces the key in place.
+use super::jcode_account::fixture_enabled;
 use super::*;
 use jcode_base::subscription_api::{self as api, AccountApiError, BillingStatus, SubscriptionMe};
 use jcode_base::subscription_catalog as subscription;
@@ -70,12 +71,6 @@ impl State {
             ..Self::default()
         }
     }
-}
-
-/// Offline screenshot fixture: `JCODE_DESKTOP_SCREENSHOT_ACCOUNT_MENU=1`.
-pub(super) fn fixture_enabled() -> bool {
-    harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNT_MENU").as_deref() == Ok("1")
 }
 
 fn fixture() -> Option<Snapshot> {
@@ -514,7 +509,7 @@ impl Workspace {
                             menu.awaiting_checkout = None;
                             menu.error = None;
                             menu.notice = Some(format!("You're on the ${plan}/month plan"));
-                            sidebar_account::JcodeAccount::invalidate();
+                            jcode_account::JcodeAccount::invalidate();
                             accounts::request_refresh();
                             cx.notify();
                             return false;
@@ -626,7 +621,7 @@ impl Workspace {
                             }
                             _ => "Signed out of Jcode".into(),
                         };
-                        sidebar_account::JcodeAccount::invalidate();
+                        jcode_account::JcodeAccount::invalidate();
                         accounts::request_refresh();
                     }
                     Err(error) => menu.error = Some(format!("Could not sign out: {error}")),
@@ -640,8 +635,8 @@ impl Workspace {
     pub(super) fn render_account_menu(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
         let menu = &self.account_menu;
-        let show_email = sidebar_account::show_email();
-        let account = sidebar_account::JcodeAccount::current(cx);
+        let show_email = jcode_account::show_email();
+        let account = jcode_account::JcodeAccount::current(cx);
         let snapshot = menu.snapshot.as_ref();
         let title = snapshot
             .map(|s| s.email.clone())

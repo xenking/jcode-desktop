@@ -2,112 +2,9 @@
 //!
 //! It names the signed-in Jcode account (not an AI provider login) with its
 //! plan. Clicking it opens the in-app account menu, or sign-in when signed out.
+use super::jcode_account::{self, JcodeAccount, set_show_email, show_email};
+use super::account_sign_in::account_button;
 use super::*;
-use jcode_base::provider_catalog::load_env_value_from_env_or_config;
-use jcode_base::subscription_catalog as subscription;
-use jcode_desktop_model::{fs_probe, probe_cache::ProbeCache};
-use std::cell::RefCell;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-/// Whether the sidebar may show the account email. Off by default so a
-/// streamed or shared screen never reveals it.
-fn show_email_flag() -> &'static AtomicBool {
-    static FLAG: OnceLock<AtomicBool> = OnceLock::new();
-    FLAG.get_or_init(|| AtomicBool::new(crate::config::get().workspace.show_account_email))
-}
-
-pub(super) fn show_email() -> bool {
-    show_email_flag().load(Ordering::Relaxed)
-}
-
-/// The locally saved Jcode account. Only non-secret metadata is kept here.
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct JcodeAccount {
-    pub signed_in: bool,
-    pub email: Option<String>,
-    pub plan: Option<&'static str>,
-}
-
-/// Re-read the account file at most every few seconds, so sign-in and
-/// sign-out from the CLI show up without hitting the disk every frame.
-const STALE: Duration = Duration::from_secs(3);
-
-thread_local! {
-    static CACHE: RefCell<ProbeCache<(), JcodeAccount>> =
-        RefCell::new(ProbeCache::new(STALE, 1));
-}
-
-impl JcodeAccount {
-    fn load() -> Self {
-        fs_probe::note();
-        if account_menu::fixture_enabled() {
-            return Self {
-                signed_in: true,
-                email: Some("ada@example.com".into()),
-                plan: Some("Pro"),
-            };
-        }
-        let value = |key| {
-            load_env_value_from_env_or_config(key, subscription::JCODE_ENV_FILE)
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
-        };
-        Self {
-            signed_in: subscription::has_credentials(),
-            email: value(subscription::JCODE_ACCOUNT_EMAIL_ENV),
-            plan: subscription::cached_tier().map(subscription::JcodeTier::display_name),
-        }
-    }
-
-    /// Read the account file once, at startup, so the first frame is right.
-    pub(super) fn prime() {
-        CACHE.with_borrow_mut(|cache| cache.fill((), Self::load()));
-    }
-
-    /// The last known account. Render never reads the disk: a stale answer is
-    /// refreshed on the background executor and the windows redraw if it changed.
-    pub(super) fn current(cx: &gpui::App) -> Self {
-        let account = CACHE.with_borrow_mut(|cache| cache.get(&()).cloned());
-        crate::background_probe::drain_local(cx, &CACHE, |_| fs_probe::off_main(Self::load));
-        account.unwrap_or(Self {
-            signed_in: false,
-            email: None,
-            plan: None,
-        })
-    }
-
-    /// Read the account again now, e.g. after signing out from the account
-    /// menu. Runs in an event handler, never in render.
-    pub(super) fn invalidate() {
-        Self::prime();
-    }
-
-    fn title(&self, show_email: bool) -> String {
-        match (&self.email, self.signed_in) {
-            (Some(email), true) if show_email => email.clone(),
-            (_, true) => "Jcode account".into(),
-            _ => "Sign in to Jcode".into(),
-        }
-    }
-
-    fn detail(&self) -> String {
-        match (self.signed_in, self.plan) {
-            (true, Some(plan)) => format!("{plan} plan"),
-            (true, None) => "Signed in".into(),
-            (false, _) => "Not signed in".into(),
-        }
-    }
-
-    fn initial(&self, show_email: bool) -> String {
-        self.email
-            .as_deref()
-            .filter(|_| self.signed_in && show_email)
-            .and_then(|email| email.chars().next())
-            .map(|c| c.to_uppercase().to_string())
-            .unwrap_or_else(|| "J".into())
-    }
-}
 
 impl Workspace {
     pub(super) fn render_sidebar_account(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -371,7 +268,7 @@ impl Workspace {
                     if let Err(error) = crate::config::persist_show_account_email(enabled) {
                         this.status = format!("Could not save account email setting: {error}");
                     }
-                    show_email_flag().store(enabled, Ordering::Relaxed);
+                    set_show_email(enabled);
                     cx.notify();
                 }),
             )
@@ -386,6 +283,51 @@ impl Workspace {
                     .child(if enabled { "On" } else { "Off" }),
             )
             .into_any_element()
+    }
+}
+
+impl Workspace {
+    pub(super) fn render_account_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let connected = self.account_sign_in.is_connected();
+        if !self.account_sign_in.offers_email() && !connected {
+            return div();
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .py_3()
+            .child(div().text_size(px(12.0)).child("Jcode account"))
+            .child(
+                div()
+                    .text_color(Theme::global().TEXT_DIM)
+                    .child(if connected {
+                        "Account saved on this computer"
+                    } else {
+                        "Optional · Separate from your AI providers"
+                    }),
+            )
+            .child(
+                account_button(
+                    "settings-account-sign-in",
+                    if connected {
+                        "Manage account"
+                    } else {
+                        "Sign in with email"
+                    },
+                    false,
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if connected {
+                        if !this.account_menu.open {
+                            this.toggle_account_menu(cx);
+                        }
+                    } else {
+                        this.open_account_sign_in(window, cx);
+                    }
+                })),
+            )
     }
 }
 

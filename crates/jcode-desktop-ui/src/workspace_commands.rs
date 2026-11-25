@@ -16,6 +16,25 @@ mod fork_prompt_tests;
 mod side_question_tests;
 
 impl Workspace {
+    pub(super) fn single_panel_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active == 0 {
+            return;
+        }
+        let accounts = self.slots[self.active]
+            .panel
+            .chat()
+            .filter(|panel| panel.read(cx).is_accounts_panel())
+            .cloned();
+        if let (Some(panel), Some(source)) = (accounts, self.slots[0].panel.chat().cloned()) {
+            self.close_accounts(&panel, &source, false, window, cx);
+        } else {
+            self.close_panel(&ClosePanel, window, cx);
+        }
+        self.set_active(0, cx);
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
     pub(crate) fn workspace_slash_command(
         &mut self,
         action: &WorkspaceSlashCommand,

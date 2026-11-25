@@ -40,6 +40,8 @@ pub(crate) mod resume;
 mod menu;
 #[path = "workspace_single_panel.rs"]
 mod single_panel;
+#[path = "workspace_window_launch.rs"]
+mod window_launch;
 
 #[path = "workspace_global_voice.rs"]
 mod global_voice;
@@ -72,6 +74,8 @@ pub(crate) mod change_review;
 
 #[path = "sidebar_account_menu.rs"]
 mod account_menu;
+#[path = "sidebar_jcode_account.rs"]
+mod jcode_account;
 #[path = "sidebar_account.rs"]
 mod sidebar_account;
 #[path = "sidebar_routing.rs"]
@@ -99,6 +103,10 @@ mod sidebar_session_catalog;
 mod sidebar_swarm;
 #[path = "sidebar_worktrees.rs"]
 mod sidebar_worktrees;
+#[path = "sidebar_atoms.rs"]
+mod sidebar_atoms;
+#[path = "sidebar_quick_actions.rs"]
+mod sidebar_quick_actions;
 #[path = "workspace_stream_fixture.rs"]
 mod workspace_stream_fixture;
 use sidebar_metadata::SidebarPanelMetadata;
@@ -578,6 +586,32 @@ impl StripGesture {
             return false;
         }
         true
+    }
+
+    /// Drop any accumulated vertical pull; the rubber band snaps home.
+    fn clear_pull(&mut self) {
+        self.pull = 0.0;
+    }
+
+    /// How far the vertical pull has travelled toward the strip break, in
+    /// `-1.0..=1.0`. Negative pulls upward, positive pulls downward.
+    fn break_progress(&self) -> f32 {
+        (self.pull / STRIP_BREAK).clamp(-1.0, 1.0)
+    }
+
+    /// True while a vertical pull is accumulating under a vertical lock.
+    fn is_vertical_pull(&self) -> bool {
+        self.axis == GestureAxis::Vertical && self.pull != 0.0
+    }
+
+    /// The resisted pull the gesture reticle leans into while a horizontal
+    /// pan is locked, bounded to a third of the viewport height.
+    fn reticle_lean(&self, viewport_h: f32) -> f32 {
+        if self.axis == GestureAxis::Horizontal {
+            (self.pull * PULL_RESISTANCE).clamp(-viewport_h / 3.0, viewport_h / 3.0)
+        } else {
+            0.0
+        }
     }
 
     fn pull_vertical(&mut self, dy: f32) -> i8 {
@@ -1077,7 +1111,7 @@ impl Workspace {
         // loop for a user who stays in the session view.
         updates::ensure_release_check();
         // Read the account file here so the first frame needs no disk access.
-        sidebar_account::JcodeAccount::prime();
+        jcode_account::JcodeAccount::prime();
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
         // Offline fixtures arrive at once, so the first frame already lists
@@ -2022,6 +2056,19 @@ impl Workspace {
 
     pub fn snapshot(&self, window: &Window, cx: &App) -> anyhow::Result<WorkspaceSnapshot> {
         self.snapshot_inner(window, cx, false)
+    }
+
+    /// How this window was launched, in its restart-manifest form.
+    fn launch_snapshot(&self) -> LaunchSnapshot {
+        LaunchSnapshot::from(&self.launch)
+    }
+
+    /// Repaint every chat transcript, for state that renders from outside
+    /// the panels, such as applet placements.
+    fn repaint_chats(&self, cx: &mut Context<Self>) {
+        for slot in &self.slots {
+            slot.panel.update_chat(cx, |_, cx| cx.notify());
+        }
     }
 
     pub fn snapshot_for_reload(
@@ -5472,7 +5519,7 @@ impl Workspace {
                         // Moving down a workspace requires an explicit shortcut.
                         // Ignore touch travel in that direction, including previews.
                         if dy < 0.0 {
-                            this.gesture.pull = 0.0;
+                            this.gesture.clear_pull();
                             cx.notify();
                             return;
                         }
@@ -5922,11 +5969,8 @@ impl Workspace {
         }
         // The reticle leans into an unbroken vertical pull, so the rubber
         // band toward the next strip is visible before it snaps.
-        let reticle_pull = if self.gesture.axis == GestureAxis::Horizontal {
-            (self.gesture.pull * PULL_RESISTANCE).clamp(-viewport_h / 3.0, viewport_h / 3.0)
-        } else {
-            0.0
-        } + self.workspace_pull.value * viewport_h;
+        let reticle_pull =
+            self.gesture.reticle_lean(viewport_h) + self.workspace_pull.value * viewport_h;
         let entity = cx.entity();
         div()
             .relative()
@@ -6081,14 +6125,12 @@ impl Workspace {
         if dy < 0.0
             && (empty_panel
                 || horizontally_locked
-                || (self.gesture.axis == GestureAxis::Vertical && self.gesture.pull != 0.0))
+                || self.gesture.is_vertical_pull())
         {
-            self.gesture.pull = 0.0;
+            self.gesture.clear_pull();
             dy = 0.0;
         }
-        let vertical_workspace_pull = event.delta.precise()
-            && self.gesture.axis == GestureAxis::Vertical
-            && self.gesture.pull != 0.0;
+        let vertical_workspace_pull = event.delta.precise() && self.gesture.is_vertical_pull();
         if (empty_panel || vertical_workspace_pull)
             && !horizontally_locked
             && dx == 0.0
@@ -6971,7 +7013,7 @@ impl Workspace {
         let mut project_checkouts: Vec<Vec<sidebar_projects::Checkout>> = Vec::new();
         let collection_order = self
             .collections
-            .store
+            .store()
             .collections
             .iter()
             .map(|c| c.id.clone())
@@ -7174,7 +7216,7 @@ impl Workspace {
                     details: (row.subdirectory.is_some()
                         || sidebar_session_created_ms(&session.session_id).is_some()
                         || session.transcript_bytes.is_some_and(|bytes| bytes > 0)),
-                    menu: self.collections.menu.as_deref() == Some(session.session_id.as_str()),
+                    menu: self.collections.menu_is_open_for(&session.session_id),
                     workers: (!row.collapsed)
                         .then(|| nested_workers.get(&session.session_id))
                         .flatten()
@@ -7232,7 +7274,7 @@ impl Workspace {
         // Collections with no chats yet have no row to carry a header.
         let empty_collections = self
             .collections
-            .store
+            .store()
             .collections
             .iter()
             .filter(|c| {
@@ -7245,7 +7287,7 @@ impl Workspace {
         if let Some(empty) = self.render_empty_collections(&empty_collections, cx) {
             list = list.child(empty);
         }
-        if !self.sidebar_selection.ids.is_empty() {
+        if !self.sidebar_selection.is_empty() {
             list = list.child(
                 div()
                     .flex_none()
@@ -7255,7 +7297,7 @@ impl Workspace {
                     .items_center()
                     .gap_2()
                     .text_size(px(11.0))
-                    .child(format!("{} selected", self.sidebar_selection.ids.len()))
+                    .child(format!("{} selected", self.sidebar_selection.len()))
                     .child(
                         div()
                             .id("sidebar-close-selected")
@@ -7389,7 +7431,7 @@ impl Workspace {
                             let release_id = session.session_id.clone();
                             let release_out_id = session.session_id.clone();
                             let context_id = session.session_id.clone();
-                            let menu_open = this.collections.menu.as_deref() == Some(session.session_id.as_str());
+                            let menu_open = this.collections.menu_is_open_for(&session.session_id);
                             let menu_session = session.session_id.clone();
                             let selection_order = selection_order.clone();
                             let hovered = this.sidebar_hovered_session.as_deref() == Some(session.session_id.as_str());
@@ -7478,7 +7520,7 @@ impl Workspace {
                                         window.prevent_default();
                                         cx.stop_propagation();
                                         this.sidebar_gesture = None;
-                                        this.collections.menu = Some(context_id.clone());
+                                        this.collections.open_menu(context_id.clone());
                                         cx.notify();
                                     }))
                                     .on_scroll_wheel(cx.listener(|this, _, _, _| {
@@ -9912,7 +9954,7 @@ impl Render for Workspace {
         };
         if window_tab_bar.is_some() {
             // Navigation diagnostics expose canvas-relative coordinates.
-            self.live_tabs.header_offset -= sidebar_width + connector_width;
+            self.live_tabs.shift_header(-(sidebar_width + connector_width));
         }
         let root = crate::keyboard::tab_navigation(div())
             .size_full()
