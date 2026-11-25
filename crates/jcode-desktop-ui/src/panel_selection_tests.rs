@@ -703,3 +703,28 @@ fn continuous_selection_retains_anchor_and_unmounted_intermediate_rows(
         assert!(!panel.transcript_selection.read(cx).is_dragging())
     });
 }
+
+#[gpui::test]
+fn requests_lead_the_todo_card_and_stay_out_of_plan_progress(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("todo-requests".into(), None, None, crate::harness::spawn_inert(), cx);
+        let payload = parse_todo_tool_output(
+            r#"[{"content":"Parse the config","status":"completed","group":"Crates","stage":1},
+                {"content":"Ship it","status":"pending","group":"Crates","stage":2},
+                {"content":"Ask #1: Check the quota","status":"completed","group":"requests"},
+                {"content":"Ask #2: Run the tests","status":"in_progress","group":"requests"}]"#,
+        )
+        .unwrap();
+        *panel.items = vec![Item::Todos(payload)];
+        panel
+    });
+    vcx.run_until_parked();
+    // Two plan todos count, the two requests do not.
+    assert_eq!(panel.read_with(vcx, |panel, _| panel.latest_todo_progress()), Some((1, 2)));
+    // Requests are not a phase, and the plan keeps its own.
+    assert!(vcx.debug_bounds("pinned-todo-phase-1").is_some());
+    assert!(vcx.debug_bounds("pinned-todo-phase-3").is_none());
+    let order = |stage: Option<u32>, group: Option<&str>| todo_group_order_key(stage, group);
+    assert!(order(None, Some("requests")) < order(Some(1), Some("Crates")));
+    assert!(order(None, Some("requests")) < order(None, Some("Other")));
+}

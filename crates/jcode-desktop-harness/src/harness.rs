@@ -2896,6 +2896,14 @@ struct PersistedTodoTitleItem {
     group: Option<String>,
 }
 
+impl PersistedTodoTitleItem {
+    /// A todo the daemon made for a user message. Dashboards count plan work,
+    /// so these neither name a session nor make it look unfinished.
+    fn is_request(&self) -> bool {
+        self.group.as_deref().map(str::trim) == Some(jcode_base::todo::REQUESTS_GROUP)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnfinishedTodo {
     pub content: String,
@@ -2951,7 +2959,9 @@ fn catalog_todos_in(home: &Path, sessions: &[SessionInfo]) -> CatalogTodos {
 
 fn read_todo_items(dir: &Path, id: &str) -> Option<Vec<PersistedTodoTitleItem>> {
     let bytes = std::fs::read(dir.join(format!("{id}.json"))).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    let mut todos: Vec<PersistedTodoTitleItem> = serde_json::from_slice(&bytes).ok()?;
+    todos.retain(|todo| !todo.is_request());
+    Some(todos)
 }
 
 fn unfinished_session(
@@ -3146,11 +3156,12 @@ fn persisted_todo_title(home: &Path, session_id: &str) -> Option<String> {
         return None;
     }
     let todos_dir = home.join("todos");
-    let todos: Vec<PersistedTodoTitleItem> =
+    let mut todos: Vec<PersistedTodoTitleItem> =
         std::fs::read(todos_dir.join(format!("{session_id}.json")))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
+    todos.retain(|todo| !todo.is_request());
     let plan: PersistedTodoTitlePlan =
         std::fs::read(todos_dir.join(format!("{session_id}-plan.json")))
             .ok()
@@ -5751,6 +5762,37 @@ mod tests {
         );
         assert_eq!(progress.len(), 1);
         assert_eq!(progress.get("with"), Some(&(1, 3)));
+    }
+
+    #[test]
+    fn request_todos_do_not_count_as_plan_work_or_name_a_session() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("todos")).unwrap();
+        std::fs::write(
+            home.path().join("todos/asks.json"),
+            r#"[{"content":"Ask #1: Check","status":"pending","group":"requests"},{"content":"a","status":"completed"},{"content":"b","status":"pending"}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            home.path().join("todos/only-asks.json"),
+            r#"[{"content":"Ask #1: Check","status":"pending","group":"requests"}]"#,
+        )
+        .unwrap();
+        let session = |id: &str| {
+            serde_json::from_value::<SessionInfo>(
+                serde_json::json!({"session_id": id, "status": "idle"}),
+            )
+            .unwrap()
+        };
+        let sessions = [session("asks"), session("only-asks")];
+        let progress = todo_progress_in(home.path(), &sessions);
+        assert_eq!(progress.get("asks"), Some(&(1, 2)));
+        assert_eq!(progress.get("only-asks"), None);
+        let unfinished = unfinished_sessions_in(home.path(), &sessions);
+        assert_eq!(unfinished.len(), 1, "{unfinished:?}");
+        assert_eq!(unfinished[0].todos.len(), 1);
+        assert_eq!(unfinished[0].todos[0].content, "b");
+        assert_eq!(persisted_todo_title(home.path(), "only-asks"), None);
     }
 
     #[test]

@@ -590,6 +590,13 @@ struct TodoCardItem {
     completion_confidence: Option<jcode_base::todo::ConfidenceState>,
 }
 
+impl TodoCardItem {
+    /// A todo the daemon made for one of the user's messages.
+    fn is_request(&self) -> bool {
+        self.group.as_deref().map(str::trim) == Some(jcode_base::todo::REQUESTS_GROUP)
+    }
+}
+
 fn deserialize_todo_stage<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<u32>, D::Error> {
@@ -5149,12 +5156,12 @@ impl Panel {
                     payload
                         .todos
                         .iter()
-                        .filter(|todo| todo.status == "completed")
+                        .filter(|todo| !todo.is_request() && todo.status == "completed")
                         .count(),
                     payload
                         .todos
                         .iter()
-                        .filter(|todo| todo.status != "cancelled")
+                        .filter(|todo| !todo.is_request() && todo.status != "cancelled")
                         .count(),
                 )
             })
@@ -8683,6 +8690,15 @@ fn todo_goal_gate_segments(goal: &jcode_base::todo::TodoGoal) -> Vec<TodoGateSeg
     segments
 }
 
+/// Card order: the user's requests first, then phases in order, ungrouped last.
+fn todo_group_order_key(stage: Option<u32>, group: Option<&str>) -> (bool, Option<u32>, bool) {
+    (
+        group != Some(jcode_base::todo::REQUESTS_GROUP),
+        stage,
+        group.is_none(),
+    )
+}
+
 fn todo_goal_for_group<'a>(
     goals: &'a [jcode_base::todo::TodoGoal],
     group: Option<&str>,
@@ -8784,11 +8800,17 @@ fn render_todo_card_with_style(
         .map(str::trim)
         .filter(|intention| !intention.is_empty())
         .map(str::to_owned);
-    let total = payload.todos.len();
+    // Requests are the user's asks, not plan progress: they get their own
+    // section but stay out of the plan's completion count.
+    let total = payload
+        .todos
+        .iter()
+        .filter(|todo| !todo.is_request())
+        .count();
     let completed = payload
         .todos
         .iter()
-        .filter(|todo| todo.status == "completed")
+        .filter(|todo| !todo.is_request() && todo.status == "completed")
         .count();
     let progress = if total == 0 {
         0.0
@@ -8813,7 +8835,7 @@ fn render_todo_card_with_style(
             groups.push((stage, group, vec![todo]));
         }
     }
-    groups.sort_by_key(|(stage, group, _)| (*stage, group.is_none()));
+    groups.sort_by_key(|(stage, group, _)| todo_group_order_key(*stage, *group));
 
     let mut body = div()
         .id("todo-card-body-scroll")
@@ -9024,7 +9046,7 @@ fn render_todo_card_with_style(
                                 let active = payload
                                     .todos
                                     .iter()
-                                    .filter(|todo| todo.status != "cancelled")
+                                    .filter(|todo| !todo.is_request() && todo.status != "cancelled")
                                     .count();
                                 format!("{completed}/{active}")
                             }),
@@ -13069,6 +13091,35 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                     assigned_to: None,
                 })
                 .collect(),
+                plan: TodoCardPlan::default(),
+                goals: Vec::new(),
+            }),
+        ];
+    }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("todos-requests") {
+        // The user's requests lead the card; the plan keeps its own phases.
+        let item = |content: &str, status: &str, group: &str, stage: Option<u32>| TodoCardItem {
+            content: content.into(),
+            status: status.into(),
+            group: Some(group.into()),
+            blocked_by: vec![],
+            confidence: None,
+            completion_confidence: None,
+            stage,
+            assigned_to: None,
+        };
+        return vec![
+            Item::User("Fix the build".into()),
+            Item::Assistant("The build is fixed. The quota check is done, and the tests are still running.".into()),
+            Item::Todos(TodoCardPayload {
+                todos: vec![
+                    item("Ask #1: Check the quota", "completed", "requests", None),
+                    item("Ask #2: Run the tests", "in_progress", "requests", None),
+                    item("Ask #3: Fix the build", "completed", "requests", None),
+                    item("Reproduce the failure", "completed", "Build", Some(1)),
+                    item("Patch the linker flags", "completed", "Build", Some(1)),
+                    item("Run the full suite", "in_progress", "Build", Some(2)),
+                ],
                 plan: TodoCardPlan::default(),
                 goals: Vec::new(),
             }),
