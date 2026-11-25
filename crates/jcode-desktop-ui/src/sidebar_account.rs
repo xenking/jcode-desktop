@@ -2,7 +2,7 @@
 //!
 //! It names the signed-in Jcode account (not an AI provider login) with its
 //! plan. Clicking it opens the in-app account menu, or sign-in when signed out.
-use super::jcode_account::{self, JcodeAccount, set_show_email, show_email};
+use super::jcode_account::{JcodeAccount, set_show_email, show_email};
 use super::account_sign_in::account_button;
 use super::*;
 

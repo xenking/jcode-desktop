@@ -1,5 +1,7 @@
 //! The visible local default for Super+Enter, backed by the existing pinned preference.
 use super::*;
+use super::folder_picker::FolderPicker;
+use gpui::DismissEvent;
 
 impl Workspace {
     pub(super) fn open_default_directory_picker(
@@ -131,189 +133,29 @@ impl Workspace {
         self.retarget_camera();
     }
 
-    pub(super) fn default_directory_description(&self, browsing: &Path) -> String {
-        let current = self
-            .pinned_working_dir
-            .clone()
-            .or_else(|| self.default_working_dir())
-            .unwrap_or_else(|| "Not set".into());
-        let scope = match &self.remotes.default_host {
-            Some(host) => format!(
-                "{} currently uses {host}:~. This preference applies to This computer.",
-                spawn_shortcut()
-            ),
-            None => format!("{} opens in {current}", spawn_shortcut()),
-        };
-        format!(
-            "{scope}\nChoose a frequent folder or enter a path. Browsing: {}",
-            browsing.display()
-        )
-    }
-
-    pub(super) fn render_default_directory_button(
-        &self,
+    /// Choosing the default directory shows the picker inline, in its panel.
+    pub(super) fn adopt_default_directory_picker(
+        &mut self,
+        picker: Entity<FolderPicker>,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let path = self
-            .pinned_working_dir
-            .clone()
-            .or_else(|| self.default_working_dir())
-            .unwrap_or_else(|| "Not set".into());
-        let host = self.remotes.default_host.as_deref();
-        let (icon, display, description): (&'static [u8], String, String) = match host {
-            None => (
-                include_bytes!("../../../assets/icons/computer.svg"),
-                compact_path_in(&path, self.default_working_dir()),
-                format!("Local · {path}"),
-            ),
-            Some(host) if remotes::managed_destination(host) => (
-                include_bytes!("../../../assets/icons/machine-cloud.svg"),
-                format!("{} · ~", remotes::machine_label(host)),
-                format!("{} · ~ (remote home)", remotes::machine_label(host)),
-            ),
-            Some(host) => (
-                include_bytes!("../../../assets/icons/ssh.svg"),
-                format!("{host} · ~"),
-                format!("SSH · {host} · ~ (remote home)"),
-            ),
-        };
-        let tooltip = crate::panel::usage::RowsTooltip {
-            title: "New session destination".into(),
-            rows: vec![description, format!("New session: {}", spawn_shortcut())],
-        };
-        div()
-            .id("machines-picker-button")
-            .debug_selector(|| "machines-picker-button".into())
-            .flex_1()
-            .min_w_0()
-            .gap_1()
-            .px_2()
-            .h(px(28.0))
-            .flex()
-            .items_center()
-            .rounded_full()
-            .bg(Theme::global().TOOL_BG)
-            .cursor_pointer()
-            .occlude()
-            .hover(|el| el.bg(Theme::global().ACCENT_DIM))
-            .tooltip(move |_, cx| {
-                cx.new(|_| crate::panel::usage::RowsTooltip {
-                    title: tooltip.title.clone(),
-                    rows: tooltip.rows.clone(),
-                }).into()
-            })
-            .on_click(cx.listener(|this, _, window, cx| {
-                cx.stop_propagation();
-                this.open_machines(window, cx);
-            }))
-            .child(
-                gpui::svg()
-                    .data(icon)
-                    .size(px(14.0))
-                    .flex_none()
-                    .text_color(Theme::global().TEXT_DIM),
-            )
-            .child(
-                div()
-                    .debug_selector(|| "default-directory-button".into())
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .debug_selector(|| "default-directory-path".into())
-                            .flex_1()
-                            .min_w_0()
-                            // Keep the leaf directory readable when the path overflows.
-                            .text_size(px(11.0))
-                            .text_color(Theme::global().ACCENT)
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis_start()
-                            .child(display),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(px(10.0))
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child("⌄"),
-            )
-            .into_any_element()
-    }
-}
-
-pub(super) fn spawn_shortcut() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "Cmd+Enter"
-    } else {
-        "Super+Enter"
-    }
-}
-
-#[cfg(test)]
-pub(super) fn compact_path(path: &str) -> String {
-    compact_path_in(path, default_working_dir())
-}
-
-pub(super) fn compact_path_in(path: &str, default_dir: Option<String>) -> String {
-    if let Some(home) = default_dir {
-        if path == home {
-            return "~ (home)".into();
-        }
-        if let Ok(relative) = Path::new(path).strip_prefix(&home) {
-            return format!("~/{}", relative.display());
-        }
-    }
-    path.into()
-}
-
-/// Rank local session history by use count, then recency, with stable path ties.
-/// The current directory and its children remain available even with no history.
-pub(super) fn ranked_directories(
-    sessions: &[jcode_sdk::SessionInfo],
-    base: &Path,
-    query: &str,
-) -> Vec<(PathBuf, String)> {
-    let mut usage = HashMap::<PathBuf, (usize, usize)>::new();
-    for (recency, session) in sessions.iter().rev().enumerate() {
-        if harness::is_remote_session(&session.session_id) {
-            continue;
-        }
-        let Some(path) = session.working_dir.as_deref().map(PathBuf::from) else {
-            continue;
-        };
-        if path.is_absolute() && path.is_dir() {
-            let entry = usage.entry(path).or_insert((0, recency));
-            entry.0 += 1;
-        }
-    }
-    for path in
-        std::iter::once(base.to_path_buf()).chain(directory_entries(base).unwrap_or_default())
-    {
-        if path.is_absolute() && path.is_dir() {
-            usage.entry(path).or_insert((0, usize::MAX));
-        }
-    }
-    let mut entries: Vec<_> = usage
-        .into_iter()
-        .filter(|(path, _)| path.to_string_lossy().to_lowercase().contains(query))
-        .collect();
-    entries.sort_by(|(a, (ac, ar)), (b, (bc, br))| bc.cmp(ac).then(ar.cmp(br)).then(a.cmp(b)));
-    entries
-        .into_iter()
-        .map(|(path, (count, _))| {
-            (
-                path,
-                match count {
-                    0 => "Set as default".into(),
-                    1 => "1 session · Set as default".into(),
-                    _ => format!("{count} sessions · Set as default"),
-                },
-            )
+    ) {
+        cx.subscribe(&picker, |this, _, _: &DismissEvent, cx| {
+            this.close_default_directory_picker(cx)
         })
-        .collect()
+        .detach();
+        self.default_directory_picker = Some(picker);
+    }
+
+    pub(super) fn close_default_directory_picker(&mut self, cx: &mut Context<Self>) {
+        self.remove_default_directory_panel(cx);
+        self.focus_pending = true;
+        cx.notify();
+    }
+
+    pub(super) fn render_default_directory_picker(&self) -> gpui::AnyElement {
+        match &self.default_directory_picker {
+            Some(picker) => picker.clone().into_any_element(),
+            None => div().into_any_element(),
+        }
+    }
 }

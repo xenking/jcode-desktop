@@ -4,9 +4,62 @@
 //! created. An untouched session can therefore be replaced in place, keeping
 //! its panel, focus and draft. A conversation that already has history keeps
 //! its folder, and the chosen one opens beside it as a new session.
+use super::folder_picker::{Chosen, FolderPicker};
 use super::*;
 
 impl Workspace {
+    /// Open Jcode's own directory browser. This deliberately does not call the
+    /// platform path prompt, so the workflow stays inside the application.
+    /// A session's working directory is fixed by the runtime, so choosing a
+    /// different folder intentionally opens a new session instead of silently
+    /// changing the meaning of an existing transcript.
+    pub(super) fn open_folder(
+        &mut self,
+        _: &OpenFolder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_folder_picker(None, None, window, cx);
+    }
+
+    /// `start` is where browsing begins, and `source` the panel whose folder
+    /// the choice replaces.
+    pub(super) fn show_folder_picker(
+        &mut self,
+        source: Option<gpui::EntityId>,
+        start: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.remove_default_directory_panel(cx);
+        let dir = start.unwrap_or_else(|| {
+            self.default_working_dir()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/"))
+        });
+        let workspace = cx.weak_entity();
+        let picker = cx.new(|cx| FolderPicker::new(workspace, false, dir, source, cx));
+        cx.subscribe(&picker, |this, _, chosen: &Chosen, cx| {
+            this.open_chosen_folder(chosen, cx)
+        })
+        .detach();
+        self.modal_layer
+            .update(cx, |layer, cx| layer.show(picker, window, cx));
+    }
+
+    /// The picker's choice: replace the folder of the panel that asked, or
+    /// open a new session there.
+    fn open_chosen_folder(&mut self, chosen: &Chosen, cx: &mut Context<Self>) {
+        // Enter removes the focused search before the runtime responds.
+        // Restore a mounted target on the next render so navigation keeps
+        // working even if session creation is slow or fails.
+        self.focus_pending = true;
+        if !self.switch_source_directory(chosen.source, &chosen.directory, cx) {
+            self.open_local_draft(Some(chosen.directory.clone()), cx);
+        }
+        cx.notify();
+    }
+
     pub(super) fn switch_directory(
         &mut self,
         request: &SwitchDirectory,

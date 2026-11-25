@@ -15,7 +15,7 @@ const LABELS: [&str; 5] = [
 ];
 
 #[derive(Clone, Default, Debug)]
-pub(super) struct Progress {
+pub(in crate::workspace) struct Progress {
     phase: Option<usize>,
     failed: bool,
     started: Option<Instant>,
@@ -25,7 +25,7 @@ pub(super) struct Progress {
 }
 
 impl Progress {
-    pub(super) fn observe(&mut self, message: &str, failed: bool) {
+    pub(in crate::workspace) fn observe(&mut self, message: &str, failed: bool) {
         self.observe_at(message, failed, Instant::now());
     }
 
@@ -77,7 +77,7 @@ impl Progress {
     }
 
     /// Refresh text once per second, without ever advancing a checklist step.
-    pub(super) fn tick(&mut self) -> bool {
+    pub(in crate::workspace) fn tick(&mut self) -> bool {
         self.tick_at(Instant::now())
     }
 
@@ -123,7 +123,7 @@ impl Progress {
         }
     }
 
-    pub(super) fn render(&self) -> gpui::AnyElement {
+    pub(in crate::workspace) fn render(&self) -> gpui::AnyElement {
         let theme = Theme::global();
         div()
             .debug_selector(|| "cloud-startup-checklist".into())

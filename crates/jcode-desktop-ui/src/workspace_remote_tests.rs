@@ -65,7 +65,7 @@ fn destination_picker_cloud_changes_default_without_spawning(cx: &mut gpui::Test
     workspace.read_with(vcx, |w, _| {
         assert_eq!(
             w.remotes.default_host.as_deref(),
-            Some(remotes::MANAGED_CLOUD_HOST)
+            Some(machines::MANAGED_CLOUD_HOST)
         );
         assert_eq!(w.slots.len(), 2);
     });
@@ -88,7 +88,7 @@ fn destination_picker_cloud_changes_default_without_spawning(cx: &mut gpui::Test
     assert!(matches!(
         commands.try_recv(),
         Ok(Command::CreateRemoteSession { host, working_dir: None, request_id: Some(id) })
-            if host == remotes::MANAGED_CLOUD_HOST && id == next_draft
+            if host == machines::MANAGED_CLOUD_HOST && id == next_draft
     ));
     click(vcx, "default-directory-button");
     assert!(vcx.debug_bounds("machines-picker").is_some());
@@ -393,11 +393,11 @@ fn cloud_new_panel_connects_to_managed_cloud_without_aws(cx: &mut gpui::TestAppC
         assert_eq!(w.slots.len(), 2);
         assert_eq!(
             pending::remote_draft_host(&w.slots[w.active].panel.read(cx).session_id),
-            Some(remotes::MANAGED_CLOUD_HOST)
+            Some(machines::MANAGED_CLOUD_HOST)
         );
         assert_eq!(
             w.remotes.default_host.as_deref(),
-            Some(remotes::MANAGED_CLOUD_HOST)
+            Some(machines::MANAGED_CLOUD_HOST)
         );
     });
     // Exactly one managed creation, correlated with the draft. Never the
@@ -405,7 +405,7 @@ fn cloud_new_panel_connects_to_managed_cloud_without_aws(cx: &mut gpui::TestAppC
     assert!(matches!(
         commands.try_recv(),
         Ok(Command::CreateRemoteSession { host, working_dir: None, request_id: Some(id) })
-            if host == remotes::MANAGED_CLOUD_HOST && id == draft
+            if host == machines::MANAGED_CLOUD_HOST && id == draft
     ));
     assert!(commands.try_recv().is_err());
 }
@@ -1414,7 +1414,7 @@ fn legacy_cloud_snapshot_migrates_to_managed_cloud_without_losing_prompts(
     let (workspace, vcx) = cx.add_window_view(|window, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
         w.bridge = bridge;
-        w.open_remote_draft(remotes::MANAGED_CLOUD_HOST.into(), cx);
+        w.open_remote_draft(machines::MANAGED_CLOUD_HOST.into(), cx);
         w.restore_focus(window, cx);
         w
     });
@@ -1432,8 +1432,8 @@ fn legacy_cloud_snapshot_migrates_to_managed_cloud_without_losing_prompts(
             let bytes = w.snapshot(window, cx).unwrap().encode().unwrap();
             w.apply_snapshot(WorkspaceSnapshot::decode(&bytes).unwrap(), cx);
             let panel = w.slots[0].panel.read(cx);
-            assert_eq!(pending::remote_draft_host(&panel.session_id), Some(remotes::MANAGED_CLOUD_HOST));
-            assert!(panel.status.contains(remotes::MANAGED_CLOUD_STARTING));
+            assert_eq!(pending::remote_draft_host(&panel.session_id), Some(machines::MANAGED_CLOUD_HOST));
+            assert!(panel.status.contains(machines::MANAGED_CLOUD_STARTING));
             assert!(!panel.status.contains("AWS"));
             assert_eq!(panel.title.as_ref(), "Jcode Cloud");
             assert_eq!(panel.input.read(cx).content.as_ref(), "unsent cloud draft");
@@ -1446,7 +1446,7 @@ fn legacy_cloud_snapshot_migrates_to_managed_cloud_without_losing_prompts(
     while let Ok(command) = commands.try_recv() {
         match command {
             Command::CreateRemoteSession { host, .. } => {
-                assert_eq!(host, remotes::MANAGED_CLOUD_HOST);
+                assert_eq!(host, machines::MANAGED_CLOUD_HOST);
                 managed += 1;
             }
             Command::CreateSession { .. } => panic!("migration must not create a local session"),

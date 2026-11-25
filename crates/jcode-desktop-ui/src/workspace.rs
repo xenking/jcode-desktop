@@ -178,6 +178,8 @@ pub(crate) mod panel_cache_tests;
 #[cfg(test)]
 #[path = "workspace_remote_tests.rs"]
 mod remote_tests;
+#[path = "workspace_machines.rs"]
+pub(crate) mod machines;
 #[path = "workspace_remotes.rs"]
 mod remotes;
 #[path = "workspace_scroll_snap.rs"]
@@ -898,7 +900,7 @@ pub struct Workspace {
     sidebar_panel_metadata: Option<Entity<HashMap<gpui::EntityId, SidebarPanelMetadata>>>,
     panel_metadata_observers: HashMap<gpui::EntityId, gpui::Subscription>,
     bridge: Bridge,
-    remotes: remotes::Machines,
+    remotes: machines::Machines,
     host: HostHandle,
     /// Launch-only presentation, independent of persisted workspace preferences.
     single_panel: bool,
@@ -1400,7 +1402,7 @@ impl Workspace {
             sidebar_closed_sessions: HashSet::new(),
             daemon_running: HashMap::new(),
             pinned_working_dir: crate::config::get().workspace.pinned_working_dir.clone(),
-            remotes: remotes::Machines::from_config(),
+            remotes: machines::Machines::from_config(),
             accounts: initial_accounts,
             routing_view: None,
             recent_accounts: Vec::new(),
@@ -1477,7 +1479,7 @@ impl Workspace {
         } else if harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_CLOUD_STARTUP").is_ok()
         {
-            workspace.remotes.default_host = Some(remotes::MANAGED_CLOUD_HOST.into());
+            workspace.remotes.default_host = Some(machines::MANAGED_CLOUD_HOST.into());
             workspace.open_startup_draft(cx);
             workspace.start_default_startup(cx);
             // Offline fixture: show real managed-cloud phases, never contact the service.
@@ -1486,12 +1488,12 @@ impl Workspace {
                 == Ok("failed")
             {
                 &[
-                    remotes::MANAGED_CLOUD_STARTING,
+                    machines::MANAGED_CLOUD_STARTING,
                     "Jcode Cloud requires an active paid Jcode subscription.",
                 ]
             } else {
                 &[
-                    remotes::MANAGED_CLOUD_STARTING,
+                    machines::MANAGED_CLOUD_STARTING,
                     "Creating your Jcode Cloud machine…",
                     "Installing Jcode on your cloud machine…",
                 ]
@@ -2004,7 +2006,7 @@ impl Workspace {
             sidebar_closed_sessions: HashSet::new(),
             daemon_running: HashMap::new(),
             pinned_working_dir: None,
-            remotes: remotes::Machines::default(),
+            remotes: machines::Machines::default(),
             accounts: Vec::new(),
             routing_view: None,
             recent_accounts: Vec::new(),
@@ -2230,7 +2232,7 @@ impl Workspace {
                 let remote_host =
                     pending::remote_draft_host(&panel_state.session_id).map(str::to_owned);
                 if let Some(host) = remote_host {
-                    let host = remotes::new_session_host(&host).to_owned();
+                    let host = machines::new_session_host(&host).to_owned();
                     panel_state.session_id = pending::next_remote_draft_id(&host);
                     self.create_remote_draft_session(host, panel_state.session_id.clone(), cx);
                 } else if !panel_state
@@ -2363,9 +2365,9 @@ impl Workspace {
             {
                 panel.update(cx, |panel, cx| {
                     panel.status = match pending::remote_draft_host(&panel.session_id) {
-                        Some(host) if remotes::managed_destination(host) => {
-                            panel.title = remotes::machine_label(host).to_owned().into();
-                            format!("{} Your queued prompts are preserved.", remotes::MANAGED_CLOUD_STARTING)
+                        Some(host) if machines::managed_destination(host) => {
+                            panel.title = machines::machine_label(host).to_owned().into();
+                            format!("{} Your queued prompts are preserved.", machines::MANAGED_CLOUD_STARTING)
                         }
                         Some(host) => format!("Reconnecting to {host}… Your queued prompts are preserved."),
                         None => "Session creation failed: invalid saved remote destination. No local session was opened.".into(),
@@ -2695,14 +2697,14 @@ impl Workspace {
                 if failed {
                     self.invalidate_cloud_connection(&host);
                 }
-                let label = remotes::machine_label(&host);
-                let key = remotes::new_session_host(&host).to_owned();
+                let label = machines::machine_label(&host);
+                let key = machines::new_session_host(&host).to_owned();
                 // A typed paired failure carries its own one-line sentence. Other
                 // failures show the runtime's message, prefixed by the machine.
                 let (line, notice) = match (&failure, failed) {
                     (Some(failure), true) => {
                         let summary = failure.summary(&label);
-                        let notice = remotes::RowNotice {
+                        let notice = machines::RowNotice {
                             summary: summary.clone(),
                             action: Some(failure.action()),
                             detail: Some(failure.detail.clone()),
@@ -2711,7 +2713,7 @@ impl Workspace {
                     }
                     (None, true) => {
                         let raw = message.strip_prefix("Remote session failed: ").unwrap_or(&message);
-                        let notice = remotes::RowNotice {
+                        let notice = machines::RowNotice {
                             summary: crate::friendly_error::summarize(raw),
                             action: Some(crate::connect_failure::FailureAction::Retry),
                             detail: crate::friendly_error::summary_hides_details(raw)
@@ -10767,7 +10769,7 @@ fn unix_now_ms() -> i64 {
 
 fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String> {
     if let Some(host) = harness::remote_host(&session.session_id) {
-        let host = remotes::machine_label(&host);
+        let host = machines::machine_label(&host);
         return Some(
             match session
                 .working_dir

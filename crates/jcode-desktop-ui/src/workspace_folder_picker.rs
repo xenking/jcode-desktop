@@ -147,16 +147,7 @@ impl FolderPicker {
         }
         let directory = self.dir.to_string_lossy().into_owned();
         let source = self.source.take();
-        let _ = self.workspace.update(cx, |workspace, cx| {
-            // Enter removes the focused search before the runtime responds.
-            // Restore a mounted target on the next render so navigation keeps
-            // working even if session creation is slow or fails.
-            workspace.focus_pending = true;
-            if !workspace.switch_source_directory(source, &directory, cx) {
-                workspace.open_local_draft(Some(directory), cx);
-            }
-            cx.notify();
-        });
+        cx.emit(Chosen { directory, source });
         cx.emit(DismissEvent);
     }
 
@@ -234,7 +225,7 @@ impl FolderPicker {
             .unwrap_or_default();
         let load = cx.background_spawn(async move {
             let candidates = if key.sets_default {
-                default_directory::ranked_directories(&sessions, &key.directory, &key.query)
+                ranked_directories(&sessions, &key.directory, &key.query)
             } else {
                 ranked_folder_matches_for_sessions(&sessions, &key.directory, &key.query)
             };
@@ -253,6 +244,15 @@ impl FolderPicker {
     }
 }
 
+/// The user opened a folder in the picker. The picker only reports the
+/// choice. What opening means belongs to whoever showed it.
+pub(super) struct Chosen {
+    pub(super) directory: String,
+    /// The panel whose folder the choice replaces, when opened from its pill.
+    pub(super) source: Option<gpui::EntityId>,
+}
+
+impl gpui::EventEmitter<Chosen> for FolderPicker {}
 impl gpui::EventEmitter<DismissEvent> for FolderPicker {}
 impl ModalView for FolderPicker {}
 
@@ -270,66 +270,6 @@ impl Workspace {
             .or_else(|| self.active_modal::<FolderPicker>(cx))
     }
 
-    /// Open Jcode's own directory browser. This deliberately does not call the
-    /// platform path prompt, so the workflow stays inside the application.
-    /// A session's working directory is fixed by the runtime, so choosing a
-    /// different folder intentionally opens a new session instead of silently
-    /// changing the meaning of an existing transcript.
-    pub(super) fn open_folder(
-        &mut self,
-        _: &OpenFolder,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.show_folder_picker(None, None, window, cx);
-    }
-
-    /// `start` is where browsing begins, and `source` the panel whose folder
-    /// the choice replaces.
-    pub(super) fn show_folder_picker(
-        &mut self,
-        source: Option<gpui::EntityId>,
-        start: Option<PathBuf>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.remove_default_directory_panel(cx);
-        let dir = start.unwrap_or_else(|| {
-            self.default_working_dir()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/"))
-        });
-        let workspace = cx.weak_entity();
-        let picker = cx.new(|cx| FolderPicker::new(workspace, false, dir, source, cx));
-        self.modal_layer
-            .update(cx, |layer, cx| layer.show(picker, window, cx));
-    }
-
-    /// Choosing the default directory shows the picker inline, in its panel.
-    pub(super) fn adopt_default_directory_picker(
-        &mut self,
-        picker: Entity<FolderPicker>,
-        cx: &mut Context<Self>,
-    ) {
-        cx.subscribe(&picker, |this, _, _: &DismissEvent, cx| {
-            this.close_default_directory_picker(cx)
-        })
-        .detach();
-        self.default_directory_picker = Some(picker);
-    }
-
-    pub(super) fn close_default_directory_picker(&mut self, cx: &mut Context<Self>) {
-        self.remove_default_directory_panel(cx);
-        self.focus_pending = true;
-        cx.notify();
-    }
-
-    pub(super) fn render_default_directory_picker(&self) -> gpui::AnyElement {
-        match &self.default_directory_picker {
-            Some(picker) => picker.clone().into_any_element(),
-            None => div().into_any_element(),
-        }
-    }
 }
 
 impl Render for FolderPicker {
@@ -383,7 +323,7 @@ impl Render for FolderPicker {
         }
         for (index, (path, reason)) in entries.iter().cloned().enumerate() {
             let label = if self.sets_default {
-                default_directory::compact_path_in(&path.to_string_lossy(), home.clone())
+                compact_path_in(&path.to_string_lossy(), home.clone())
             } else {
                 path.strip_prefix(&directory)
                     .ok()
@@ -693,4 +633,97 @@ impl Workspace {
     pub(super) fn picker_source(&self, cx: &App) -> Option<gpui::EntityId> {
         self.folder_picker(cx).and_then(|picker| picker.read(cx).source)
     }
+}
+
+impl Workspace {
+    pub(super) fn default_directory_description(&self, browsing: &Path) -> String {
+        let current = self
+            .pinned_working_dir
+            .clone()
+            .or_else(|| self.default_working_dir())
+            .unwrap_or_else(|| "Not set".into());
+        let scope = match &self.remotes.default_host {
+            Some(host) => format!(
+                "{} currently uses {host}:~. This preference applies to This computer.",
+                spawn_shortcut()
+            ),
+            None => format!("{} opens in {current}", spawn_shortcut()),
+        };
+        format!(
+            "{scope}\nChoose a frequent folder or enter a path. Browsing: {}",
+            browsing.display()
+        )
+    }
+}
+
+pub(super) fn spawn_shortcut() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Cmd+Enter"
+    } else {
+        "Super+Enter"
+    }
+}
+
+#[cfg(test)]
+pub(super) fn compact_path(path: &str) -> String {
+    compact_path_in(path, default_working_dir())
+}
+
+pub(super) fn compact_path_in(path: &str, default_dir: Option<String>) -> String {
+    if let Some(home) = default_dir {
+        if path == home {
+            return "~ (home)".into();
+        }
+        if let Ok(relative) = Path::new(path).strip_prefix(&home) {
+            return format!("~/{}", relative.display());
+        }
+    }
+    path.into()
+}
+
+/// Rank local session history by use count, then recency, with stable path ties.
+/// The current directory and its children remain available even with no history.
+pub(super) fn ranked_directories(
+    sessions: &[jcode_sdk::SessionInfo],
+    base: &Path,
+    query: &str,
+) -> Vec<(PathBuf, String)> {
+    let mut usage = HashMap::<PathBuf, (usize, usize)>::new();
+    for (recency, session) in sessions.iter().rev().enumerate() {
+        if harness::is_remote_session(&session.session_id) {
+            continue;
+        }
+        let Some(path) = session.working_dir.as_deref().map(PathBuf::from) else {
+            continue;
+        };
+        if path.is_absolute() && path.is_dir() {
+            let entry = usage.entry(path).or_insert((0, recency));
+            entry.0 += 1;
+        }
+    }
+    for path in
+        std::iter::once(base.to_path_buf()).chain(directory_entries(base).unwrap_or_default())
+    {
+        if path.is_absolute() && path.is_dir() {
+            usage.entry(path).or_insert((0, usize::MAX));
+        }
+    }
+    let mut entries: Vec<_> = usage
+        .into_iter()
+        .filter(|(path, _)| path.to_string_lossy().to_lowercase().contains(query))
+        .collect();
+    entries.sort_by(|(a, (ac, ar)), (b, (bc, br))| bc.cmp(ac).then(ar.cmp(br)).then(a.cmp(b)));
+    entries
+        .into_iter()
+        .map(|(path, (count, _))| {
+            (
+                path,
+                match count {
+                    0 => "Set as default".into(),
+                    1 => "1 session · Set as default".into(),
+                    _ => format!("{count} sessions · Set as default"),
+                },
+            )
+        })
+        .collect()
 }

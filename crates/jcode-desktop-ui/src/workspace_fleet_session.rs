@@ -34,7 +34,7 @@ fn session_address(target: &HostTarget, native_id: &str, ssh_hosts: &[String]) -
         })
         .map(String::as_str)
         .or(endpoint)?;
-    if remotes::managed_destination(host) {
+    if machines::managed_destination(host) {
         return None;
     }
     let host = crate::remote_targets::validate_host(host).ok()?;

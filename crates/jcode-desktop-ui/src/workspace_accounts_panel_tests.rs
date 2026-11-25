@@ -107,7 +107,7 @@ fn accounts_panel_preview_and_pending_sources_never_contact_runtime(
 #[test]
 fn home_directory_labels_are_explicit_and_children_stay_compact() {
     let home = std::env::var("HOME").expect("test home");
-    for format in [compact_working_dir, default_directory::compact_path] {
+    for format in [compact_working_dir, folder_picker::compact_path] {
         assert_eq!(format(&home), "~ (home)");
         assert_eq!(format(&format!("{home}/project")), "~/project");
         assert_eq!(format(&format!("{home}-other")), format!("{home}-other"));

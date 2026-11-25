@@ -295,7 +295,7 @@ fn destination_directory_change_stays_local_with_cloud_default_without_spawning(
     workspace.read_with(vcx, |w, cx| {
         assert_eq!(
             w.remotes.default_host.as_deref(),
-            Some(remotes::MANAGED_CLOUD_HOST)
+            Some(machines::MANAGED_CLOUD_HOST)
         );
         assert_eq!(w.slots.len(), 3);
         assert!(w.slots[w.active].panel.read(cx).is_machines());
@@ -308,7 +308,7 @@ fn destination_directory_change_stays_local_with_cloud_default_without_spawning(
         assert_eq!(w.pinned_working_dir.as_deref(), selected.path().to_str());
         assert_eq!(
             w.remotes.default_host.as_deref(),
-            Some(remotes::MANAGED_CLOUD_HOST)
+            Some(machines::MANAGED_CLOUD_HOST)
         );
         assert_eq!(w.slots.len(), 3);
         assert!(
@@ -673,7 +673,7 @@ fn default_directories_rank_usage_and_recency_without_remote_or_invalid_paths() 
         directory_session("missing", &base.path().join("missing")),
         directory_session("relative", Path::new("relative")),
     ];
-    let entries = default_directory::ranked_directories(&sessions, base.path(), "");
+    let entries = folder_picker::ranked_directories(&sessions, base.path(), "");
     let paths = entries.iter().map(|(path, _)| path).collect::<Vec<_>>();
     assert_eq!(&paths[..3], &[&frequent, &recent, &older]);
     assert_eq!(entries[0].1, "2 sessions · Set as default");
@@ -686,7 +686,7 @@ fn default_directories_rank_usage_and_recency_without_remote_or_invalid_paths() 
     assert!(paths.contains(&&unused));
     assert!(paths.iter().any(|path| path.as_path() == base.path()));
     assert!(!paths.iter().any(|path| path.as_path() == external.path()));
-    let filtered = default_directory::ranked_directories(&sessions, base.path(), "frequent");
+    let filtered = folder_picker::ranked_directories(&sessions, base.path(), "frequent");
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].0, frequent);
 }

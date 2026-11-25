@@ -1,6 +1,6 @@
 //! The always-visible entry points at the top of the thread list. It sits above
 //! the worktree and collection views because it starts either one.
-use super::sidebar_atoms::{BRANCH_ICON, COLLECTION_ICON, FOLDER_ICON, HIDE_SIDEBAR_ICON, icon};
+use super::sidebar_atoms::{COLLECTION_ICON, FOLDER_ICON, HIDE_SIDEBAR_ICON, icon};
 use super::*;
 use crate::components::Tooltip;
 

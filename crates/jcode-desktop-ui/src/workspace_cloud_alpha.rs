@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-pub(super) const HOST: &str = "jcode-cloud-alpha";
+pub(in crate::workspace) const HOST: &str = "jcode-cloud-alpha";
 const CUTOFF: &str = "Two-hour continuous cutoff, including active work. Monthly exhaustion or idle shutdown can stop it earlier. Save work before shutdown.";
 // Full-policy receipts are bounded proofs, never VM lease renewals.
 // Only read-only background checks may renew the proof while a panel is live.
@@ -444,7 +444,7 @@ impl State {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct Lifecycle {
+pub(in crate::workspace) struct Lifecycle {
     state: Arc<Mutex<State>>,
     // Concurrent new-panel requests retain their individual request IDs, but
     // never race two wake operations against the configured instance.
@@ -695,7 +695,7 @@ fn runtime_identity() -> Option<LocalIdentity> {
 impl Lifecycle {
     /// Called when a cloud transport fails. A concurrent wake may finish, but
     /// cannot publish a cache entry over a newer failure or status invalidation.
-    pub(super) fn invalidate_ready(&self) {
+    pub(in crate::workspace) fn invalidate_ready(&self) {
         self.state.lock().unwrap().invalidate_ready();
     }
 
@@ -753,7 +753,7 @@ impl Lifecycle {
 
     // The UI supplies the current panel set and consumes results before any
     // publication, so a completed network worker cannot revive a closed panel.
-    pub(super) fn refresh_active(&self, panels: Vec<String>) {
+    pub(in crate::workspace) fn refresh_active(&self, panels: Vec<String>) {
         let mut state = self.state.lock().unwrap();
         state.set_active(panels);
         let identity = runtime_identity();
@@ -776,7 +776,7 @@ impl Lifecycle {
     }
 
     #[allow(dead_code)]
-    pub(super) fn connect(&self, bridge: harness::Bridge, request_id: Option<String>) {
+    pub(in crate::workspace) fn connect(&self, bridge: harness::Bridge, request_id: Option<String>) {
         let lifecycle = self.clone();
         let update_request_id = request_id.clone();
         self.state.lock().unwrap().push_update(
@@ -822,11 +822,11 @@ impl Lifecycle {
         });
     }
 
-    pub(super) fn take_updates(&self) -> Vec<(String, bool, Option<String>)> {
+    pub(in crate::workspace) fn take_updates(&self) -> Vec<(String, bool, Option<String>)> {
         self.state.lock().unwrap().take_updates()
     }
 
-    pub(super) fn refresh(&self) {
+    pub(in crate::workspace) fn refresh(&self) {
         let Some(generation) = self.state.lock().unwrap().begin_refresh() else {
             return;
         };
@@ -846,11 +846,11 @@ impl Lifecycle {
 
     /// Kept in the persistent Machines switcher, so active work gets a warning
     /// without opening the management panel. This never requests a stop.
-    pub(super) fn lease_warning(&self) -> Option<String> {
+    pub(in crate::workspace) fn lease_warning(&self) -> Option<String> {
         self.state.lock().unwrap().lease_warning()
     }
 
-    pub(super) fn summary(&self) -> String {
+    pub(in crate::workspace) fn summary(&self) -> String {
         self.state.lock().unwrap().summary()
     }
 }
