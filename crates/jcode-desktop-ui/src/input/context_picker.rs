@@ -482,7 +482,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let first = directory.path().join("first photo.png");
         let second = directory.path().join("second.png");
-        let bytes = include_bytes!("../../../assets/previews/image-preview.png");
+        let bytes = include_bytes!("../../../../assets/previews/image-preview.png");
         for path in [&first, &second] {
             std::fs::write(path, bytes).unwrap();
         }
