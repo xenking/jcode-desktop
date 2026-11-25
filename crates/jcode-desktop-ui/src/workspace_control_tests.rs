@@ -86,7 +86,7 @@ fn state_returns_visible_applet_without_adding_it_to_history(cx: &mut gpui::Test
     });
     vcx.run_until_parked();
     vcx.update(|window, cx| {
-        let response = control::handle_window_request(
+        let response = Workspace::route_window_request(
             &workspace,
             DesktopRequest {
                 v: DESKTOP_CONTROL_VERSION,
@@ -587,9 +587,16 @@ fn desktop_control_pointer_move_can_update_workspace(cx: &mut gpui::TestAppConte
             },
         };
         assert_ne!(window.mouse_position(), position);
+        let mut stale = request(true);
+        stale.v = DESKTOP_CONTROL_VERSION + 1;
+        assert!(matches!(
+            Workspace::route_window_request(&workspace, stale, true, window, cx),
+            DesktopResponse::Error { code, .. } if code == "version"
+        ));
+        assert_ne!(window.mouse_position(), position);
         for (allow_user_window, fixture_enabled) in [(false, true), (true, false)] {
             assert!(matches!(
-                control::handle_window_request(
+                Workspace::route_window_request(
                     &workspace,
                     request(allow_user_window),
                     fixture_enabled,
@@ -601,7 +608,7 @@ fn desktop_control_pointer_move_can_update_workspace(cx: &mut gpui::TestAppConte
         }
         assert_ne!(window.mouse_position(), position);
         assert!(matches!(
-            control::handle_window_request(&workspace, request(true), true, window, cx),
+            Workspace::route_window_request(&workspace, request(true), true, window, cx),
             DesktopResponse::Ok { result } if result["selector"] == selector
         ));
         assert_eq!(window.mouse_position(), position);
@@ -646,7 +653,7 @@ fn isolated_socket_routes_to_workspace(cx: &mut gpui::TestAppContext) {
     });
     let pending = rx.recv_blocking().unwrap();
     let response = vcx.update(|window, cx| {
-        control::handle_window_request(&workspace, pending.request, false, window, cx)
+        Workspace::route_window_request(&workspace, pending.request, false, window, cx)
     });
     pending.reply.send(response).unwrap();
     let result = client.join().unwrap();

@@ -27,9 +27,10 @@ fn window_id(window: &Window) -> String {
 }
 
 #[cfg(unix)]
-pub(super) fn handle_window_request(
-    workspace: &Entity<Workspace>,
+fn handle_window_request(
     request: DesktopRequest,
+    resolve_chat: impl Fn(&DesktopTarget, &Window, &App) -> Result<Entity<Panel>, DesktopResponse>,
+    semantic: impl FnOnce(DesktopRequest, &mut Window, &mut App) -> DesktopResponse,
     fixture_input_enabled: bool,
     window: &mut Window,
     cx: &mut App,
@@ -50,7 +51,7 @@ pub(super) fn handle_window_request(
                 "fixture input requires the isolated control fixture and allow_user_window",
             );
         }
-        let panel = match workspace.read(cx).control_chat(target, window, cx) {
+        let panel = match resolve_chat(target, window, cx) {
             Ok(panel) => panel,
             Err(response) => return response,
         };
@@ -102,7 +103,7 @@ pub(super) fn handle_window_request(
                 "fixture keys require the isolated fixture",
             );
         }
-        let panel = match workspace.read(cx).control_chat(target, window, cx) {
+        let panel = match resolve_chat(target, window, cx) {
             Ok(panel) => panel,
             Err(response) => return response,
         };
@@ -214,12 +215,29 @@ pub(super) fn handle_window_request(
         window.refresh();
         window.draw(cx).clear(cx);
     }
-    workspace.update(cx, |workspace, cx| {
-        workspace.handle_desktop_request(request, window, cx)
-    })
+    semantic(request, window, cx)
 }
 
 impl Workspace {
+    #[cfg(unix)]
+    pub(super) fn route_window_request(
+        workspace: &Entity<Self>,
+        request: DesktopRequest,
+        fixture_input_enabled: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> DesktopResponse {
+        handle_window_request(
+            request,
+            |target, window, cx| workspace.read(cx).control_chat(target, window, cx),
+            |request, window, cx| workspace.update(cx, |workspace, cx| {
+                workspace.handle_desktop_request(request, window, cx)
+            }),
+            fixture_input_enabled,
+            window,
+            cx,
+        )
+    }
     #[cfg(unix)]
     pub(super) fn start_desktop_control(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = window.window_handle().window_id().as_u64();
@@ -252,7 +270,7 @@ impl Workspace {
                     continue;
                 }
                 let Ok(response) = cx.update(|window, cx| {
-                    handle_window_request(
+                    Self::route_window_request(
                         &workspace,
                         pending.request,
                         crate::fixture_control_targets::enabled(),
