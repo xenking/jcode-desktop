@@ -73,7 +73,7 @@ impl Workspace {
         else {
             return;
         };
-        let current = self.slots[index].panel.working_dir(cx).map(str::to_owned);
+        let current = self.slots[index].panel.profile().working_dir(cx).map(str::to_owned);
         self.set_active(index, cx);
         // Start beside the current folder, where sibling repositories live.
         let start = current
@@ -254,7 +254,7 @@ mod tests {
             assert_eq!(original.session_id, "existing");
             assert_eq!(original.working_dir.as_deref(), current.to_str());
             assert_eq!(workspace.active, 1);
-            assert_eq!(workspace.slots[1].panel.working_dir(cx), other.to_str());
+            assert_eq!(workspace.slots[1].panel.profile().working_dir(cx), other.to_str());
         });
     }
 
