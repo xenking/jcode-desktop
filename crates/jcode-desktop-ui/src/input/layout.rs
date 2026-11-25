@@ -1,6 +1,10 @@
 //! Preserve every explicit line returned by GPUI shaping, including empty lines.
 //! Byte offsets include newline separators, while visual rows include soft wraps.
-use gpui::{App, Pixels, Point, Window, WrappedLine, point, px};
+use crate::theme::{Theme, to_hsla};
+use gpui::{
+    App, Bounds, PaintQuad, Pixels, Point, Window, WrappedLine, fill, point, px, size,
+};
+use std::ops::Range;
 
 pub(super) struct PromptLayout {
     lines: Vec<WrappedLine>,
@@ -101,4 +105,47 @@ impl PromptLayout {
         }
         Ok(())
     }
+}
+
+pub(super) fn selection_quads(
+    line: &PromptLayout,
+    range: Range<usize>,
+    bounds: Bounds<Pixels>,
+    line_height: Pixels,
+) -> Vec<PaintQuad> {
+    range_quads(line, range, bounds, line_height, Theme::global().SELECTION)
+}
+
+pub(super) fn range_quads(
+    line: &PromptLayout,
+    range: Range<usize>,
+    bounds: Bounds<Pixels>,
+    line_height: Pixels,
+    color: gpui::Rgba,
+) -> Vec<PaintQuad> {
+    let Some(start) = line.position_for_index(range.start, line_height) else {
+        return Vec::new();
+    };
+    let Some(end) = line.position_for_index(range.end, line_height) else {
+        return Vec::new();
+    };
+    let first_row = (start.y / line_height) as usize;
+    let last_row = (end.y / line_height) as usize;
+    (first_row..=last_row)
+        .map(|row| {
+            let left = if row == first_row { start.x } else { px(0.) };
+            let right = if row == last_row {
+                end.x
+            } else {
+                bounds.size.width
+            };
+            fill(
+                Bounds::new(
+                    point(bounds.left() + left, bounds.top() + line_height * row),
+                    size((right - left).max(px(0.)), line_height),
+                ),
+                to_hsla(color),
+            )
+        })
+        .collect()
 }

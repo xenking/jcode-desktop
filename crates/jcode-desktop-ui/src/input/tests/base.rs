@@ -152,7 +152,7 @@ fn clicking_pasted_text_chip_expands_the_original_text(cx: &mut TestAppContext) 
 fn pasted_file_chip_sends_only_image_and_no_local_path(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("real picture.png");
-    let bytes = include_bytes!("../../../../assets/previews/image-preview.png");
+    let bytes = include_bytes!("../../../../../assets/previews/image-preview.png");
     std::fs::write(&path, bytes).unwrap();
     let sent = std::rc::Rc::new(std::cell::RefCell::new(None));
     let result = sent.clone();
@@ -288,7 +288,7 @@ fn pasted_non_image_files_are_referenced_by_path(cx: &mut TestAppContext) {
 fn pasted_file_and_clipboard_images_keep_their_submission_order(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("real picture.png");
-    let bytes = include_bytes!("../../../../assets/previews/image-preview.png");
+    let bytes = include_bytes!("../../../../../assets/previews/image-preview.png");
     std::fs::write(&path, bytes).unwrap();
     let sent = std::rc::Rc::new(std::cell::RefCell::new(None));
     let result = sent.clone();
@@ -346,7 +346,7 @@ fn image_paste_is_an_inline_chip_at_the_cursor_and_backspace_removes_it(cx: &mut
         input.attach_image(
             crate::clipboard_image::ClipboardImage {
                 media_type: "image/png".into(),
-                bytes: include_bytes!("../../../../assets/previews/image-preview.png").to_vec(),
+                bytes: include_bytes!("../../../../../assets/previews/image-preview.png").to_vec(),
                 width: 640,
                 height: 480,
             },
@@ -387,7 +387,7 @@ fn composer_thumbnail_opens_its_image(cx: &mut TestAppContext) {
         input.attach_image(
             crate::clipboard_image::ClipboardImage {
                 media_type: "image/png".into(),
-                bytes: include_bytes!("../../../../assets/previews/image-preview.png").to_vec(),
+                bytes: include_bytes!("../../../../../assets/previews/image-preview.png").to_vec(),
                 width: 1000,
                 height: 600,
             },
@@ -419,7 +419,7 @@ fn clicking_end_of_composer_chip_opens_preview(cx: &mut TestAppContext) {
         input.attach_image(
             crate::clipboard_image::ClipboardImage {
                 media_type: "image/png".into(),
-                bytes: include_bytes!("../../../../assets/previews/image-preview.png").to_vec(),
+                bytes: include_bytes!("../../../../../assets/previews/image-preview.png").to_vec(),
                 width: 640,
                 height: 480,
             },
@@ -444,7 +444,7 @@ fn image_chip_opens_from_tab_and_escape_returns_to_editor(cx: &mut TestAppContex
         input.attach_image(
             crate::clipboard_image::ClipboardImage {
                 media_type: "image/png".into(),
-                bytes: include_bytes!("../../../../assets/previews/image-preview.png").to_vec(),
+                bytes: include_bytes!("../../../../../assets/previews/image-preview.png").to_vec(),
                 width: 640,
                 height: 480,
             },
@@ -489,7 +489,7 @@ fn composer_image_chip_never_disappears_at_wrap_boundary(cx: &mut TestAppContext
             input.attach_image(
                 crate::clipboard_image::ClipboardImage {
                     media_type: "image/png".into(),
-                    bytes: include_bytes!("../../../../assets/previews/image-preview.png").to_vec(),
+                    bytes: include_bytes!("../../../../../assets/previews/image-preview.png").to_vec(),
                     width: 640,
                     height: 480,
                 },
@@ -512,7 +512,7 @@ fn composer_image_modal_is_bounded_and_dismissible(cx: &mut TestAppContext) {
         input.attach_image(
             crate::clipboard_image::ClipboardImage {
                 media_type: "image/png".into(),
-                bytes: include_bytes!("../../../../assets/previews/image-preview.png").to_vec(),
+                bytes: include_bytes!("../../../../../assets/previews/image-preview.png").to_vec(),
                 width: 1000,
                 height: 600,
             },
@@ -550,7 +550,7 @@ fn image_preview_remove_is_undoable(cx: &mut TestAppContext) {
         input.attach_image(
             crate::clipboard_image::ClipboardImage {
                 media_type: "image/png".into(),
-                bytes: include_bytes!("../../../../assets/previews/image-preview.png").to_vec(),
+                bytes: include_bytes!("../../../../../assets/previews/image-preview.png").to_vec(),
                 width: 640,
                 height: 480,
             },
@@ -589,7 +589,7 @@ fn image_history_never_replays_a_chip_without_its_image(cx: &mut TestAppContext)
         input.attach_image(
             crate::clipboard_image::ClipboardImage {
                 media_type: "image/png".into(),
-                bytes: include_bytes!("../../../../assets/previews/image-preview.png").to_vec(),
+                bytes: include_bytes!("../../../../../assets/previews/image-preview.png").to_vec(),
                 width: 640,
                 height: 480,
             },
@@ -614,7 +614,7 @@ fn image_draft_round_trips_through_history_navigation(cx: &mut TestAppContext) {
         input.attach_image(
             crate::clipboard_image::ClipboardImage {
                 media_type: "image/png".into(),
-                bytes: include_bytes!("../../../../assets/previews/image-preview.png").to_vec(),
+                bytes: include_bytes!("../../../../../assets/previews/image-preview.png").to_vec(),
                 width: 640,
                 height: 480,
             },
@@ -900,7 +900,7 @@ fn arrow_navigation_does_not_split_image_or_file_chips(cx: &mut TestAppContext) 
     cx.update(bind_keys);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test-file.png");
-    let png = include_bytes!("../../../../assets/previews/image-preview.png");
+    let png = include_bytes!("../../../../../assets/previews/image-preview.png");
     std::fs::write(&path, png).unwrap();
     let (input, vcx) = cx.add_window_view(|window, cx| {
         let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});

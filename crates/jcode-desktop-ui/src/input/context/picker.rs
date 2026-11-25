@@ -2,23 +2,6 @@ use super::*;
 use jcode_desktop_model::context_files::FileIndex;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Action {
-    Browse,
-    Attach,
-    File(PathBuf),
-    Skill(String),
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(super) enum DraftContext {
-    File {
-        path: PathBuf,
-        contents: Option<String>,
-    },
-    Skill(String),
-}
-
 impl DraftContext {
     pub(super) fn prompt_text(&self) -> Option<String> {
         match self {
@@ -419,6 +402,125 @@ fn read_file_context(path: &Path) -> std::io::Result<String> {
     Ok(contents)
 }
 
+impl PromptInput {
+    pub(super) fn cursor_at_end(&self) -> bool {
+        self.sel.range.is_empty() && self.sel.cursor() == self.content.len()
+    }
+
+    /// Suggested remainder to paint after the caret.
+    pub(crate) fn ghost_text(&self) -> Option<&str> {
+        if self.sel.marked.is_some() || self.content.trim_start().starts_with('/') {
+            return None;
+        }
+        self.ghost
+            .as_ref()?
+            .machine
+            .visible(&self.content, self.cursor_at_end())
+    }
+
+    /// The draft changed: drop stale work and schedule a debounced request.
+    pub(super) fn ghost_on_edit(&mut self, cx: &mut Context<Self>) {
+        if self.standalone_context() || self.mention_token().is_some() {
+            self.dismiss_ghost();
+            return;
+        }
+        let at_end = self.cursor_at_end();
+        let draft = self.content.to_string();
+        let working_dir = self.working_dir.clone();
+        let Some(ghost) = self.ghost.as_mut() else {
+            return;
+        };
+        ghost.task = None;
+        let Some(generation) = ghost.machine.on_edit(&draft, at_end) else {
+            return;
+        };
+        if ghost.disabled {
+            return;
+        }
+        // GPUI's deterministic scheduler cannot be woken by Tokio's real
+        // network thread. Tests explicitly opt into a fake request counter.
+        #[cfg(test)]
+        if ghost.request_counter.is_none() {
+            return;
+        }
+        let context = (ghost.context)(cx);
+        let settings = crate::config::completions();
+        let debounce = Duration::from_millis(settings.debounce_ms.max(400));
+        let model = settings.model.clone();
+        #[cfg(test)]
+        let request_counter = ghost.request_counter.clone();
+        let project = working_dir.as_deref().and_then(|dir| {
+            std::path::Path::new(dir)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        });
+        let request = crate::prompt_completion::Request {
+            draft,
+            context,
+            cwd: working_dir,
+            project,
+            model,
+        };
+        let cache_key = serde_json::to_string(&request).unwrap_or_default();
+        if let Some((_, completion)) = ghost.cache.iter().find(|(key, _)| key == &cache_key) {
+            if ghost.machine.on_response(generation, completion) {
+                cx.notify();
+            }
+            return;
+        }
+        ghost.task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(debounce).await;
+            #[cfg(test)]
+            if let Some(counter) = request_counter {
+                counter.set(counter.get() + 1);
+                return;
+            }
+            let Some(key) = jcode_base::subscription_catalog::configured_api_key()
+                .map(|key| key.trim().to_owned())
+                .filter(|key| !key.is_empty())
+            else {
+                return;
+            };
+            let base = jcode_base::subscription_api::configured_api_base();
+            let reserved = cx
+                .background_executor()
+                .spawn(async { crate::prompt_completion::reserve_daily_request() })
+                .await;
+            if !reserved {
+                return;
+            }
+            let result = match crate::prompt_completion::fetch(base, key, request) {
+                Ok(mut task) => task.result().await,
+                Err(error) => Err(error),
+            };
+            let _ = this.update(cx, |input, cx| {
+                let Some(ghost) = input.ghost.as_mut() else {
+                    return;
+                };
+                match result {
+                    Ok(completion) => {
+                        if ghost.machine.is_current(generation) {
+                            if ghost.cache.len() >= 32 {
+                                ghost.cache.pop_front();
+                            }
+                            ghost.cache.push_back((cache_key, completion.clone()));
+                        }
+                        if ghost.machine.on_response(generation, &completion) {
+                            cx.notify();
+                        }
+                    }
+                    Err(crate::prompt_completion::FetchError::Unsupported) => {
+                        ghost.disabled = true;
+                    }
+                    Err(crate::prompt_completion::FetchError::Other(error)) => {
+                        eprintln!("jcode desktop: prompt completion failed: {error}");
+                    }
+                }
+            });
+        }));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,7 +584,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let first = directory.path().join("first photo.png");
         let second = directory.path().join("second.png");
-        let bytes = include_bytes!("../../../../assets/previews/image-preview.png");
+        let bytes = include_bytes!("../../../../../assets/previews/image-preview.png");
         for path in [&first, &second] {
             std::fs::write(path, bytes).unwrap();
         }

@@ -52,6 +52,233 @@ fn grid_label(row: &CommandSuggestion) -> &str {
 }
 
 impl PromptInput {
+    /// A picker accepts either its search argument or the full slash command.
+    /// Both the rows and Enter must interpret that text identically.
+    pub(super) fn command_content(&self) -> String {
+        let Some(prefix) = self.picker_prefix else {
+            return self.content.to_string();
+        };
+        let content = self.content.trim_start();
+        let strip = |command: &str| {
+            content
+                .strip_prefix(command)
+                .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        };
+        let query = strip(prefix)
+            .or_else(|| {
+                (prefix == "/model"
+                    && matches!(self.model_stage, model_stage::ModelStage::Efforts { .. }))
+                .then(|| strip("/effort"))
+                .flatten()
+            })
+            .unwrap_or(content);
+        format!("{prefix} {}", query.trim_start())
+    }
+
+    pub(super) fn build_command_suggestions(&self) -> Vec<CommandSuggestion> {
+        if !self.command_completion {
+            return Vec::new();
+        }
+        if let Some(rows) = self.context_rows() {
+            return rows;
+        }
+        let command_content = self.embedded_command_token().map_or_else(
+            || self.command_content(),
+            |(range, cursor)| self.content[range.start..cursor].to_owned(),
+        );
+        if !command_content.starts_with('/') || command_content.contains(['\n', '\r']) {
+            return Vec::new();
+        }
+        let trimmed = command_content.trim_end();
+        let first = trimmed.split_whitespace().next().unwrap_or_default();
+        if first == "/speed" {
+            let query = trimmed.strip_prefix("/speed").unwrap_or_default().trim().to_ascii_lowercase();
+            return self.speed_picker.iter().flat_map(|picker| {
+                picker.options.iter().filter_map(|(tier, detail)| {
+                    let value = crate::speed_icon::command_value(*tier);
+                    value.trim_start_matches("/speed ").contains(&query).then(|| CommandSuggestion {
+                        value,
+                        help: String::new(),
+                        active_choice: *tier == picker.active,
+                        detail: Some(detail.clone()),
+                        header: None,
+                        toggle: None,
+                        context_action: None,
+                        action: None,
+                    })
+                })
+            }).collect();
+        }
+        let now = model_menu::now_unix_secs();
+        if first == "/mode" {
+            let modes = mode_suggestions(
+                trimmed,
+                &self.command_skills,
+                &self.current_modes,
+                &self.mode_catalog,
+            );
+            if !modes.is_empty() || self.picker_prefix.is_some() {
+                return modes;
+            }
+        }
+        let mut suggestions = if first == "/model" {
+            let query = trimmed.strip_prefix("/model").unwrap_or_default();
+            self.model_stage_rows(query)
+        } else {
+            command_suggestions_with_efforts(
+                &command_content,
+                &self.command_models,
+                EffortMenu {
+                    ladder: Some(&self.effort_ladder),
+                    current: self.current_effort.as_deref(),
+                },
+            )
+        };
+        if self.picker_prefix.is_none()
+            && first.len() > 1
+            && first != "/model"
+            && (first != "/effort" || suggestions.is_empty())
+            && (first != trimmed || suggestions.is_empty())
+            && let Some(help) = crate::commands::registered_command(first)
+                .map(|command| command.help.to_owned())
+                .or_else(|| {
+                    self.command_skills.iter().find_map(|(name, help)| {
+                        (first.strip_prefix('/') == Some(name)).then(|| help.clone())
+                    })
+                })
+        {
+            suggestions.insert(
+                0,
+                CommandSuggestion {
+                    value: trimmed.to_owned(),
+                    help,
+                    active_choice: false,
+                    detail: None,
+                    header: None,
+                    toggle: None,
+                    context_action: None,
+                    action: None,
+                },
+            );
+        }
+        if self.picker_prefix.is_none()
+            && trimmed.starts_with('/')
+            && !trimmed.contains(char::is_whitespace)
+        {
+            let query = trimmed.to_ascii_lowercase();
+            for (name, description) in &self.command_skills {
+                let value = format!("/{name}");
+                if value.to_ascii_lowercase().starts_with(&query)
+                    && !suggestions.iter().any(|row| row.value == value)
+                {
+                    suggestions.push(CommandSuggestion {
+                        value,
+                        help: description.clone(),
+                        active_choice: false,
+                        detail: Some(
+                            match (
+                                crate::mode_catalog::is_mode(name, self.mode_catalog.get(name)),
+                                self.current_modes.iter().any(|active| active == name),
+                            ) {
+                                (true, true) => "Active mode",
+                                (true, false) => "Mode",
+                                (false, true) => "Active skill",
+                                (false, false) => "Skill",
+                            }
+                            .into(),
+                        ),
+                        header: None,
+                        toggle: None,
+                        context_action: None,
+                        action: None,
+                    });
+                }
+            }
+            if trimmed != "/model" && trimmed != "/effort" {
+                suggestions.sort_by_key(|row| {
+                    let value = row.value.to_ascii_lowercase();
+                    (value != query, !value.starts_with(&query))
+                });
+            }
+        }
+        suggestions
+            .into_iter()
+            .map(|mut suggestion| {
+                if let Some(model) = suggestion.value.strip_prefix("/model ") {
+                    suggestion.detail = Some(
+                        self.model_details
+                            .get(model)
+                            .map(|details| details.label(now))
+                            .unwrap_or_else(|| model_menu::usage_label(None, now)),
+                    );
+                }
+                suggestion
+            })
+            .collect()
+    }
+
+    pub(super) fn embedded_command_token(&self) -> Option<(Range<usize>, usize)> {
+        if self.picker_prefix.is_some() || self.content.starts_with('/') {
+            return None;
+        }
+        let (start, cursor) =
+            jcode_slash_command::active_token_before_cursor(&self.content, self.sel.cursor())?;
+        if self.content[..start].trim().is_empty() {
+            return None;
+        }
+        let end = self.content[cursor..]
+            .find(char::is_whitespace)
+            .map_or(self.content.len(), |offset| cursor + offset);
+        Some((start..end, cursor))
+    }
+
+    pub(super) fn toggle_model_group(&mut self, key: String, cx: &mut Context<Self>) {
+        if !self.expanded_model_groups.remove(&key) {
+            self.expanded_model_groups.insert(key.clone());
+        }
+        self.suggestions_revision += 1;
+        // Keep focus on the disclosure when rows appear or disappear above it.
+        if let Some(index) = self
+            .command_suggestions()
+            .iter()
+            .position(|row| row.toggle.as_ref() == Some(&key))
+        {
+            self.command_selection = index;
+            self.reveal_command(index);
+        }
+        cx.notify();
+    }
+
+    /// Run what Enter or a click on a picker row means.
+    pub(super) fn run_stage_step(
+        &mut self,
+        step: model_stage::StageStep,
+        queued: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match step {
+            model_stage::StageStep::Goto(stage) => self.go_to_model_stage(stage, cx),
+            model_stage::StageStep::ToggleHidden(spec) => self.toggle_model_hidden(&spec, cx),
+            model_stage::StageStep::Submit(command) => {
+                self.submit_command(command, queued, window, cx)
+            }
+        }
+    }
+
+    pub(super) fn reset_model_groups_after_exit(&mut self) {
+        if self.picker_prefix == Some("/model") {
+            return;
+        }
+        let content = self.content.trim_start();
+        if content.contains('\n') || !(content == "/model" || content.starts_with("/model ")) {
+            self.expanded_model_groups.clear();
+            self.model_stage = Default::default();
+            self.picker_effort = None;
+            self.suggestions_revision += 1;
+        }
+    }
+
     /// Rows for whichever step of the two-step model picker is showing.
     pub(super) fn model_stage_rows(&self, query: &str) -> Vec<CommandSuggestion> {
         match &self.model_stage {
@@ -492,9 +719,9 @@ impl PromptInput {
                 || matches!(
                     row.context_action,
                     Some(
-                        context_picker::Action::File(_)
-                            | context_picker::Action::Browse
-                            | context_picker::Action::Attach
+                        Action::File(_)
+                            | Action::Browse
+                            | Action::Attach
                     )
                 )
         });
@@ -607,10 +834,10 @@ impl PromptInput {
             mode.is_some_and(|name| self.current_modes.iter().any(|active| active == name));
         let mode_icon = mode.map(|name| crate::mode_catalog::icon(name, self.mode_catalog.get(name)))
             .or_else(|| match suggestion.context_action.as_ref()? {
-                context_picker::Action::File(_) => Some(crate::mode_catalog::ModeIcon::Document),
-                context_picker::Action::Browse => Some(crate::mode_catalog::ModeIcon::Search),
-                context_picker::Action::Attach => Some(crate::mode_catalog::ModeIcon::Document),
-                context_picker::Action::Skill(_) => None,
+                Action::File(_) => Some(crate::mode_catalog::ModeIcon::Document),
+                Action::Browse => Some(crate::mode_catalog::ModeIcon::Search),
+                Action::Attach => Some(crate::mode_catalog::ModeIcon::Document),
+                Action::Skill(_) => None,
             });
         let alternate_key = if cfg!(target_os = "macos") {
             "⌥↵"
@@ -618,10 +845,10 @@ impl PromptInput {
             "Alt+Enter"
         };
         let action_hint = match &suggestion.context_action {
-            Some(context_picker::Action::File(_)) if selected && !compact => {
+            Some(Action::File(_)) if selected && !compact => {
                 Some(format!("{alternate_key} Include contents"))
             }
-            Some(context_picker::Action::Skill(name)) if selected && !tiny && name != "off" => {
+            Some(Action::Skill(name)) if selected && !tiny && name != "off" => {
                 let pin = match (active_mode, compact) {
                     (true, _) => "Unpin",
                     (false, true) => "Pin",
