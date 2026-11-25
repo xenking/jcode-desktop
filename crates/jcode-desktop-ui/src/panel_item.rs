@@ -34,17 +34,6 @@ impl PanelItem {
         }
     }
 
-    pub(crate) fn file(&self) -> Option<&Entity<FilePanel>> {
-        match self {
-            Self::File(file) => Some(file),
-            Self::Chat(_) | Self::Terminal(_) | Self::Changelog(_) => None,
-        }
-    }
-
-    pub(crate) fn is_changelog(&self) -> bool {
-        matches!(self, Self::Changelog(_))
-    }
-
     pub(crate) fn read_chat<'a>(&self, cx: &'a App) -> Option<&'a Panel> {
         self.chat().map(|panel| panel.read(cx))
     }
@@ -67,139 +56,12 @@ impl PanelItem {
         }
     }
 
-    pub(crate) fn view(&self) -> AnyView {
-        match self {
-            Self::Chat(panel) => panel.clone().into(),
-            Self::Terminal(terminal) => terminal.clone().into(),
-            Self::File(file) => file.clone().into(),
-            Self::Changelog(changelog) => changelog.clone().into(),
-        }
-    }
-
-    pub(crate) fn title(&self, cx: &App) -> gpui::SharedString {
-        match self {
-            Self::Chat(panel) => panel.read(cx).title.clone(),
-            Self::Terminal(_) => "terminal".into(),
-            Self::File(file) => file.read(cx).title().clone(),
-            Self::Changelog(changelog) => changelog.read(cx).title(),
-        }
-    }
-
     pub(crate) fn session_id<'a>(&self, cx: &'a App) -> &'a str {
         match self {
             Self::Chat(panel) => &panel.read(cx).session_id,
             Self::Terminal(_) => Self::TERMINAL_SESSION_ID,
             Self::File(file) => file.read(cx).session_id(),
             Self::Changelog(_) => ChangelogPanel::SESSION_ID,
-        }
-    }
-
-    pub(crate) fn working_dir<'a>(&self, cx: &'a App) -> Option<&'a str> {
-        match self {
-            Self::Chat(panel) => panel.read(cx).working_dir.as_deref(),
-            Self::Terminal(terminal) => terminal.read(cx).working_dir(),
-            Self::File(file) => file.read(cx).working_dir(),
-            Self::Changelog(_) => None,
-        }
-    }
-
-    pub(crate) fn snapshot(&self, for_reload: bool, cx: &App) -> PanelSnapshot {
-        match self {
-            Self::Chat(panel) if for_reload => panel.read(cx).snapshot_for_reload(cx),
-            Self::Chat(panel) => panel.read(cx).snapshot(cx),
-            Self::Terminal(terminal) => {
-                let terminal = terminal.read(cx);
-                PanelSnapshot {
-                    terminal_resource_id: terminal.resource_id(),
-                    terminal_output_cursor: Some(terminal.output_cursor()),
-                    ..PanelSnapshot::bare(
-                        Self::TERMINAL_SESSION_ID,
-                        "terminal",
-                        terminal.working_dir(),
-                    )
-                }
-            }
-            Self::File(file) => file.read(cx).snapshot(),
-            // Notes are offered again after a reload, so the workspace never saves them.
-            Self::Changelog(_) => {
-                PanelSnapshot::bare(ChangelogPanel::SESSION_ID, ChangelogPanel::TITLE, None)
-            }
-        }
-    }
-
-    /// Where keys typed into this panel go.
-    pub(crate) fn input_focus_handle(&self, cx: &App) -> FocusHandle {
-        match self {
-            Self::Chat(panel) => panel.read(cx).input_focus_handle(cx),
-            Self::Terminal(terminal) => terminal.read(cx).focus_handle(cx),
-            Self::File(file) => file.read(cx).input_focus_handle(cx),
-            Self::Changelog(changelog) => changelog.read(cx).focus_handle(cx),
-        }
-    }
-
-    pub(crate) fn focus_input(&self, window: &mut Window, cx: &mut App) {
-        let handle = self.input_focus_handle(cx);
-        window.focus(&handle, cx);
-    }
-
-    /// Whether `set_surface_focused(focused)` would change anything. Callers
-    /// drawing a frame check this first, since GPUI counts any update made
-    /// while drawing as a change to the views reading it.
-    pub(crate) fn needs_surface_update(&self, focused: bool, cx: &App) -> bool {
-        match self {
-            Self::Chat(panel) => panel.read(cx).needs_surface_update(focused),
-            Self::Terminal(terminal) => terminal.read(cx).surface_focused() != focused,
-            Self::File(file) => file.read(cx).surface_focused() != focused,
-            Self::Changelog(changelog) => changelog.read(cx).surface_focused() != focused,
-        }
-    }
-
-    pub(crate) fn set_surface_focused(&self, focused: bool, cx: &mut App) {
-        match self {
-            Self::Chat(panel) => {
-                panel.update(cx, |panel, cx| panel.set_surface_focused(focused, cx));
-            }
-            Self::Terminal(terminal) => {
-                terminal.update(cx, |terminal, cx| terminal.set_surface_focused(focused, cx));
-            }
-            Self::File(file) => {
-                file.update(cx, |file, cx| file.set_surface_focused(focused, cx));
-            }
-            Self::Changelog(changelog) => {
-                changelog.update(cx, |changelog, cx| changelog.set_surface_focused(focused, cx));
-            }
-        }
-    }
-
-    /// Whether a vertical scroll over this panel belongs to it rather than
-    /// moving between strips.
-    pub(crate) fn has_scrollable_conversation(&self, cx: &App) -> bool {
-        match self {
-            Self::Chat(panel) => panel.read(cx).has_scrollable_conversation(),
-            Self::Terminal(_) | Self::File(_) | Self::Changelog(_) => true,
-        }
-    }
-
-    /// Whether closing may proceed. A file with unsaved edits asks first.
-    pub(crate) fn confirm_close(&self, cx: &mut App) -> bool {
-        match self {
-            Self::Chat(_) | Self::Terminal(_) | Self::Changelog(_) => true,
-            Self::File(file) => file.update(cx, |file, cx| file.confirm_close(cx)),
-        }
-    }
-
-    /// Opt-in workspace diagnostics for real-PTY terminal acceptance checks.
-    pub(crate) fn terminal_debug_snapshot(&self, cx: &App) -> Option<serde_json::Value> {
-        match self {
-            Self::Chat(_) | Self::File(_) | Self::Changelog(_) => None,
-            Self::Terminal(terminal) => Some(terminal.read(cx).debug_snapshot()),
-        }
-    }
-
-    pub(crate) fn terminal(&self) -> Option<&Entity<TerminalPanel>> {
-        match self {
-            Self::Chat(_) | Self::File(_) | Self::Changelog(_) => None,
-            Self::Terminal(terminal) => Some(terminal),
         }
     }
 
@@ -234,6 +96,164 @@ impl PanelItem {
         update: impl FnOnce(&mut Panel, &mut gpui::Context<Panel>) -> R,
     ) -> R {
         self.expect_chat().update(cx, update)
+    }
+
+    /// Focus, surface state and the view to mount.
+    pub(crate) fn surface(&self) -> Surface<'_> {
+        Surface(self)
+    }
+
+    /// What the item is: its kind, title, directory and the snapshot a reload keeps.
+    pub(crate) fn profile(&self) -> Profile<'_> {
+        Profile(self)
+    }
+}
+
+/// Focus and surface state of one item.
+pub(crate) struct Surface<'a>(&'a PanelItem);
+
+impl Surface<'_> {
+    /// Where keys typed into this panel go.
+    pub(crate) fn input_focus_handle(&self, cx: &App) -> FocusHandle {
+        match self.0 {
+            PanelItem::Chat(panel) => panel.read(cx).input_focus_handle(cx),
+            PanelItem::Terminal(terminal) => terminal.read(cx).focus_handle(cx),
+            PanelItem::File(file) => file.read(cx).input_focus_handle(cx),
+            PanelItem::Changelog(changelog) => changelog.read(cx).focus_handle(cx),
+        }
+    }
+
+    pub(crate) fn focus_input(&self, window: &mut Window, cx: &mut App) {
+        let handle = self.input_focus_handle(cx);
+        window.focus(&handle, cx);
+    }
+
+    /// Whether `set_surface_focused(focused)` would change anything. Callers
+    /// drawing a frame check this first, since GPUI counts any update made
+    /// while drawing as a change to the views reading it.
+    pub(crate) fn needs_update(&self, focused: bool, cx: &App) -> bool {
+        match self.0 {
+            PanelItem::Chat(panel) => panel.read(cx).needs_surface_update(focused),
+            PanelItem::Terminal(terminal) => terminal.read(cx).surface_focused() != focused,
+            PanelItem::File(file) => file.read(cx).surface_focused() != focused,
+            PanelItem::Changelog(changelog) => changelog.read(cx).surface_focused() != focused,
+        }
+    }
+
+    pub(crate) fn set_focused(&self, focused: bool, cx: &mut App) {
+        match self.0 {
+            PanelItem::Chat(panel) => {
+                panel.update(cx, |panel, cx| panel.set_surface_focused(focused, cx));
+            }
+            PanelItem::Terminal(terminal) => {
+                terminal.update(cx, |terminal, cx| terminal.set_surface_focused(focused, cx));
+            }
+            PanelItem::File(file) => {
+                file.update(cx, |file, cx| file.set_surface_focused(focused, cx));
+            }
+            PanelItem::Changelog(changelog) => {
+                changelog.update(cx, |changelog, cx| changelog.set_surface_focused(focused, cx));
+            }
+        }
+    }
+
+    /// Whether a vertical scroll over this panel belongs to it rather than
+    /// moving between strips.
+    pub(crate) fn scrollable(&self, cx: &App) -> bool {
+        match self.0 {
+            PanelItem::Chat(panel) => panel.read(cx).has_scrollable_conversation(),
+            PanelItem::Terminal(_) | PanelItem::File(_) | PanelItem::Changelog(_) => true,
+        }
+    }
+
+    /// Whether closing may proceed. A file with unsaved edits asks first.
+    pub(crate) fn confirm_close(&self, cx: &mut App) -> bool {
+        match self.0 {
+            PanelItem::Chat(_) | PanelItem::Terminal(_) | PanelItem::Changelog(_) => true,
+            PanelItem::File(file) => file.update(cx, |file, cx| file.confirm_close(cx)),
+        }
+    }
+
+    pub(crate) fn view(&self) -> AnyView {
+        match self.0 {
+            PanelItem::Chat(panel) => panel.clone().into(),
+            PanelItem::Terminal(terminal) => terminal.clone().into(),
+            PanelItem::File(file) => file.clone().into(),
+            PanelItem::Changelog(changelog) => changelog.clone().into(),
+        }
+    }
+}
+
+/// What one item is.
+pub(crate) struct Profile<'a>(&'a PanelItem);
+
+impl Profile<'_> {
+    pub(crate) fn is_changelog(&self) -> bool {
+        matches!(self.0, PanelItem::Changelog(_))
+    }
+
+    pub(crate) fn file(&self) -> Option<&Entity<FilePanel>> {
+        match self.0 {
+            PanelItem::File(file) => Some(file),
+            PanelItem::Chat(_) | PanelItem::Terminal(_) | PanelItem::Changelog(_) => None,
+        }
+    }
+
+    pub(crate) fn terminal(&self) -> Option<&Entity<TerminalPanel>> {
+        match self.0 {
+            PanelItem::Chat(_) | PanelItem::File(_) | PanelItem::Changelog(_) => None,
+            PanelItem::Terminal(terminal) => Some(terminal),
+        }
+    }
+
+    pub(crate) fn title(&self, cx: &App) -> gpui::SharedString {
+        match self.0 {
+            PanelItem::Chat(panel) => panel.read(cx).title.clone(),
+            PanelItem::Terminal(_) => "terminal".into(),
+            PanelItem::File(file) => file.read(cx).title().clone(),
+            PanelItem::Changelog(changelog) => changelog.read(cx).title(),
+        }
+    }
+
+    pub(crate) fn working_dir<'a>(&self, cx: &'a App) -> Option<&'a str> {
+        match self.0 {
+            PanelItem::Chat(panel) => panel.read(cx).working_dir.as_deref(),
+            PanelItem::Terminal(terminal) => terminal.read(cx).working_dir(),
+            PanelItem::File(file) => file.read(cx).working_dir(),
+            PanelItem::Changelog(_) => None,
+        }
+    }
+
+    /// Opt-in workspace diagnostics for real-PTY terminal acceptance checks.
+    pub(crate) fn terminal_debug(&self, cx: &App) -> Option<serde_json::Value> {
+        match self.0 {
+            PanelItem::Chat(_) | PanelItem::File(_) | PanelItem::Changelog(_) => None,
+            PanelItem::Terminal(terminal) => Some(terminal.read(cx).debug_snapshot()),
+        }
+    }
+
+    pub(crate) fn snapshot(&self, for_reload: bool, cx: &App) -> PanelSnapshot {
+        match self.0 {
+            PanelItem::Chat(panel) if for_reload => panel.read(cx).snapshot_for_reload(cx),
+            PanelItem::Chat(panel) => panel.read(cx).snapshot(cx),
+            PanelItem::Terminal(terminal) => {
+                let terminal = terminal.read(cx);
+                PanelSnapshot {
+                    terminal_resource_id: terminal.resource_id(),
+                    terminal_output_cursor: Some(terminal.output_cursor()),
+                    ..PanelSnapshot::bare(
+                        PanelItem::TERMINAL_SESSION_ID,
+                        "terminal",
+                        terminal.working_dir(),
+                    )
+                }
+            }
+            PanelItem::File(file) => file.read(cx).snapshot(),
+            // Notes are offered again after a reload, so the workspace never saves them.
+            PanelItem::Changelog(_) => {
+                PanelSnapshot::bare(ChangelogPanel::SESSION_ID, ChangelogPanel::TITLE, None)
+            }
+        }
     }
 }
 
