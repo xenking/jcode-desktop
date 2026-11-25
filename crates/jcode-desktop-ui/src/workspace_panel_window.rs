@@ -67,7 +67,38 @@ pub(crate) fn open_panel_window_at(
     activate: bool,
     cx: &mut App,
 ) -> anyhow::Result<Entity<Panel>> {
-    let session_id = panel.read(cx).session_id.clone();
+    open_item_window(PanelItem::Chat(panel), source, origin, activate, cx)?
+        .chat()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("the window for this session hosts another kind"))
+}
+
+/// Open a file in its own native window, or activate the window already showing it.
+pub(crate) fn open_file_window(
+    file: Entity<FilePanel>,
+    source_window: &mut Window,
+    cx: &mut App,
+) -> anyhow::Result<Entity<FilePanel>> {
+    open_item_window(
+        PanelItem::File(file),
+        None,
+        source_window.window_handle(),
+        true,
+        cx,
+    )?
+    .file()
+    .cloned()
+    .ok_or_else(|| anyhow::anyhow!("the window for this file hosts another kind"))
+}
+
+fn open_item_window(
+    item: PanelItem,
+    source: Option<Entity<Panel>>,
+    origin: AnyWindowHandle,
+    activate: bool,
+    cx: &mut App,
+) -> anyhow::Result<PanelItem> {
+    let session_id = item.session_id(cx).to_owned();
     let source_session = source
         .as_ref()
         .map(|source| source.read(cx).session_id.clone());
@@ -76,8 +107,7 @@ pub(crate) fn open_panel_window_at(
             continue;
         };
         let Some(existing) = handle.read(cx).ok().and_then(|root| {
-            let chat = root.chat()?;
-            (!root.finished && chat.read(cx).session_id == session_id).then(|| chat.clone())
+            (!root.finished && root.item.session_id(cx) == session_id).then(|| root.item.clone())
         }) else {
             continue;
         };
@@ -92,7 +122,7 @@ pub(crate) fn open_panel_window_at(
             existing
         });
     }
-    let hosted = panel.clone();
+    let hosted = item.clone();
     cx.open_window(
         WindowOptions {
             app_id: Some(crate::APP_ID.into()),
@@ -100,35 +130,37 @@ pub(crate) fn open_panel_window_at(
             ..Default::default()
         },
         move |window, cx| {
-            window.set_window_title(&format!("{} · Jcode", panel.read(cx).title));
+            window.set_window_title(&format!("{} · Jcode", item.title(cx)));
             if activate {
                 window.activate_window();
             }
             cx.new(|cx| {
-                cx.subscribe_in(
-                    &panel,
-                    window,
-                    |this: &mut PanelWindow,
-                     _,
-                     _: &crate::panel::AccountsPanelClosed,
-                     window,
-                     cx| {
-                        this.close(false, window, cx);
-                    },
-                )
-                .detach();
-                cx.subscribe_in(
-                    &panel,
-                    window,
-                    |this: &mut PanelWindow,
-                     _,
-                     _: &crate::panel::AccountsPanelChooseModel,
-                     window,
-                     cx| {
-                        this.close(true, window, cx);
-                    },
-                )
-                .detach();
+                if let Some(panel) = item.chat() {
+                    cx.subscribe_in(
+                        panel,
+                        window,
+                        |this: &mut PanelWindow,
+                         _,
+                         _: &crate::panel::AccountsPanelClosed,
+                         window,
+                         cx| {
+                            this.close(false, window, cx);
+                        },
+                    )
+                    .detach();
+                    cx.subscribe_in(
+                        panel,
+                        window,
+                        |this: &mut PanelWindow,
+                         _,
+                         _: &crate::panel::AccountsPanelChooseModel,
+                         window,
+                         cx| {
+                            this.close(true, window, cx);
+                        },
+                    )
+                    .detach();
+                }
                 let weak = cx.entity().downgrade();
                 window.on_window_should_close(cx, move |_, cx| {
                     weak.update(cx, |this, cx| {
@@ -140,9 +172,9 @@ pub(crate) fn open_panel_window_at(
                     })
                     .unwrap_or(true)
                 });
-                panel.update(cx, |panel, cx| panel.focus_input(window, cx));
+                item.focus_input(window, cx);
                 PanelWindow::new(
-                    PanelItem::Chat(panel),
+                    item,
                     source.as_ref().map(Entity::downgrade),
                     source_session,
                     origin,
@@ -177,9 +209,7 @@ impl PanelWindow {
 
     /// Unsaved edits may veto the close. Other kinds never do.
     fn confirm_close(&self, cx: &mut App) -> bool {
-        self.item
-            .update_chat(cx, |panel, cx| panel.confirm_file_close(cx))
-            .unwrap_or(true)
+        self.item.confirm_close(cx)
     }
 
     /// An agent deletion must not activate the source of a background document.
@@ -262,8 +292,8 @@ impl Render for PanelWindow {
                 panel.set_openrig_width(width, cx);
             }
         });
-        // A terminal owns Escape, so only conversation-shaped windows dismiss on it.
-        let dismissible = self.item.chat().is_some();
+        // A terminal owns Escape and its own close, so it never dismisses here.
+        let dismissible = self.item.terminal().is_none();
         div()
             .debug_selector(|| "panel-window-root".into())
             .size_full()
@@ -297,7 +327,7 @@ impl Render for PanelWindow {
                 },
             ))
             .on_action(cx.listener(|this, _: &ClosePanel, window, cx| {
-                if this.item.chat().is_none() {
+                if this.item.terminal().is_some() {
                     cx.propagate();
                     return;
                 }
@@ -305,20 +335,16 @@ impl Render for PanelWindow {
                 cx.stop_propagation();
             }))
             .on_action(cx.listener(
-                |this, action: &crate::ui_actions::OpenDocumentFile, window, cx| {
+                |_, action: &crate::ui_actions::OpenDocumentFile, window, cx| {
                     let path = action
                         .path
                         .canonicalize()
                         .unwrap_or_else(|_| action.path.clone());
-                    let Some(bridge) = this.item.read_chat(cx).map(Panel::bridge_for_file) else {
-                        cx.propagate();
-                        return;
-                    };
-                    let panel = cx.new(|cx| Panel::new_code_file(path, bridge, cx));
-                    match open_panel_window(panel, None, window, cx) {
-                        Ok(panel) => {
+                    let file = cx.new(|cx| FilePanel::new(path, cx));
+                    match open_file_window(file, window, cx) {
+                        Ok(file) => {
                             if let Some(fragment) = &action.fragment {
-                                panel.update(cx, |panel, cx| panel.show_file_heading(fragment, cx));
+                                file.update(cx, |file, cx| file.show_heading(fragment, cx));
                             }
                         }
                         Err(error) => eprintln!("Could not open panel window: {error:#}"),
@@ -347,12 +373,12 @@ mod tests {
         let path = dir.path().join("example.rs");
         std::fs::write(&path, "fn main() {}\n").unwrap();
         let (window_view, vcx) = cx.add_window_view(|window, cx| {
-            let panel = cx.new(|cx| Panel::new_code_file(path, crate::harness::spawn_inert(), cx));
-            PanelWindow::new(PanelItem::Chat(panel), None, None, window.window_handle())
+            let file = cx.new(|cx| FilePanel::new(path, cx));
+            PanelWindow::new(PanelItem::File(file), None, None, window.window_handle())
         });
         vcx.run_until_parked();
-        let panel = window_view.read_with(vcx, |view, _| view.chat().unwrap().clone());
-        vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.focus_input(window, cx)));
+        let item = window_view.read_with(vcx, |view, _| view.item.clone());
+        vcx.update(|window, cx| item.focus_input(window, cx));
         vcx.simulate_keystrokes("escape");
         assert!(window_view.read_with(vcx, |view, _| view.finished));
     }
@@ -376,6 +402,30 @@ mod tests {
                 assert_eq!(root.window_background, Some(Theme::window_background()));
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn opening_a_file_twice_reuses_its_window(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let (_, vcx) = cx.add_window_view(|_, _| gpui::Empty);
+        let (first, second) = vcx.update(|window, cx| {
+            let open = |window: &mut Window, cx: &mut App| {
+                let file = cx.new(|cx| FilePanel::new(path.clone(), cx));
+                open_file_window(file, window, cx).unwrap()
+            };
+            (open(window, cx), open(window, cx))
+        });
+        vcx.run_until_parked();
+        assert_eq!(first, second);
+        vcx.update(|_, cx| {
+            assert_eq!(cx.windows().len(), 2);
+            assert_eq!(
+                first.read(cx).session_id(),
+                format!("file://{}", path.display())
+            );
+        });
     }
 
     #[gpui::test]

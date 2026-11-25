@@ -1,6 +1,7 @@
 use super::*;
 use crate::applet_runtime::{AgentOutbound, agent_instance_id};
 use serde_json::json;
+use std::rc::Rc;
 
 fn snapshot(revision: u64, note: &str) -> jcode_applet_types::AgentApplets {
     let state = if revision <= 2 {

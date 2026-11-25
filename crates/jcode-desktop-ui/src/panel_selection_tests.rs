@@ -399,7 +399,7 @@ fn code_file_selection_copies_multiple_lines_without_gutter(cx: &mut gpui::TestA
     cx.update(crate::input::bind_keys);
     cx.update(crate::code_editor::bind_keys);
     let (_, vcx) = cx.add_window_view(|_, cx| {
-        Panel::new_code_file(path.clone(), crate::harness::spawn_inert(), cx)
+        crate::panel_item::file_panel::FilePanel::new(path.clone(), cx)
     });
     vcx.run_until_parked();
     let editor = vcx.debug_bounds("code-editor-text").unwrap();

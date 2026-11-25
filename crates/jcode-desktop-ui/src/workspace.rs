@@ -121,6 +121,7 @@ use crate::learning;
 use crate::modal_layer::{HiddenWithoutFocus, ModalLayer, ModalView};
 use crate::panel::{Panel, PanelSnapshot};
 use crate::panel_item::PanelItem;
+use crate::panel_item::file_panel::FilePanel;
 use crate::performance::{
     ActionCapture, GpuiSnapshot as GpuiPerformanceSnapshot, Health as PerformanceHealth,
     Profile as PerformanceProfile,
@@ -1677,10 +1678,8 @@ impl Workspace {
                 workspace.seed_tab_status_fixture(cx);
             }
             if let Some(path) = std::env::var_os("JCODE_DESKTOP_SCREENSHOT_MARKDOWN_FILE") {
-                let panel = cx.new(|cx| {
-                    Panel::new_code_file(PathBuf::from(path), workspace.bridge.clone(), cx)
-                });
-                workspace.slots[workspace.active].panel = PanelItem::Chat(panel);
+                let file = cx.new(|cx| FilePanel::new(PathBuf::from(path), cx));
+                workspace.slots[workspace.active].panel = PanelItem::File(file);
             }
             workspace.focus_pending = true;
             if workspace_stream_fixture::enabled() {
@@ -2203,6 +2202,17 @@ impl Workspace {
                 ));
                 continue;
             }
+            if let Some(path) = panel_state.session_id.strip_prefix("file://") {
+                let file = cx.new(|cx| FilePanel::new(PathBuf::from(path), cx));
+                *restored_index.last_mut().expect("pushed for this slot") = Some(self.slots.len());
+                self.slots.push(restored_slot(
+                    PanelItem::File(file),
+                    saved.row,
+                    saved.width_fraction,
+                    saved.restore_fraction,
+                ));
+                continue;
+            }
             let panel = if panel_state.session_id == "unfinished-work" {
                 let workspace = cx.weak_entity();
                 cx.new(|cx| {
@@ -2224,9 +2234,6 @@ impl Workspace {
                     Panel::side_document_from_snapshot(&panel_state, self.bridge.clone(), cx)
                         .expect("checked side document snapshot")
                 })
-            } else if let Some(path) = panel_state.session_id.strip_prefix("file://") {
-                let path = PathBuf::from(path);
-                cx.new(|cx| Panel::new_code_file(path, self.bridge.clone(), cx))
             } else if let Some(instance) = panel_state
                 .session_id
                 .strip_prefix(crate::panel::applet_panel::APPLET_PREFIX)
@@ -4611,19 +4618,19 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let show_heading = |panel: &Entity<Panel>, cx: &mut App| {
+        let show_heading = |file: &Entity<FilePanel>, cx: &mut App| {
             if let Some(fragment) = &fragment {
-                panel.update(cx, |panel, cx| panel.show_file_heading(fragment, cx));
+                file.update(cx, |file, cx| file.show_heading(fragment, cx));
             }
         };
-        let session_id = format!("file://{}", path.display());
+        let session_id = FilePanel::session_id_for(&path);
         if let Some(index) = self
             .slots
             .iter()
             .position(|slot| slot.panel.session_id(cx) == session_id)
         {
-            if let Some(panel) = self.slots[index].panel.chat() {
-                show_heading(panel, cx);
+            if let Some(file) = self.slots[index].panel.file() {
+                show_heading(file, cx);
             }
             self.set_active(index, cx);
             self.focus_active(window, cx);
@@ -4631,15 +4638,15 @@ impl Workspace {
         }
 
         let width_fraction = spawned_panel_width(self.slots.len());
-        let panel = cx.new(|cx| Panel::new_code_file(path, self.bridge.clone(), cx));
+        let file = cx.new(|cx| FilePanel::new(path, cx));
         if self.single_panel {
-            match panel_window::open_panel_window(panel, None, window, cx) {
-                Ok(panel) => show_heading(&panel, cx),
+            match panel_window::open_file_window(file, window, cx) {
+                Ok(file) => show_heading(&file, cx),
                 Err(error) => eprintln!("Could not open panel window: {error:#}"),
             }
             return;
         }
-        show_heading(&panel, cx);
+        show_heading(&file, cx);
         let insert_at = if self.slots.is_empty() {
             0
         } else {
@@ -4648,7 +4655,7 @@ impl Workspace {
         self.slots.insert(
             insert_at,
             Slot {
-                panel: PanelItem::Chat(panel),
+                panel: PanelItem::File(file),
                 row: self.active_row,
                 width_fraction,
                 animated_width: AnimatedValue::new(
@@ -4926,7 +4933,7 @@ impl Workspace {
 
     fn close_panel(&mut self, _: &ClosePanel, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(slot) = self.slots.get(self.active).filter(|slot| !slot.closing)
-            && slot.panel.update_chat(cx, |panel, cx| panel.confirm_file_close(cx)) == Some(false)
+            && !slot.panel.confirm_close(cx)
         {
             cx.stop_propagation();
             return;
@@ -13125,8 +13132,7 @@ mod tests {
             assert!(
                 workspace.slots[1]
                     .panel
-                    .read(cx)
-                    .session_id
+                    .session_id(cx)
                     .ends_with("/main.rs")
             );
         });

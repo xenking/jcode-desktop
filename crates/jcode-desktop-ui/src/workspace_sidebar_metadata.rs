@@ -1,6 +1,7 @@
 //! Workspace chrome observes a projection of each panel, not its transcript.
 //! Streaming text and transcript scrolling do not replace stable chrome metadata.
 use super::*;
+use crate::panel_item::file_panel::FilePanel;
 use crate::terminal::TerminalPanel;
 use gpui::Focusable;
 
@@ -102,10 +103,37 @@ impl SidebarPanelMetadata {
         }
     }
 
+    fn from_file(file: &FilePanel, cx: &App) -> Self {
+        let input = file.input_focus_handle(cx);
+        Self {
+            session_id: file.session_id().into(),
+            title: file.title().clone(),
+            working_dir: file.working_dir().map(str::to_owned),
+            status: "idle".into(),
+            overview_preview: String::new(),
+            listable: true,
+            voice: false,
+            activity: None,
+            todos: None,
+            minimap_state: crate::panel::MinimapSessionState::Idle,
+            tab_ring: None,
+            tab_outline: None,
+            keyboard_focus: [None, Some(input), None, Some(file.selection_focus_handle(cx))],
+            panel_focus: file.panel_focus_handle().clone(),
+            surface_focused: file.surface_focused(),
+            finished_unseen: false,
+            openrig: false,
+            terminal: false,
+            pending: false,
+            can_rename: false,
+        }
+    }
+
     fn from_item(item: &PanelItem, cx: &App) -> Self {
         match item {
             PanelItem::Chat(panel) => Self::from_panel(panel.read(cx), cx),
             PanelItem::Terminal(terminal) => Self::from_terminal(terminal.read(cx), cx),
+            PanelItem::File(file) => Self::from_file(file.read(cx), cx),
         }
     }
 
@@ -114,6 +142,12 @@ impl SidebarPanelMetadata {
             PanelItem::Chat(panel) => self.matches_panel(panel.read(cx), cx),
             PanelItem::Terminal(terminal) => {
                 self.surface_focused == terminal.read(cx).surface_focused()
+            }
+            PanelItem::File(file) => {
+                let file = file.read(cx);
+                self.surface_focused == file.surface_focused()
+                    && self.title == *file.title()
+                    && self.keyboard_focus[1].as_ref() == Some(&file.input_focus_handle(cx))
             }
         }
     }
@@ -206,6 +240,9 @@ impl Workspace {
                 }),
                 PanelItem::Terminal(terminal) => App::observe(cx, terminal, move |terminal, cx| {
                     refresh(PanelItem::Terminal(terminal), cx);
+                }),
+                PanelItem::File(file) => App::observe(cx, file, move |file, cx| {
+                    refresh(PanelItem::File(file), cx);
                 }),
             };
             self.panel_metadata_observers.insert(id, observer);
