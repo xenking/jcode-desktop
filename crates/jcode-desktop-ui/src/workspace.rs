@@ -12,6 +12,10 @@ mod control_tests;
 #[path = "workspace_file_editor_tests.rs"]
 mod file_editor_tests;
 
+#[cfg(test)]
+#[path = "workspace_terminal_tests.rs"]
+mod terminal_tests;
+
 #[path = "workspace_control.rs"]
 mod control;
 

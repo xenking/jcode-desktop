@@ -7178,6 +7178,11 @@ impl Panel {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_terminal(&self) -> Option<Entity<TerminalPanel>> {
+        self.terminal.clone()
+    }
+
+    #[cfg(test)]
     pub fn test_terminal_contents(&self, cx: &App) -> Option<String> {
         self.terminal
             .as_ref()
