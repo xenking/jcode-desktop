@@ -1,6 +1,6 @@
 //! A section menu for the top-left navigation, not the live sessions.
 use super::*;
-use crate::components::{Pill, Tooltip};
+use crate::components::{IconButton, Tooltip};
 
 const COUNT: usize = 13;
 const STEP: f32 = 48.0;
@@ -249,21 +249,17 @@ impl Workspace {
                             .text_color(Theme::global().TEXT_DIM),
                     ),
                 );
-        let toggle = Pill::icon_button(
-            "workspace-sidebar-toggle",
-            include_bytes!("../../../assets/icons/menu.svg").as_slice(),
-            "Hide sidebar",
-        )
-        .icon_size(16.0)
-        .debug_selector("workspace-sidebar-toggle")
-        .occlude()
-        .keep_focus()
-        .tooltip(Tooltip::text("Hide sidebar").key_hint("Ctrl+B"))
-        .on_click(cx.listener(|this, _, window, cx| {
-            cx.stop_propagation();
-            this.sidebar_roller.expanded = false;
-            this.toggle_sidebar(&ToggleSidebar, window, cx);
-        }));
+        let toggle = IconButton::new("workspace-sidebar-toggle", "Hide sidebar")
+            .icon(
+                include_bytes!("../../../assets/icons/menu.svg").as_slice(),
+                16.0,
+            )
+            .tooltip(Tooltip::text("Hide sidebar").key_hint("Ctrl+B"))
+            .on_click(cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                this.sidebar_roller.expanded = false;
+                this.toggle_sidebar(&ToggleSidebar, window, cx);
+            }));
         // The section menu and the sidebar toggle share the destination row,
         // so the sidebar has no separate header line. The toggle sits rightmost.
         let controls = div()

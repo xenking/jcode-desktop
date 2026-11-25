@@ -1689,7 +1689,7 @@ fn convert_hit(hit: jcode_sdk::SessionSearchHit) -> global_search::SearchHit {
 }
 
 /// Who a hit came from: "You", or the model that wrote the answer.
-fn hit_badge(hit: &global_search::SearchHit, theme: &crate::theme::Theme) -> gpui::AnyElement {
+fn hit_badge(hit: &global_search::SearchHit, theme: &crate::theme::Palette) -> gpui::AnyElement {
     let color = match hit.role {
         global_search::Role::Assistant => theme.ACCENT,
         _ => theme.TEXT,
@@ -1708,7 +1708,7 @@ fn hit_badge(hit: &global_search::SearchHit, theme: &crate::theme::Theme) -> gpu
 /// A hit's one-line snippet with the daemon's match ranges marked.
 fn highlighted_snippet(
     hit: &global_search::SearchHit,
-    theme: &crate::theme::Theme,
+    theme: &crate::theme::Palette,
 ) -> gpui::StyledText {
     // Highlights are character offsets; styled text wants byte ranges.
     let byte_at = |chars: u32| {
@@ -1730,7 +1730,7 @@ fn highlighted_snippet(
 fn highlighted_text(
     text: String,
     terms: &[String],
-    theme: &crate::theme::Theme,
+    theme: &crate::theme::Palette,
 ) -> gpui::StyledText {
     let ranges = global_search::term_ranges(&text, terms);
     styled_matches(text, ranges, theme)
@@ -1739,12 +1739,12 @@ fn highlighted_text(
 fn styled_matches(
     text: String,
     mut ranges: Vec<std::ops::Range<usize>>,
-    theme: &crate::theme::Theme,
+    theme: &crate::theme::Palette,
 ) -> gpui::StyledText {
     ranges.sort_by_key(|range| range.start);
     ranges.dedup_by(|next, previous| next.start < previous.end);
     let style = gpui::HighlightStyle {
-        color: Some(theme.TEXT.into()),
+        color: Some(crate::theme::to_hsla(theme.TEXT)),
         ..crate::markdown::search_match_style()
     };
     gpui::StyledText::new(text).with_highlights(ranges.into_iter().map(|range| (range, style)))
@@ -1817,7 +1817,7 @@ fn contrast(a: gpui::Rgba, b: gpui::Rgba) -> f32 {
     a.max(b) / a.min(b)
 }
 
-fn resume_secondary_ink(theme: &Theme) -> gpui::Rgba {
+fn resume_secondary_ink(theme: &Palette) -> gpui::Rgba {
     [theme.TEXT_DIM, theme.TEXT]
         .into_iter()
         .find(|color| {

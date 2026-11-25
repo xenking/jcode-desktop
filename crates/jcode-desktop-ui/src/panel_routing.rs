@@ -336,7 +336,7 @@ impl Panel {
                     .border_color(if selected && focused {
                         theme.ACCENT
                     } else {
-                        theme.ACCENT.opacity(0.0)
+                        theme.wash(crate::theme::Ink::Accent, 0.0)
                     })
                     .when(selected, |el| el.bg(theme.ACCENT_DIM))
                     .when(!submitting, |el| {

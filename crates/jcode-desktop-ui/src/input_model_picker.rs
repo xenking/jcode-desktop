@@ -737,8 +737,8 @@ impl PromptInput {
                     .when(suggestion.context_action.is_none(), |row| row.rounded_md())
                     .when(model.is_some() || speed.is_some() || suggestion.value.starts_with("/effort "), |row| {
                         row.border_1().border_color(match (active_choice, selected) {
-                            (true, true) => Theme::global().BG.into(),
-                            (true, false) => Theme::global().TEXT.into(),
+                            (true, true) => crate::theme::to_hsla(Theme::global().BG),
+                            (true, false) => crate::theme::to_hsla(Theme::global().TEXT),
                             (false, _) => gpui::transparent_black(),
                         })
                     })

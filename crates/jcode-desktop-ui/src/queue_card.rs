@@ -9,7 +9,7 @@ const TRASH: &[u8] = include_bytes!("../../../assets/icons/trash.svg");
 /// The queue card reads as part of the chat column, not as a panel of its own.
 /// It tints the dock veil barely enough to group the rows; the transcript
 /// behind it stays visible. Tests pin the surface as non-opaque.
-pub(super) fn queue_card_surface(theme: &Theme) -> gpui::Rgba {
+pub(super) fn queue_card_surface(theme: &Palette) -> gpui::Rgba {
     let mut surface = theme.QUOTE_BG;
     surface.a = surface.a.min(0.06);
     surface

@@ -898,14 +898,14 @@ impl Workspace {
                 .rounded_full()
                 .cursor_pointer()
                 .bg(if danger {
-                    theme.ERROR.opacity(0.12)
+                    theme.wash(crate::theme::Ink::Error, 0.12)
                 } else {
                     theme.INLINE_CODE_BG
                 })
                 .text_color(if danger { theme.ERROR } else { theme.TEXT })
                 .hover(move |el| {
                     el.bg(if danger {
-                        theme.ERROR.opacity(0.2)
+                        theme.wash(crate::theme::Ink::Error, 0.2)
                     } else {
                         theme.HEADER_BG
                     })

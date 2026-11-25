@@ -15,7 +15,7 @@
 
 use gpui::{Rgba, Window, WindowControlArea, div, prelude::*, px};
 
-use crate::theme::Theme;
+use crate::theme::{Ink, Theme};
 
 /// Windows 11 caption buttons are 46 effective pixels wide.
 pub(crate) const BUTTON_WIDTH: f32 = 46.0;
@@ -160,8 +160,8 @@ fn buttons(window: &Window) -> impl IntoElement {
             .window_control_area(area)
             .child(symbol)
     };
-    let neutral_hover = theme.TEXT.opacity(0.08);
-    let neutral_press = theme.TEXT.opacity(0.05);
+    let neutral_hover = theme.wash(Ink::Text, 0.08);
+    let neutral_press = theme.wash(Ink::Text, 0.05);
     div()
         .debug_selector(|| "window-caption-buttons".into())
         .absolute()

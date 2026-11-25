@@ -300,7 +300,7 @@ impl Row<'_> {
                         .gap_1()
                         .rounded_full()
                         .px_2()
-                        .bg(theme.ACCENT.opacity(0.12))
+                        .bg(theme.wash(crate::theme::Ink::Accent, 0.12))
                         .text_color(theme.ACCENT)
                         .child(
                             gpui::svg()

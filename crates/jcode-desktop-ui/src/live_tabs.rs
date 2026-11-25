@@ -1313,7 +1313,7 @@ impl Workspace {
                     .text_size(px(20.0))
                     .text_color(Theme::global().TEXT_DIM)
                     .hover(|el| {
-                        el.bg(Theme::global().TEXT.opacity(0.10))
+                        el.bg(Theme::global().wash(crate::theme::Ink::Text, 0.10))
                             .text_color(Theme::global().TEXT)
                     })
                     .tooltip(
@@ -1342,7 +1342,7 @@ impl Workspace {
                         .text_size(px(20.0))
                         .text_color(Theme::global().TEXT_DIM)
                         .hover(|el| {
-                            el.bg(Theme::global().ERROR.opacity(0.16))
+                            el.bg(Theme::global().wash(crate::theme::Ink::Error, 0.16))
                                 .text_color(Theme::global().ERROR)
                         })
                         .tooltip(tab_tooltip("Close window").builder())

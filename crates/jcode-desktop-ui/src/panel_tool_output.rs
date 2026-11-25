@@ -399,7 +399,7 @@ pub(super) fn selectable_detail(
     let selected = selection.read(cx).highlight(&key, detail.text.len());
     let highlights = detail.highlights(name, input, selected);
     let mut style = window.text_style();
-    style.font_family = Theme::global().FONT_MONO.into();
+    style.font_family = Theme::global().mono_family();
     style.color = crate::theme::to_hsla(Theme::global().CODE_TEXT);
     let styled = StyledText::new(detail.text.clone()).with_default_highlights(&style, highlights);
     let layout = styled.layout().clone();

@@ -6,7 +6,7 @@
 //! dispatch the same [`GlobalSearch`] action the keybinding uses.
 
 use super::*;
-use crate::components::{Pill, PillVariant, Tooltip};
+use crate::components::{IconButton, Tooltip};
 
 /// The search glyph, shared by both button shapes.
 fn search_icon(size: f32, color: impl Into<gpui::Hsla>) -> gpui::Svg {
@@ -59,22 +59,13 @@ impl Workspace {
     /// to it.
     pub(super) fn render_sidebar_search_icon(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
-        Pill::unlabeled(
-            PillVariant::Ghost,
-            "sidebar-search-icon",
-            "Search all sessions",
-        )
-        .debug_selector("sidebar-search-icon")
-        .size(px(28.0))
-        .p_0()
-        .occlude()
-        .keep_focus()
-        .tooltip(search_tooltip())
-        .on_click(cx.listener(|this, _, window, cx| {
-            cx.stop_propagation();
-            this.open_session_search(&GlobalSearch, window, cx)
-        }))
-        .child(search_icon(13.0, theme.TEXT))
-        .into_any_element()
+        IconButton::new("sidebar-search-icon", "Search all sessions")
+            .tooltip(search_tooltip())
+            .on_click(cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                this.open_session_search(&GlobalSearch, window, cx)
+            }))
+            .child(search_icon(13.0, theme.TEXT))
+            .into_any_element()
     }
 }

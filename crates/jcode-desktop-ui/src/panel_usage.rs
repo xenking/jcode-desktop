@@ -150,7 +150,7 @@ impl Render for LimitsTooltip {
 }
 
 #[allow(dead_code)]
-fn limit_row(index: usize, limit: &UsageLimit, theme: &Theme) -> gpui::AnyElement {
+fn limit_row(index: usize, limit: &UsageLimit, theme: &Palette) -> gpui::AnyElement {
     let used = limit
         .usage_percent
         .is_finite()
@@ -183,7 +183,7 @@ fn limit_row(index: usize, limit: &UsageLimit, theme: &Theme) -> gpui::AnyElemen
     .into_any_element()
 }
 
-pub(super) fn meter_card(theme: &Theme) -> gpui::Div {
+pub(super) fn meter_card(theme: &Palette) -> gpui::Div {
     div()
         .px_3()
         .py_2()
@@ -210,7 +210,7 @@ pub(super) fn meter_row(
     value: String,
     bar: Option<(f32, gpui::Rgba)>,
     detail: Option<String>,
-    theme: &Theme,
+    theme: &Palette,
 ) -> gpui::Div {
     let MeterIds {
         row,
@@ -242,7 +242,7 @@ pub(super) fn meter_row(
         .children(detail.map(|detail| meter_detail(detail, theme)))
 }
 
-pub(super) fn meter_detail(detail: String, theme: &Theme) -> gpui::Div {
+pub(super) fn meter_detail(detail: String, theme: &Palette) -> gpui::Div {
     div()
         .truncate()
         .text_size(px(10.))
@@ -251,7 +251,7 @@ pub(super) fn meter_detail(detail: String, theme: &Theme) -> gpui::Div {
 }
 
 /// Shared meter track and fill for context, quota and cache cards.
-fn usage_bar(selector: String, percent: f32, ink: gpui::Rgba, theme: &Theme) -> gpui::Div {
+fn usage_bar(selector: String, percent: f32, ink: gpui::Rgba, theme: &Palette) -> gpui::Div {
     div()
         .debug_selector(move || selector.clone())
         .w_full()
@@ -268,7 +268,7 @@ fn usage_bar(selector: String, percent: f32, ink: gpui::Rgba, theme: &Theme) -> 
         )
 }
 
-pub(crate) fn usage_color(used: f32, theme: &Theme) -> gpui::Rgba {
+pub(crate) fn usage_color(used: f32, theme: &Palette) -> gpui::Rgba {
     if used >= 90. {
         theme.ERROR
     } else if used >= 70. {

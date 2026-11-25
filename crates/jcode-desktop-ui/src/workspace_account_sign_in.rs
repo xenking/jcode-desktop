@@ -1239,7 +1239,7 @@ impl Workspace {
                     .px_4()
                     .py(px(10.0))
                     .rounded_full()
-                    .bg(theme.OK.opacity(0.12))
+                    .bg(theme.wash(crate::theme::Ink::Ok, 0.12))
                     .text_size(px(13.0))
                     .text_color(theme.OK)
                     .truncate()
@@ -1360,11 +1360,11 @@ impl Workspace {
                     } else {
                         gpui::transparent_black().into()
                     })
-                    .bg(theme.TEXT.opacity(0.05))
+                    .bg(theme.wash(crate::theme::Ink::Text, 0.05))
                     .when(sending && !picked, |el| el.opacity(0.5))
                     .when(!sending, |el| {
                         el.cursor_pointer()
-                            .hover(|el| el.bg(theme.TEXT.opacity(0.09)))
+                            .hover(|el| el.bg(theme.wash(crate::theme::Ink::Text, 0.09)))
                     })
                     .child(
                         div()
@@ -1397,7 +1397,7 @@ impl Workspace {
                                 el.bg(theme.ACCENT).text_color(theme.BG)
                             })
                             .when(!(picked && sending), |el| {
-                                el.bg(theme.TEXT.opacity(0.08))
+                                el.bg(theme.wash(crate::theme::Ink::Text, 0.08))
                                     .text_color(theme.TEXT)
                                     .group_hover("account-email", |el| {
                                         el.bg(theme.ACCENT).text_color(theme.BG)
@@ -1452,9 +1452,9 @@ impl Workspace {
             .border_color(if state.focused(Choice::Field) {
                 theme.ACCENT
             } else {
-                theme.TEXT.opacity(0.12)
+                theme.wash(crate::theme::Ink::Text, 0.12)
             })
-            .bg(theme.TEXT.opacity(0.04))
+            .bg(theme.wash(crate::theme::Ink::Text, 0.04))
             .child(
                 div()
                     .id("account-sign-in-field")
@@ -1528,7 +1528,7 @@ impl Workspace {
                         .px_3()
                         .py(px(3.0))
                         .rounded_full()
-                        .bg(theme.OK.opacity(0.12))
+                        .bg(theme.wash(crate::theme::Ink::Ok, 0.12))
                         .text_color(theme.OK)
                         .child(account.status_label()),
                 ));
@@ -1595,8 +1595,8 @@ impl Workspace {
             } else {
                 gpui::transparent_black().into()
             })
-            .bg(theme.TEXT.opacity(0.06))
-            .hover(|el| el.bg(theme.TEXT.opacity(0.1)))
+            .bg(theme.wash(crate::theme::Ink::Text, 0.06))
+            .hover(|el| el.bg(theme.wash(crate::theme::Ink::Text, 0.1)))
             .cursor_pointer()
             .text_size(px(12.0))
             .text_color(theme.TEXT_DIM)
@@ -1748,7 +1748,7 @@ fn import_slider(importing: bool, focused: bool) -> gpui::Div {
         } else {
             gpui::transparent_black().into()
         })
-        .bg(theme.TEXT.opacity(0.08))
+        .bg(theme.wash(crate::theme::Ink::Text, 0.08))
         .child(
             div()
                 .absolute()
@@ -1821,7 +1821,7 @@ fn login_row(logo: &str, name: String, detail: String, trailing: gpui::Div) -> g
                 .items_center()
                 .justify_center()
                 .rounded_full()
-                .bg(theme.TEXT.opacity(0.06))
+                .bg(theme.wash(crate::theme::Ink::Text, 0.06))
                 .child(gpui::svg().data(data).size(px(16.0)).text_color(theme.TEXT)),
         );
     }
@@ -1904,7 +1904,7 @@ fn account_button(
         .bg(if primary {
             theme.ACCENT
         } else {
-            theme.TEXT.opacity(0.06)
+            theme.wash(crate::theme::Ink::Text, 0.06)
         })
         .text_size(px(14.0))
         .text_color(if primary { theme.BG } else { theme.TEXT })
@@ -1914,7 +1914,7 @@ fn account_button(
             if primary {
                 el.opacity(0.9)
             } else {
-                el.bg(theme.ACCENT.opacity(0.08))
+                el.bg(theme.wash(crate::theme::Ink::Accent, 0.08))
             }
         })
         .child(label)

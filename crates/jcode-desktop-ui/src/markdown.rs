@@ -18,7 +18,7 @@ use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::text_selection::{self, TextSelection};
-use crate::theme::{Theme, to_hsla};
+use crate::theme::{Palette, Theme, to_hsla};
 use jcode_desktop_model::markdown_file::{self, FileReferenceCache, LinkTarget};
 
 type OpenFileLink = dyn Fn(LinkTarget, &mut gpui::Window, &mut gpui::App);
@@ -1846,7 +1846,7 @@ fn styled_inline_layout(
     // Give the spacer its own monospace run. Four proportional spaces can be
     // narrower than the icon when the user changes the assistant font.
     let prefix_highlight = avatar.then(|| (0..prefix.len(), HighlightStyle::default()));
-    let prefix_font = avatar.then(|| (0..prefix.len(), Theme::global().FONT_MONO.into()));
+    let prefix_font = avatar.then(|| (0..prefix.len(), Theme::global().mono_family()));
     let text = StyledText::new(display)
         .with_highlights(
             prefix_highlight
@@ -1859,7 +1859,7 @@ fn styled_inline_layout(
                     .code_ranges
                     .iter()
                     .cloned()
-                    .map(|range| (shift(range), Theme::global().FONT_MONO.into())),
+                    .map(|range| (shift(range), Theme::global().mono_family())),
             ),
         );
     let layout = text.layout().clone();
@@ -2238,7 +2238,7 @@ pub(crate) fn code_block_with_selection(
         .collect::<Vec<_>>()
         .join("\n");
     let mut style = window.text_style();
-    style.font_family = Theme::global().FONT_MONO.into();
+    style.font_family = Theme::global().mono_family();
     style.font_size = px(12.5).into();
     style.color = to_hsla(Theme::global().CODE_TEXT);
     let mut highlights = highlights;
@@ -2405,7 +2405,7 @@ const MERMAID_CACHE_CAPACITY: usize = 64;
 static MERMAID_CACHE: LazyLock<Mutex<VecDeque<(u64, RenderedMermaid)>>> =
     LazyLock::new(|| Mutex::new(VecDeque::new()));
 
-fn mermaid_theme(theme: &Theme) -> mermaid_rs_renderer::Theme {
+fn mermaid_theme(theme: &Palette) -> mermaid_rs_renderer::Theme {
     fn hex(color: gpui::Rgba) -> String {
         format!(
             "#{:02x}{:02x}{:02x}",

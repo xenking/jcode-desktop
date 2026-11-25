@@ -1046,7 +1046,7 @@ impl Panel {
             .bg(if connected || selecting {
                 theme.HEADER_BG
             } else {
-                theme.HEADER_BG.opacity(0.55)
+                theme.wash(crate::theme::Ink::HeaderBg, 0.55)
             })
             .cursor_pointer()
             .hover(|el| el.bg(theme.ACCENT_DIM));
@@ -1157,7 +1157,7 @@ impl Panel {
                     .items_center()
                     .justify_center()
                     .rounded_full()
-                    .bg(theme.ACCENT.opacity(0.16))
+                    .bg(theme.wash(crate::theme::Ink::Accent, 0.16))
                     .text_size(px(10.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.ACCENT)
@@ -1244,7 +1244,7 @@ impl Panel {
                 element = element
                     .border_1()
                     .border_color(theme.ACCENT)
-                    .bg(theme.ACCENT.opacity(0.14))
+                    .bg(theme.wash(crate::theme::Ink::Accent, 0.14))
                     .cursor_default()
                     .child(
                         chip("In use", theme.ACCENT)
@@ -1318,7 +1318,7 @@ impl Panel {
             .p_2()
             .rounded_xl()
             .drag_over::<DraggedAccount>(|style, _, _, _| {
-                style.bg(Theme::global().ACCENT_DIM.opacity(0.35))
+                style.bg(Theme::global().wash(crate::theme::Ink::AccentDim, 0.35))
             })
             .on_drop({
                 let visible = visible.clone();
@@ -1360,7 +1360,7 @@ impl Panel {
                     .px_3()
                     .py_3()
                     .rounded_full()
-                    .bg(theme.HEADER_BG.opacity(0.5))
+                    .bg(theme.wash(crate::theme::Ink::HeaderBg, 0.5))
                     .text_size(px(12.))
                     .text_color(theme.TEXT_DIM)
                     .child("Drag an account here"),
@@ -1445,11 +1445,11 @@ impl Panel {
                             .px_3()
                             .py_1p5()
                             .rounded_full()
-                            .bg(theme.ACCENT.opacity(0.16))
+                            .bg(theme.wash(crate::theme::Ink::Accent, 0.16))
                             .text_color(theme.ACCENT)
                             .text_size(px(12.))
                             .cursor_pointer()
-                            .hover(|el| el.bg(theme.ACCENT.opacity(0.26)))
+                            .hover(|el| el.bg(theme.wash(crate::theme::Ink::Accent, 0.26)))
                             .child(format!("+ Another {} account", provider.display_name))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.select_login_provider_for(

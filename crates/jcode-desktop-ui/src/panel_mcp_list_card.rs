@@ -7,7 +7,7 @@
 //! format with `  - name: description` lines. Anything else keeps the
 //! generic tool row.
 use crate::text_selection::{self, TextSelection};
-use crate::theme::Theme;
+use crate::theme::{Palette, Theme};
 use gpui::{prelude::*, *};
 
 /// Tool pills shown per server before the "+N more" toggle.
@@ -133,7 +133,7 @@ pub(super) fn expandable(view: &View) -> bool {
         .any(|server| server.tools.len() > TOOLS_COLLAPSED + 1)
 }
 
-fn pill(theme: &Theme, text: String) -> Div {
+fn pill(theme: &Palette, text: String) -> Div {
     div()
         .flex_none()
         .px_2()

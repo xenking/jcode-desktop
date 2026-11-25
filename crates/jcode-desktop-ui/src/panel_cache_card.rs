@@ -345,7 +345,7 @@ fn usage_row(
     name: &str,
     tokens: Option<Tokens>,
     count: usize,
-    theme: &Theme,
+    theme: &Palette,
 ) -> gpui::Div {
     let pct = tokens.and_then(Tokens::percent);
     let value = pct.map_or_else(|| NOT_REPORTED.into(), |pct| format!("{pct:.0}% cached"));
@@ -386,7 +386,7 @@ fn amount(value: Option<u64>) -> String {
     }
 }
 
-fn cache_color(percent: f32, theme: &Theme) -> gpui::Rgba {
+fn cache_color(percent: f32, theme: &Palette) -> gpui::Rgba {
     // Thresholds match the TUI's kv_cache_optimal_color, with Desktop theme tones.
     match percent.round() as u8 {
         0..=24 => theme.ERROR,
@@ -396,7 +396,7 @@ fn cache_color(percent: f32, theme: &Theme) -> gpui::Rgba {
     }
 }
 
-fn retention_row(facts: Option<CacheFacts>, theme: &Theme) -> gpui::Div {
+fn retention_row(facts: Option<CacheFacts>, theme: &Palette) -> gpui::Div {
     let (value, bar, detail) = facts.map_or_else(
         || (NOT_REPORTED.into(), None, None),
         |facts| {
@@ -441,7 +441,7 @@ fn retention_row(facts: Option<CacheFacts>, theme: &Theme) -> gpui::Div {
     )
 }
 
-fn render_misses(misses: &Misses, theme: &Theme) -> gpui::Div {
+fn render_misses(misses: &Misses, theme: &Palette) -> gpui::Div {
     let (summary, color) = if misses.count == 0 {
         ("no misses".into(), cache_color(100.0, theme))
     } else {

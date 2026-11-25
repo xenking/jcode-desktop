@@ -115,7 +115,7 @@ impl TerminalPanel {
     ) -> Scene {
         let theme = Theme::global();
         let mut style = window.text_style();
-        style.font_family = theme.FONT_MONO.into();
+        style.font_family = theme.mono_family();
         style.font_size = px(FONT_SIZE).into();
         let cell_width = window
             .text_system()
@@ -293,7 +293,7 @@ impl TerminalPanel {
                 self.status.clone()
             };
             let mut style = style.clone();
-            style.color = theme.TEXT_DIM.into();
+            style.color = crate::theme::to_hsla(theme.TEXT_DIM);
             let shaped = window.text_system().shape_line(
                 text.clone().into(),
                 px(FONT_SIZE),

@@ -6,7 +6,7 @@
 //! the card never touches the network. In-flight or failed calls, and output
 //! that does not parse, keep the generic tool row.
 use crate::text_selection::{self, TextSelection};
-use crate::theme::Theme;
+use crate::theme::{Palette, Theme};
 use gpui::{prelude::*, *};
 
 const BODY_LINES: usize = 12;
@@ -213,7 +213,7 @@ pub(super) fn expandable(view: &View) -> bool {
     }
 }
 
-fn pill(theme: &Theme, text: String) -> Div {
+fn pill(theme: &Palette, text: String) -> Div {
     div()
         .flex_none()
         .px_2()

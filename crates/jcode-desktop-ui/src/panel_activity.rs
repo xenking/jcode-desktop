@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use gpui::{Context, Render, Task, Window, canvas, div, prelude::*, px};
 use gpui_thinking_orbs::{Frame, OrbSize, OrbState, Resolved, draw_mode_into, resolve_preset};
 
-use crate::theme::Theme;
+use crate::theme::{Palette, Theme};
 
 #[path = "activity_donut.rs"]
 mod donut;
@@ -242,7 +242,7 @@ fn label_intensity(activity: Activity, elapsed: Duration, reduce_motion: bool) -
     (0.5 - 0.5 * (phase * std::f64::consts::TAU).cos()) as f32 * 0.45
 }
 
-fn ink_color(white: f32, alpha: f32, theme: &Theme) -> gpui::Rgba {
+fn ink_color(white: f32, alpha: f32, theme: &Palette) -> gpui::Rgba {
     let w = white.clamp(0.0, 1.0);
     let ink = theme.TEXT;
     let paper = theme.PANEL_BG;

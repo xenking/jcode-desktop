@@ -278,9 +278,9 @@ pub(super) fn render_about_block(
                         .px_2()
                         .rounded_full()
                         .cursor_pointer()
-                        .bg(theme.ACCENT.opacity(0.12))
+                        .bg(theme.wash(crate::theme::Ink::Accent, 0.12))
                         .text_color(theme.ACCENT)
-                        .hover(|el| el.bg(theme.ACCENT.opacity(0.22)))
+                        .hover(|el| el.bg(theme.wash(crate::theme::Ink::Accent, 0.22)))
                         .child(action.unwrap_or("Check"))
                         .on_click(on_check),
                 ),

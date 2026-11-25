@@ -13,7 +13,7 @@ use jcode_desktop_model::markdown_file::{self, LinkTarget};
 use crate::code_editor::CodeEditor;
 use crate::markdown;
 use crate::text_selection::{self, TextSelection};
-use crate::theme::Theme;
+use crate::theme::{Ink, Theme};
 
 const MAX_MARKDOWN_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
 
@@ -393,7 +393,7 @@ impl Render for FilePanel {
                                 .font_family(Theme::global().FONT_UI)
                                 .text_color(Theme::global().TEXT)
                                 .bg(Theme::global().CODE_BG)
-                                .hover(|style| style.bg(Theme::global().ACCENT.opacity(0.15)))
+                                .hover(|style| style.bg(Theme::global().wash(Ink::Accent, 0.15)))
                                 .cursor_pointer()
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.toggle_preview(window, cx)),

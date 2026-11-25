@@ -20,7 +20,7 @@ use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::markdown;
 use crate::preview_state::PreviewState;
 use crate::text_selection::{self, TextSelection};
-use crate::theme::Theme;
+use crate::theme::{Ink, Palette, Theme};
 use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask, TodoistClient};
 
 #[path = "panel_control.rs"]
@@ -6147,7 +6147,7 @@ impl Panel {
                     (
                         summary_start..header.len(),
                         gpui::HighlightStyle {
-                            color: Some(Theme::global().TEXT_FAINT.into()),
+                            color: Some(crate::theme::to_hsla(Theme::global().TEXT_FAINT)),
                             ..Default::default()
                         },
                     )
@@ -7524,7 +7524,7 @@ impl Render for Panel {
                                 let padded = div()
                                     .debug_selector(move || format!("transcript-row-{row_index}"))
                                     .relative()
-                                    .when(highlighted, |el| el.rounded_lg().bg(Theme::global().ACCENT.opacity(0.14)))
+                                    .when(highlighted, |el| el.rounded_lg().bg(Theme::global().wash(Ink::Accent, 0.14)))
                                     .px_3()
                                     .pt(px(top_padding))
                                     .map(|el| match display.alignment {
@@ -8005,7 +8005,7 @@ impl Render for Panel {
                                         })
                                         .child("↓")
                                         .child(shortcuts::jump_to_latest_keycaps(
-                                            Theme::global().TEXT_DIM.into(),
+                                            crate::theme::to_hsla(Theme::global().TEXT_DIM),
                                         )),
                                 ),
                         )

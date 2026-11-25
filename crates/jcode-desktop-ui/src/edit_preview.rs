@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use gpui::{Context, IntoElement, Render, Window, div, prelude::*, px, relative, uniform_list};
 
 use super::{DiffRow, FileDiff, numbered_rows};
-use crate::theme::{Theme, to_hsla};
+use crate::theme::{Palette, Theme, to_hsla};
 
 #[path = "edit_preview_timer.rs"]
 mod timer;
@@ -277,7 +277,7 @@ impl Render for TimedPreview {
             });
         }
         let theme = Theme::global();
-        let theme_key = theme as *const Theme as usize;
+        let theme_key = theme as *const Palette as usize;
         if self.syntax.is_empty() || self.syntax_theme != theme_key {
             let file = &self.files[self.index];
             self.syntax = syntax::prepare(&file.lines, &file.path, self.indent)

@@ -140,9 +140,7 @@ impl Panel {
                 }
             }
             "/config" if args.is_empty() || args == "show" => {
-                let mut config = crate::config::get().clone();
-                config.display = crate::config::display();
-                config.appearance.theme = crate::theme::Theme::active_preset().id().into();
+                let config = crate::config::in_effect(crate::theme::Theme::active_preset().id());
                 self.items.push(Item::Assistant(format!("Desktop configuration: `{}`\n\n```toml\n{}\n```\n\nUse `/config open` to edit the file. Display commands apply live. Startup-only settings need a Desktop restart.", crate::config::path().display(), toml::to_string_pretty(&config).unwrap_or_default())));
             }
             "/config" if args == "open" => self.open_command_file(crate::config::path(), "Desktop configuration", cx),

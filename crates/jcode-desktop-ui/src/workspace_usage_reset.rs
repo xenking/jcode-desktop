@@ -400,7 +400,7 @@ impl Render for UsageReset {
                     .bg(if enabled {
                         theme.ACCENT
                     } else {
-                        theme.ACCENT.opacity(0.4)
+                        theme.wash(crate::theme::Ink::Accent, 0.4)
                     })
                     .text_color(theme.BG)
                     .when(enabled, |el| {

@@ -611,7 +611,7 @@ impl Workspace {
         .occlude()
         .text_color(Theme::global().TEXT_DIM)
         .hover(|el| {
-            el.bg(Theme::global().TEXT.opacity(0.10))
+            el.bg(Theme::global().wash(crate::theme::Ink::Text, 0.10))
                 .text_color(Theme::global().TEXT)
         })
         .tooltip(Tooltip::text(title).builder())

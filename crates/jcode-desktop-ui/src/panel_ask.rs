@@ -686,9 +686,9 @@ impl Panel {
                     })
                     .child(jcode_desktop_voice::chrome::voice_microphone_face(
                         if active {
-                            theme.BG.into()
+                            crate::theme::to_hsla(theme.BG)
                         } else {
-                            theme.TEXT_DIM.into()
+                            crate::theme::to_hsla(theme.TEXT_DIM)
                         },
                     ));
                 if active {

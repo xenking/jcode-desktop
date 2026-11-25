@@ -207,7 +207,7 @@ impl Panel {
 
 /// Tone for the countdown: quiet while the window is open, warm when it is
 /// nearly over, faint once it has lapsed.
-pub(super) fn tone(facts: &CacheFacts, theme: &Theme) -> gpui::Rgba {
+pub(super) fn tone(facts: &CacheFacts, theme: &Palette) -> gpui::Rgba {
     if facts.is_cold() {
         theme.TEXT_FAINT
     } else if facts.expiring_soon() {

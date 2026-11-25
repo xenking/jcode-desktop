@@ -79,7 +79,7 @@ impl State {
     }
 }
 
-fn category(kind: ContextBreakdownKind, theme: &Theme) -> (&'static str, gpui::Rgba) {
+fn category(kind: ContextBreakdownKind, theme: &Palette) -> (&'static str, gpui::Rgba) {
     match kind {
         ContextBreakdownKind::SystemPrompt => ("System prompt", theme.TEXT_DIM),
         ContextBreakdownKind::BuiltinTools => ("Tool definitions", theme.CODE_KEYWORD),
@@ -92,7 +92,7 @@ fn category(kind: ContextBreakdownKind, theme: &Theme) -> (&'static str, gpui::R
     }
 }
 
-fn legend_row(label: &'static str, color: gpui::Rgba, value: String, theme: &Theme) -> gpui::Div {
+fn legend_row(label: &'static str, color: gpui::Rgba, value: String, theme: &Palette) -> gpui::Div {
     let selector = format!("context-usage-count-{label}-{value}");
     div()
         .debug_selector(move || format!("context-usage-row-{label}"))

@@ -1508,7 +1508,7 @@ impl PromptInput {
         mut self,
         context: impl Fn(&App) -> Vec<crate::prompt_completion::Turn> + 'static,
     ) -> Self {
-        if crate::config::get().completions.enabled {
+        if crate::config::completions().enabled {
             self.ghost = Some(GhostState {
                 machine: Default::default(),
                 context: Box::new(context),
@@ -1582,7 +1582,7 @@ impl PromptInput {
             return;
         }
         let context = (ghost.context)(cx);
-        let settings = &crate::config::get().completions;
+        let settings = crate::config::completions();
         let debounce = Duration::from_millis(settings.debounce_ms.max(400));
         let model = settings.model.clone();
         #[cfg(test)]
@@ -6479,7 +6479,7 @@ mod tests {
                     context: vec![],
                     cwd: None,
                     project: None,
-                    model: crate::config::get().completions.model.clone(),
+                    model: crate::config::completions().model,
                 };
                 input.ghost = Some(GhostState {
                     machine: Default::default(),

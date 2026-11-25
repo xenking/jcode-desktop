@@ -128,7 +128,7 @@ use crate::performance::{
     Profile as PerformanceProfile,
 };
 use crate::terminal::TerminalPanel;
-use crate::theme::{Theme, ThemePreset};
+use crate::theme::{Ink, Palette, Theme, ThemePreset};
 use crate::transition::{self, AnimatedValue, Transition};
 use crate::updates;
 
@@ -4024,9 +4024,7 @@ impl Workspace {
     /// Reveal or retire the hint toast and persist the model when it changed.
     fn after_coach_update(&mut self, cx: &mut Context<Self>) {
         let now = learning::now();
-        let hint = crate::config::get()
-            .workspace
-            .coaching_hints
+        let hint = crate::config::coaching_hints()
             .then(|| self.coach.active_hint(now))
             .flatten();
         let visible = hint.is_some();
@@ -8473,9 +8471,9 @@ impl Workspace {
                                 .rounded_full()
                                 .cursor_pointer()
                                 .text_size(px(9.0))
-                                .bg(Theme::global().ACCENT.opacity(0.16))
+                                .bg(Theme::global().wash(Ink::Accent, 0.16))
                                 .text_color(Theme::global().ACCENT)
-                                .hover(|el| el.bg(Theme::global().ACCENT.opacity(0.26)))
+                                .hover(|el| el.bg(Theme::global().wash(Ink::Accent, 0.26)))
                                 .tooltip(|_, cx| {
                                     cx.new(|_| {
                                         remotes::HeaderTooltip(
@@ -8624,9 +8622,9 @@ impl Workspace {
                                 .rounded_full()
                                 .cursor_pointer()
                                 .text_size(px(9.0))
-                                .bg(Theme::global().WARN.opacity(0.16))
+                                .bg(Theme::global().wash(Ink::Warn, 0.16))
                                 .text_color(Theme::global().WARN)
-                                .hover(|el| el.bg(Theme::global().WARN.opacity(0.26)))
+                                .hover(|el| el.bg(Theme::global().wash(Ink::Warn, 0.26)))
                                 .tooltip(|_, cx| {
                                     cx.new(|_| {
                                         remotes::HeaderTooltip(
@@ -9180,17 +9178,8 @@ impl Workspace {
                 .h(px(MINIMAP_ROW_HEIGHT))
                 .rounded(px(3.0))
                 .cursor_pointer()
-                .bg((if active_row {
-                    Theme::global().MINIMAP_TRACK_ACTIVE
-                } else {
-                    Theme::global().MINIMAP_TRACK
-                })
-                .blend(accent.opacity(if active_row { 0.16 } else { 0.06 })))
-                .hover(|el| {
-                    el.bg(Theme::global()
-                        .MINIMAP_TRACK_ACTIVE
-                        .blend(accent.opacity(0.20)))
-                })
+                .bg(Theme::global().minimap_row_background(active_row, accent))
+                .hover(|el| el.bg(Theme::global().minimap_row_hover(accent)))
                 .child(
                     div()
                         .id(("workspace-map-badge", row))
@@ -9764,9 +9753,7 @@ impl Render for Workspace {
         self.follow_keyboard_focus(window, cx);
         let hints_progress = self.hints_progress.sample(now);
         // Keep the outgoing content mounted until the fade completes.
-        let coach_hint = crate::config::get()
-            .workspace
-            .coaching_hints
+        let coach_hint = crate::config::coaching_hints()
             .then(|| self.coach.active_hint(learning::now()))
             .flatten();
         if let Some(hint) = coach_hint {

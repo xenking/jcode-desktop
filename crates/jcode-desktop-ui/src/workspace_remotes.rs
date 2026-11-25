@@ -141,7 +141,7 @@ pub(super) struct Machines {
 
 impl Machines {
     pub fn from_config() -> Self {
-        let config = &crate::config::get().workspace;
+        let config = crate::config::workspace();
         let mut hosts = config.remote_hosts.clone();
         if let Some(host) = &config.default_remote_host
             && !hosts.contains(host)

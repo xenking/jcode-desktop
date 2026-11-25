@@ -167,7 +167,7 @@ impl Panel {
                                 StageState::Done => theme.OK,
                                 StageState::Running => theme.ACCENT,
                                 StageState::Blocked => theme.WARN,
-                                StageState::Pending => theme.TEXT_FAINT.opacity(0.35),
+                                StageState::Pending => theme.wash(crate::theme::Ink::TextFaint, 0.35),
                             })
                         })),
                 )

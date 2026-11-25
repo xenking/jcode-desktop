@@ -373,7 +373,7 @@ fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn job_status(job: &Job, theme: &Theme) -> (&'static str, Mark) {
+fn job_status(job: &Job, theme: &Palette) -> (&'static str, Mark) {
     let glyph = |glyph| Mark::glyph(glyph, 11.0);
     let stopped = || Mark::still(Icon::Stop, theme.composer_secondary(), 11.0);
     match job.status {

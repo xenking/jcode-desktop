@@ -10,7 +10,7 @@ use gpui::{AnyElement, Bounds, PathBuilder, Pixels, Point, Rgba, Window, canvas,
 use gpui::{InteractiveElement, IntoElement, ParentElement, Styled, px};
 use gpui::prelude::FluentBuilder;
 
-use crate::theme::Theme;
+use crate::theme::{Palette, Theme};
 
 /// What a level draws as.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,7 +44,7 @@ pub(crate) fn shape(effort: &str) -> Option<Shape> {
 
 /// Ink for a level: the heat scale, with the swarm modes in the accent so they
 /// read as their own thing rather than the faint bottom rung.
-pub(crate) fn ink(effort: &str, theme: &Theme) -> Rgba {
+pub(crate) fn ink(effort: &str, theme: &Palette) -> Rgba {
     match shape(effort) {
         Some(Shape::Swarm { .. }) => theme.ACCENT,
         _ => crate::effort::tint(effort, theme),
@@ -95,7 +95,7 @@ fn contrast(a: f32, b: f32) -> f32 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
-fn picker_palette(effort: &str, theme: &Theme) -> (Rgba, Rgba) {
+fn picker_palette(effort: &str, theme: &Palette) -> (Rgba, Rgba) {
     let bg = Rgba { a: 1., ..theme.HEADER_BG };
     let color = Rgba { a: 1., ..ink(effort, theme) };
     let paper = luminance(bg);

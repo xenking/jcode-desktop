@@ -1,6 +1,6 @@
 //! The same syntect engine used by jcode-tui-markdown, with VS Code-style Desktop semantic colors.
 //! Two-face adds maintained TS/TSX grammars absent from syntect's default bundle.
-use crate::theme::{Theme, to_hsla};
+use crate::theme::{Palette, Theme, to_hsla};
 use gpui::HighlightStyle;
 use std::{
     collections::VecDeque,
@@ -254,7 +254,7 @@ pub(super) fn highlight(body: &str, lang: &str) -> (String, Vec<(Range<usize>, H
     highlight_with_theme(body, lang, Theme::global())
 }
 
-pub(crate) fn token_color(id: u8, theme: &Theme) -> gpui::Rgba {
+pub(crate) fn token_color(id: u8, theme: &Palette) -> gpui::Rgba {
     [
         theme.CODE_TEXT,
         theme.CODE_KEYWORD,
@@ -278,7 +278,7 @@ pub(crate) fn token_color(id: u8, theme: &Theme) -> gpui::Rgba {
 fn highlight_with_theme(
     body: &str,
     lang: &str,
-    theme: &Theme,
+    theme: &Palette,
 ) -> (String, Vec<(Range<usize>, HighlightStyle)>) {
     let spans = tokens(body, &lang.to_ascii_lowercase())
         .iter()

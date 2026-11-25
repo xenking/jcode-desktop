@@ -1,6 +1,9 @@
 //! Embedded terminal: the host owns the PTY, Handterm owns emulation, and GPUI owns presentation.
 
-use crate::{image_cache::ImageIds, theme::Theme};
+use crate::{
+    image_cache::ImageIds,
+    theme::{Palette, Theme},
+};
 use gpui::{
     Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     Focusable, KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -36,7 +39,7 @@ fn color_channels(color: gpui::Rgba) -> [u8; 3] {
     [color.r, color.g, color.b].map(|channel| (channel * 255.).round() as u8)
 }
 
-fn sync_terminal_colors(terminal: &mut Terminal, theme: &Theme, focused: bool) {
+fn sync_terminal_colors(terminal: &mut Terminal, theme: &Palette, focused: bool) {
     // OSC 10/11 must describe the colors we actually paint, not Handterm's
     // standalone white-on-black defaults. Apps such as Jcode query these to
     // choose a readable palette.

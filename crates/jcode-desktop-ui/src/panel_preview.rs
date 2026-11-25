@@ -200,7 +200,7 @@ impl Panel {
                 .justify_between()
                 .px_2()
                 .py_1()
-                .bg(theme.ACCENT.opacity(0.12))
+                .bg(theme.wash(crate::theme::Ink::Accent, 0.12))
                 .text_color(theme.ACCENT)
                 .text_xs()
                 .child(format!("Offline preview · {}", state.id()))

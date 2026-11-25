@@ -23,7 +23,7 @@ fn countdown_ring(progress: f32) -> gpui::AnyElement {
                 |_, _, _| (),
                 move |bounds, _, window, _| {
                     for (fraction, color) in
-                        [(1.0, theme.ACCENT.opacity(0.18)), (remaining, theme.ACCENT)]
+                        [(1.0, theme.wash(crate::theme::Ink::Accent, 0.18)), (remaining, theme.ACCENT)]
                     {
                         if fraction <= 0.0 {
                             continue;
@@ -111,7 +111,7 @@ impl Render for BetaNotice {
             .rounded_lg()
             .bg(theme.PANEL_BG)
             .border_1()
-            .border_color(theme.ACCENT.opacity(0.2))
+            .border_color(theme.wash(crate::theme::Ink::Accent, 0.2))
             .shadow_md()
             .occlude()
             .flex()
@@ -151,7 +151,7 @@ impl Render for BetaNotice {
                     .flex_none()
                     .rounded_full()
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.ACCENT.opacity(0.15)))
+                    .hover(|style| style.bg(theme.wash(crate::theme::Ink::Accent, 0.15)))
                     .tooltip(Tooltip::text("Dismiss notification").builder())
                     .on_click(cx.listener(|_, _, _, cx| {
                         cx.emit(DismissEvent);

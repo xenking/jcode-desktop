@@ -473,7 +473,7 @@ impl DiffView {
         let state = &self.files[index];
         let theme = Theme::global();
         let mut style = window.text_style();
-        style.font_family = theme.FONT_MONO.into();
+        style.font_family = theme.mono_family();
         let digits = "8".repeat(state.gutter_digits);
         let gutter_width = (window
             .text_system()
@@ -635,7 +635,7 @@ impl DiffView {
         let mut width = px(0.);
         if !self.wrap {
             let mut style = window.text_style();
-            style.font_family = theme.FONT_MONO.into();
+            style.font_family = theme.mono_family();
             for row in &state.rows[start..end] {
                 if let Row::Line { hunk, left, right } = row {
                     for line in [left, right].into_iter().flatten() {

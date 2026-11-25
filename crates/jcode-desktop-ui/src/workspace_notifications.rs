@@ -325,7 +325,7 @@ impl Workspace {
             .when(expanded, |el| el.min_h(px(28.0)))
             .when(!expanded, |el| el.h(px(28.0)))
             .rounded_md()
-            .bg(theme.PANEL_BG.opacity(0.65))
+            .bg(theme.wash(crate::theme::Ink::PanelBg, 0.65))
             .opacity(progress)
             .occlude()
             .px(px(8.0))
@@ -442,7 +442,7 @@ impl Workspace {
                     .rounded(px(10.0))
                     .bg(theme.PANEL_BG)
                     .border_1()
-                    .border_color(theme.PANEL_BORDER.blend(theme.ACCENT.opacity(0.45 * press)))
+                    .border_color(theme.pressed_border(press))
                     .shadow_md()
                     .child(
                         div()

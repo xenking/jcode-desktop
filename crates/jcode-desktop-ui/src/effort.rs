@@ -7,7 +7,7 @@
 //! `[keybindings] effort_increase / effort_decrease`, so one setting drives
 //! both clients.
 
-use crate::theme::Theme;
+use crate::theme::Palette;
 use gpui::{App, KeyBinding, Keystroke};
 
 gpui::actions!(effort, [IncreaseEffort, DecreaseEffort]);
@@ -109,7 +109,7 @@ pub(crate) fn spoken(effort: &str) -> String {
 ///
 /// The warm end is fixed rather than theme-keyed: every palette needs the same
 /// warm/hot signal, and a monochrome palette would otherwise erase the top.
-pub(crate) fn tint(effort: &str, theme: &Theme) -> gpui::Rgba {
+pub(crate) fn tint(effort: &str, theme: &Palette) -> gpui::Rgba {
     use gpui::Rgba;
     let rgb = |hex: u32| Rgba {
         r: ((hex >> 16) & 0xff) as f32 / 255.,
@@ -350,7 +350,7 @@ mod tests {
     /// glyph's color alone tells low from high.
     #[test]
     fn glyph_tint_is_a_heat_scale() {
-        let theme = Theme::global();
+        let theme = crate::theme::Theme::global();
         let levels = ["none", "low", "medium", "high", "xhigh", "max"];
         let inks = levels.map(|level| tint(level, theme));
         for (index, pair) in inks.windows(2).enumerate() {

@@ -6,7 +6,7 @@
 //! come from an incremental per-line highlighter that re-highlights from the
 //! first edited line to the end of the visible region.
 use crate::markdown::{LineHighlighter, MAX_HIGHLIGHT_LINE, token_color};
-use crate::theme::{Theme, to_hsla};
+use crate::theme::{Palette, Theme, to_hsla};
 use gpui::{
     App, Bounds, ClipboardItem, Context, Element, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
@@ -208,7 +208,7 @@ fn runs_for(
     display: &DisplayLine,
     tokens: &[(Range<usize>, u8)],
     font: &gpui::Font,
-    theme: &Theme,
+    theme: &Palette,
 ) -> Vec<TextRun> {
     let run = |len: usize, color: gpui::Rgba| TextRun {
         len,
