@@ -30,6 +30,20 @@ fn login_name(report: &UsageReport) -> String {
     }
 }
 
+/// One caption line: a fixed height, never wrapped, and cut with an ellipsis
+/// instead of mid-word when the sidebar is narrow.
+fn caption(text: impl Into<gpui::SharedString>) -> gpui::Div {
+    div()
+        .h(px(12.0))
+        .line_height(px(12.0))
+        .text_size(px(8.0))
+        .text_color(Theme::global().TEXT_DIM)
+        .whitespace_nowrap()
+        .overflow_hidden()
+        .text_ellipsis()
+        .child(text.into())
+}
+
 fn kind_color(kind: LoginKind) -> gpui::Rgba {
     match kind {
         LoginKind::Subscription => Theme::global().TEXT_DIM,
@@ -57,15 +71,7 @@ fn limit_cell(
         .flex()
         .flex_col()
         .gap(px(2.0))
-        .child(
-            div()
-                .overflow_hidden()
-                .h(px(12.0))
-                .line_height(px(12.0))
-                .text_size(px(8.0))
-                .text_color(Theme::global().TEXT_DIM)
-                .child(label),
-        )
+        .child(caption(label))
         .child(usage_bar(
             used / 100.0,
             if used >= 90.0 {
@@ -90,15 +96,7 @@ fn credits_line(account_id: &str, login: usize, credits: &Credits) -> gpui::Div 
         .flex()
         .flex_col()
         .gap(px(2.0))
-        .child(
-            div()
-                .overflow_hidden()
-                .h(px(12.0))
-                .line_height(px(12.0))
-                .text_size(px(8.0))
-                .text_color(Theme::global().TEXT_DIM)
-                .child(text),
-        );
+        .child(caption(text));
     if let Some(fraction) = credits.used_fraction {
         line = line.child(usage_bar(
             fraction,
@@ -148,14 +146,7 @@ fn resets_line(account_id: &str, login: usize, report: &UsageReport) -> Option<g
     let text = resets_text(report.banked_reset.as_ref()?)?;
     let id = account_id.to_owned();
     Some(
-        div()
-            .debug_selector(move || format!("account-{id}-login-{login}-resets"))
-            .overflow_hidden()
-            .h(px(12.0))
-            .line_height(px(12.0))
-            .text_size(px(8.0))
-            .text_color(Theme::global().TEXT_DIM)
-            .child(text),
+        caption(text).debug_selector(move || format!("account-{id}-login-{login}-resets")),
     )
 }
 
@@ -171,11 +162,18 @@ pub(super) fn provider_credits(account: &Account) -> Option<gpui::Div> {
 
 /// The block for every login of `account`, or `None` for a provider without
 /// saved-login identities.
-pub(super) fn login_blocks(account: &Account) -> Option<gpui::Div> {
+///
+/// `reset_pill` renders the redeem pill for a login's banked reset, or `None`
+/// when that reset is not offerable. The pill sits inside the login's block, so
+/// it never floats below another login's.
+pub(super) fn login_blocks(
+    account: &Account,
+    reset_pill: &mut dyn FnMut(&crate::accounts::BankedReset) -> Option<gpui::AnyElement>,
+) -> Option<gpui::Div> {
     if !lists_logins(account) {
         return None;
     }
-    let mut blocks = div().mt(px(4.0)).flex().flex_col().gap(px(6.0));
+    let mut blocks = div().mt(px(4.0)).flex().flex_col().gap(px(8.0));
     for (login, report) in account.usage_reports.iter().enumerate() {
         let id = account.id.clone();
         let name = login_name(report);
@@ -224,6 +222,9 @@ pub(super) fn login_blocks(account: &Account) -> Option<gpui::Div> {
                     .line_height(px(11.0))
                     .text_size(px(8.0))
                     .text_color(kind_color(kind))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
                     .child(kind.label()),
             );
         }
@@ -241,6 +242,9 @@ pub(super) fn login_blocks(account: &Account) -> Option<gpui::Div> {
         }
         if let Some(resets) = resets_line(&id, login, report) {
             block = block.child(resets);
+        }
+        if let Some(pill) = report.banked_reset.as_ref().and_then(&mut *reset_pill) {
+            block = block.child(div().mt(px(1.0)).flex().child(pill));
         }
         blocks = blocks.child(block);
     }
@@ -319,6 +323,36 @@ mod tests {
         assert!(last.bottom() <= row.bottom(), "logins must not be clipped");
         // The provider row no longer borrows the first login's windows.
         assert!(vcx.debug_bounds("account-claude-limit-0").is_none());
+    }
+
+    #[gpui::test]
+    fn each_logins_reset_pill_sits_inside_its_own_block(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            w.sidebar_view = SidebarView::Accounts;
+            let mut accounts = accounts::parse(
+                r#"{"providers":[{"id":"claude","display_name":"Claude","status":"available","auth_kind":"OAuth"}]}"#,
+            )
+            .unwrap();
+            let reached = THREE_CLAUDE_LOGINS.replace("\"limit_reached\":false", "\"limit_reached\":true");
+            accounts::merge_usage_for_tests(&mut accounts, &reached);
+            w.accounts = accounts;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        for login in [0, 1] {
+            let pill = vcx
+                .debug_bounds(selector(format!("account-claude-reset-{login}")))
+                .unwrap_or_else(|| panic!("login {login} has no reset pill"));
+            let block = vcx
+                .debug_bounds(selector(format!("account-claude-login-{login}")))
+                .unwrap();
+            assert!(
+                pill.top() >= block.top() && pill.bottom() <= block.bottom(),
+                "pill {pill:?} outside block {block:?}"
+            );
+        }
     }
 
     #[test]

@@ -8449,10 +8449,60 @@ impl Workspace {
                         .child(account.status_label()),
                 );
 
+            // One compact pill per login with a redeemable reset. The pill only
+            // opens a review. Nothing is spent until it is confirmed.
+            let make_pill = |reset_index: usize,
+                                 reset: accounts::BankedReset,
+                                 label: String|
+             -> gpui::AnyElement {
+                div()
+                                .id(("account-reset", index * 100 + reset_index))
+                                .debug_selector({
+                                    let id = account.id.clone();
+                                    move || format!("account-{id}-reset-{reset_index}")
+                                })
+                                .flex_none()
+                                .max_w(px(148.0))
+                                .truncate()
+                                .px(px(8.0))
+                                .h(px(16.0))
+                                .flex()
+                                .items_center()
+                                .rounded_full()
+                                .cursor_pointer()
+                                .text_size(px(9.0))
+                                .bg(Theme::global().ACCENT.opacity(0.16))
+                                .text_color(Theme::global().ACCENT)
+                                .hover(|el| el.bg(Theme::global().ACCENT.opacity(0.26)))
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| {
+                                        remotes::HeaderTooltip(
+                                            "Review a banked usage reset. Nothing is spent until you confirm."
+                                                .into(),
+                                        )
+                                    })
+                                    .into()
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.open_usage_reset(&reset, window, cx);
+                                }))
+                                .child(label)
+                    .into_any_element()
+            };
             // Every saved login gets its own block: name, plan, windows, resets
             // and credits. A provider without saved-login identities keeps the
             // compact single row below.
-            let login_blocks = login_rows::login_blocks(account).filter(|_| available);
+            let mut offered = 0;
+            let login_blocks = login_rows::login_blocks(account, &mut |reset| {
+                if !reset.offerable() {
+                    return None;
+                }
+                let reset_index = offered;
+                offered += 1;
+                Some(make_pill(reset_index, reset.clone(), reset.pill_label()))
+            })
+            .filter(|_| available);
             let lists_logins = login_blocks.is_some();
             if let Some(blocks) = login_blocks {
                 details = details.child(blocks);
@@ -8490,6 +8540,8 @@ impl Workspace {
                                 .child(
                                     div()
                                         .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
                                         .h(px(12.0))
                                         .line_height(px(12.0))
                                         .text_size(px(8.0))
@@ -8522,8 +8574,12 @@ impl Workspace {
             if available {
                 // One compact pill per login with a redeemable reset. The pill
                 // only opens a review. Nothing is spent until it is confirmed.
-                let resets: Vec<accounts::BankedReset> =
-                    account.offerable_resets().cloned().collect();
+                // A listed login carries its own pill inside its block.
+                let resets: Vec<accounts::BankedReset> = if lists_logins {
+                    Vec::new()
+                } else {
+                    account.offerable_resets().cloned().collect()
+                };
                 let many = resets.len() > 1;
                 let has_resets = !resets.is_empty();
                 let mut pills = div().mt(px(3.0)).flex().flex_wrap().gap(px(4.0));
@@ -8544,41 +8600,7 @@ impl Workspace {
                         Some(login) => format!("{} · {login}", reset.pill_label()),
                         None => reset.pill_label(),
                     };
-                    pills = pills.child(
-                        div()
-                            .id(("account-reset", index * 100 + reset_index))
-                            .debug_selector({
-                                let id = account.id.clone();
-                                move || format!("account-{id}-reset-{reset_index}")
-                            })
-                            .flex_none()
-                            .max_w(px(148.0))
-                            .truncate()
-                            .px(px(8.0))
-                            .h(px(16.0))
-                            .flex()
-                            .items_center()
-                            .rounded_full()
-                            .cursor_pointer()
-                            .text_size(px(9.0))
-                            .bg(Theme::global().ACCENT.opacity(0.16))
-                            .text_color(Theme::global().ACCENT)
-                            .hover(|el| el.bg(Theme::global().ACCENT.opacity(0.26)))
-                            .tooltip(|_, cx| {
-                                cx.new(|_| {
-                                    remotes::HeaderTooltip(
-                                        "Review a banked usage reset. Nothing is spent until you confirm."
-                                            .into(),
-                                    )
-                                })
-                                .into()
-                            })
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.open_usage_reset(&reset, window, cx);
-                            }))
-                            .child(label),
-                    );
+                    pills = pills.child(make_pill(reset_index, reset, label));
                 }
                 if has_resets {
                     details = details.child(pills);
