@@ -163,9 +163,17 @@ impl Panel {
         })
     }
 
+    /// What this panel's cache pill and hover card read of it.
+    fn cache_source(panel: &Entity<Self>) -> CacheSource {
+        CacheSource::new(
+            Live::of(panel, |panel: &Panel, _| panel.session_id.clone()),
+            Live::of(panel, |panel: &Panel, _| panel.cache_view()),
+        )
+    }
+
     pub(super) fn render_cache_pill(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let value = self.cache_pill_value()?;
-        let source = CacheSource::of(&cx.entity());
+        let source = Self::cache_source(&cx.entity());
         Some(self.swarm_marks.cache_pill(value, source, cx))
     }
 }
@@ -232,11 +240,8 @@ pub(crate) struct CacheSource {
 }
 
 impl CacheSource {
-    pub(crate) fn of(panel: &Entity<Panel>) -> Self {
-        Self {
-            session: Live::of(panel, |panel: &Panel, _| panel.session_id.clone()),
-            card: Live::of(panel, |panel: &Panel, _| panel.cache_view()),
-        }
+    pub(super) fn new(session: Live<String>, card: Live<card::CacheView>) -> Self {
+        Self { session, card }
     }
 }
 
@@ -480,7 +485,7 @@ mod tests {
                     )),
                     hit_rate: Some(98.0),
                 };
-                CachePill::new(value, CacheSource::of(&panel), cx)
+                CachePill::new(value, Panel::cache_source(&panel), cx)
             });
             vcx.run_until_parked();
             assert!(vcx.debug_bounds(before).is_some(), "missing {before}");

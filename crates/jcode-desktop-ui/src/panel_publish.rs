@@ -7,8 +7,9 @@ impl Panel {
         self.publish_tracker || self.title.as_ref() == publish::SESSION_TITLE
     }
 
-    pub(crate) fn set_publish_tracker(&mut self, tracker: bool) {
+    pub(crate) fn set_publish_tracker(&mut self, tracker: bool, cx: &mut Context<Self>) {
         self.publish_tracker = tracker;
+        cx.notify();
     }
 
     /// The checkout this panel can publish, only in Desktop self-development.

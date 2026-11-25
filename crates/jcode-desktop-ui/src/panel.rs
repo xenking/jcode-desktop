@@ -50,6 +50,8 @@ mod turn;
 use turn::{AutoRetry, StopNotice};
 #[path = "panel_meter.rs"]
 pub(crate) mod meter;
+#[path = "panel_facade.rs"]
+mod facade;
 #[path = "panel_live.rs"]
 pub(crate) mod live;
 use live::Live;

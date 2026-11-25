@@ -72,6 +72,24 @@ impl Panel {
         panel
     }
 
+    /// Clears the transcript for the next scripted conversation, retitling
+    /// the panel when the script names itself. Returns the session id the
+    /// script's events are addressed to.
+    fn begin_demo_cycle(&mut self, title: Option<&str>, cx: &mut Context<Self>) -> String {
+        if let Some(title) = title {
+            self.title = title.to_owned().into();
+        }
+        self.items.clear();
+        self.transcript_measurements.invalidate();
+        cx.notify();
+        self.session_id.clone()
+    }
+
+    fn demo_prompt(&mut self, text: String) {
+        self.items.push(Item::User(text));
+        self.transcript_measurements.invalidate();
+    }
+
     fn demo_event(&mut self, event: ApiEvent, cx: &mut Context<Self>) {
         self.apply(&event, cx);
         cx.notify();
@@ -120,15 +138,7 @@ pub(crate) fn run_showcase(
         let sleep = |duration| executor.timer(duration);
         for (title, script) in showcase.iter().cycle() {
             let session = panel
-                .update(cx, |panel, cx| {
-                    if let Some(title) = title {
-                        panel.title = title.clone().into();
-                    }
-                    panel.items.clear();
-                    panel.transcript_measurements.invalidate();
-                    cx.notify();
-                    panel.session_id.clone()
-                })
+                .update(cx, |panel, cx| panel.begin_demo_cycle(title.as_deref(), cx))
                 .ok();
             let Some(session_id) = session else { return };
             let mut in_turn = false;
@@ -152,8 +162,7 @@ pub(crate) fn run_showcase(
                         in_turn = true;
                         panel
                             .update(cx, |panel, cx| {
-                                panel.items.push(Item::User(text.clone()));
-                                panel.transcript_measurements.invalidate();
+                                panel.demo_prompt(text.clone());
                                 panel.demo_event(
                                     ApiEvent::SessionStatus {
                                         session_id: session_id.clone(),

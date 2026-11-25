@@ -88,11 +88,23 @@ impl AutoPoke {
         true
     }
 
-    /// The todo-state answer arrived: the delivered-response evidence kept
-    /// at the boundary, and the transcript index where this cycle began.
-    pub(super) fn take_awaiting_state(&mut self) -> Option<(bool, usize)> {
+    /// The todo-state answer arrived. `None` when nothing was awaited or the
+    /// user's own work comes first; otherwise what to do next. `fallback`
+    /// reads the todo state off the transcript from the cycle's first row
+    /// when the harness had none.
+    pub(super) fn answer(
+        &mut self,
+        state: Option<TodoSnapshot>,
+        blocked: bool,
+        fallback: impl FnOnce(usize) -> TodoSnapshot,
+    ) -> Option<jcode_sdk::todo::Decision> {
         let delivered = self.awaiting_state.take()?;
-        Some((delivered, self.start_index?))
+        let start = self.start_index?;
+        if blocked {
+            return None;
+        }
+        let snapshot = state.unwrap_or_else(|| fallback(start));
+        Some(self.policy().decide_after_turn(&snapshot, delivered))
     }
 
     pub(super) fn observe(&mut self, event: &ApiEvent) {
@@ -215,42 +227,37 @@ impl Panel {
         state: Option<TodoSnapshot>,
         cx: &mut Context<Self>,
     ) {
-        let Some((final_response_delivered, start)) =
-            self.prompt_queue.auto_poke.take_awaiting_state()
+        // The user typed, queued, or restarted work while the state was in
+        // flight: their input goes first.
+        let blocked = self.auto_poke_blocked();
+        let items = &self.items;
+        let Some(decision) = self
+            .prompt_queue
+            .auto_poke
+            .answer(state, blocked, |start| {
+                snapshot_from_card(
+                    items
+                        .get(start..)
+                        .unwrap_or_default()
+                        .iter()
+                        .rev()
+                        .find_map(|item| match item {
+                            Item::Todos(payload) => Some(payload.clone()),
+                            Item::Tool {
+                                name,
+                                output,
+                                done: true,
+                                error: None,
+                                ..
+                            } if name == "todo" => parse_todo_tool_output(output),
+                            _ => None,
+                        })
+                        .unwrap_or_default(),
+                )
+            })
         else {
             return;
         };
-        // The user typed, queued, or restarted work while the state was in
-        // flight. Their input goes first.
-        if self.auto_poke_blocked() {
-            return;
-        }
-        let snapshot = state.unwrap_or_else(|| {
-            snapshot_from_card(
-                self.items
-                    .get(start..)
-                    .unwrap_or_default()
-                    .iter()
-                    .rev()
-                    .find_map(|item| match item {
-                        Item::Todos(payload) => Some(payload.clone()),
-                        Item::Tool {
-                            name,
-                            output,
-                            done: true,
-                            error: None,
-                            ..
-                        } if name == "todo" => parse_todo_tool_output(output),
-                        _ => None,
-                    })
-                    .unwrap_or_default(),
-            )
-        });
-        let decision = self
-            .prompt_queue
-            .auto_poke
-            .policy()
-            .decide_after_turn(&snapshot, final_response_delivered);
         if !decision.effects.is_empty() {
             self.bridge.send(Command::AckTodoFollowUp {
                 session_id: self.session_id.clone(),
