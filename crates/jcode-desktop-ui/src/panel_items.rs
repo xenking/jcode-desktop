@@ -411,7 +411,7 @@ impl TranscriptImage {
             .map(|number| format!("Image #{number}"))
             .or_else(|| {
                 self.label.clone().and_then(|mut label| {
-                    for range in crate::input::image_marker_ranges(&label).into_iter().rev() {
+                    for range in crate::image_chip::image_marker_ranges(&label).into_iter().rev() {
                         if crate::image_chip::session_image_key(&label[range.clone()]).is_some() {
                             label.replace_range(range, "");
                         }
