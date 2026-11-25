@@ -147,11 +147,36 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(gate) = self.routing_gate.as_mut() else {
+        if self.routing_gate.is_none() {
             return false;
-        };
+        }
         let modifiers = event.keystroke.modifiers;
         if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
+            return false;
+        }
+        // Up, Down, Enter and Escape arrive as `menu` actions.
+        let key = match event.keystroke.key.as_str() {
+            "tab" => GateKey::Tab,
+            digit => match digit.parse::<u8>() {
+                Ok(digit) if digit < 10 && digit.to_string() == event.keystroke.key => {
+                    GateKey::Digit(digit)
+                }
+                _ => return false,
+            },
+        };
+        self.press_routing_gate(key, window, cx)
+    }
+
+    /// Feed one key to the routing gate while this panel (not the composer or
+    /// a card editor) holds the keyboard. False when the gate is not showing
+    /// or does not own the keyboard.
+    pub(super) fn press_routing_gate(
+        &mut self,
+        key: GateKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.routing_gate.is_none() {
             return false;
         }
         if !self.focus_handle.is_focused(window)
@@ -163,18 +188,8 @@ impl Panel {
         {
             return false;
         }
-        let key = match event.keystroke.key.as_str() {
-            "up" => GateKey::Up,
-            "down" => GateKey::Down,
-            "tab" => GateKey::Tab,
-            "enter" => GateKey::Enter,
-            "escape" => GateKey::Esc,
-            digit => match digit.parse::<u8>() {
-                Ok(digit) if digit < 10 && digit.to_string() == event.keystroke.key => {
-                    GateKey::Digit(digit)
-                }
-                _ => return false,
-            },
+        let Some(gate) = self.routing_gate.as_mut() else {
+            return false;
         };
         if gate.submitting() {
             return true;

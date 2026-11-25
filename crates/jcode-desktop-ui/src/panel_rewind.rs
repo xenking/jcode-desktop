@@ -234,42 +234,57 @@ impl Panel {
     pub(super) fn handle_rewind_key(
         &mut self,
         event: &gpui::KeyDownEvent,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(selection) = &self.rewind_selection else {
+        if self.rewind_selection.is_none() {
             return false;
-        };
-        let selected = selection.selected;
+        }
+        // Escape, Enter, Up and Down arrive as `menu` actions. Left and Right
+        // jump between prompts, and every other key is swallowed while the
+        // selection owns the keyboard.
         match event.keystroke.key.as_str() {
-            "escape" | "enter" => {
-                self.finish_rewind(event.keystroke.key == "enter", window, cx);
-            }
-            key @ ("up" | "down" | "left" | "right") => {
-                let target = if matches!(key, "left" | "right") {
-                    Target::Prompt
-                } else {
-                    Target::Message
-                };
-                let older = matches!(key, "up" | "left");
-                let candidates = self.rewind_candidates(target);
-                let next = if older {
-                    candidates.into_iter().rev().find(|&index| index < selected)
-                } else {
-                    candidates.into_iter().find(|&index| index > selected)
-                };
-                if let Some(index) = next {
-                    self.choose_rewind_row(index, cx);
-                } else if let Some(selection) = &mut self.rewind_selection {
-                    selection.older_target = older.then_some(target);
-                    if older {
-                        self.request_older_history();
-                    }
-                }
-            }
+            "left" => self.step_rewind(Target::Prompt, true, cx),
+            "right" => self.step_rewind(Target::Prompt, false, cx),
             _ => {}
         }
         true
+    }
+
+    pub(super) fn confirm_rewind_selection(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.finish_rewind(true, window, cx)
+    }
+
+    /// Up and Down walk messages. False when no rewind selection is open.
+    pub(super) fn step_rewind_message(&mut self, older: bool, cx: &mut Context<Self>) -> bool {
+        if self.rewind_selection.is_none() {
+            return false;
+        }
+        self.step_rewind(Target::Message, older, cx);
+        true
+    }
+
+    fn step_rewind(&mut self, target: Target, older: bool, cx: &mut Context<Self>) {
+        let Some(selected) = self.rewind_selection.as_ref().map(|s| s.selected) else {
+            return;
+        };
+        let candidates = self.rewind_candidates(target);
+        let next = if older {
+            candidates.into_iter().rev().find(|&index| index < selected)
+        } else {
+            candidates.into_iter().find(|&index| index > selected)
+        };
+        if let Some(index) = next {
+            self.choose_rewind_row(index, cx);
+        } else if let Some(selection) = &mut self.rewind_selection {
+            selection.older_target = older.then_some(target);
+            if older {
+                self.request_older_history();
+            }
+        }
     }
 
     fn confirm_rewind(&mut self, selected: usize) {

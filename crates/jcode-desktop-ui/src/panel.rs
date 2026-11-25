@@ -66,6 +66,9 @@ mod rewind_tests;
 #[path = "panel_rewind.rs"]
 mod rewind;
 
+#[path = "panel_menu.rs"]
+mod overlay_keys;
+
 #[cfg(test)]
 #[path = "panel_display_tests.rs"]
 mod display_tests;
@@ -92,6 +95,7 @@ mod provisional_history_tests;
 
 #[path = "panel_reveal.rs"]
 mod reveal;
+pub(crate) use reveal::PreviewScroll;
 
 #[path = "panel_text_document.rs"]
 mod text_document;
@@ -7255,12 +7259,10 @@ impl Render for Panel {
                 .size_full()
                 .relative()
                 .track_focus(&self.focus_handle)
-                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                    if event.keystroke.key == "escape" {
-                        this.close_login_picker(cx);
-                        cx.emit(AccountsPanelClosed);
-                        cx.stop_propagation();
-                    }
+                .key_context(crate::menu::CONTEXT)
+                .on_action(cx.listener(|this, _: &crate::menu::Cancel, _, cx| {
+                    this.close_login_picker(cx);
+                    cx.emit(AccountsPanelClosed);
                 }))
                 .children(self.render_login_picker(window, cx))
                 .into_any_element();
@@ -7270,11 +7272,9 @@ impl Render for Panel {
                 .size_full()
                 .relative()
                 .track_focus(&self.focus_handle)
-                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" {
-                        this.close_diff_review(window, cx);
-                        cx.stop_propagation();
-                    }
+                .key_context(crate::menu::CONTEXT)
+                .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
+                    this.close_diff_review(window, cx);
                 }))
                 .children(self.render_diff_review(cx))
                 .into_any_element();
@@ -8022,7 +8022,11 @@ impl Render for Panel {
             .relative()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
-            .key_context("ChatPanel")
+            .key_context(self.key_context())
+            .on_action(cx.listener(Self::menu_cancel))
+            .on_action(cx.listener(Self::menu_confirm))
+            .on_action(cx.listener(Self::menu_select_next))
+            .on_action(cx.listener(Self::menu_select_previous))
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
                 if this.finish_rewind(false, window, cx) {
                     cx.stop_propagation();
@@ -8114,37 +8118,12 @@ impl Render for Panel {
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.context_usage.is_open() && event.keystroke.key == "escape" {
-                    this.close_context_usage(cx);
-                    this.focus_input(window, cx);
-                    cx.stop_propagation();
-                } else if this.handle_rewind_key(event, window, cx)
-                    || this.handle_queue_card_key(event, window, cx)
+                if this.handle_rewind_key(event, cx)
+                    || this.handle_queue_card_key(event, cx)
                     || this.handle_ask_key(event, window, cx)
                     || this.handle_routing_gate_key(event, window, cx)
                     || this.resume_composer_typing(event, false, window, cx)
                 {
-                    cx.stop_propagation();
-                }
-            }))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.swarm_list_open && event.keystroke.key == "escape" {
-                    this.close_swarm_to_trigger(window, cx);
-                    cx.stop_propagation();
-                } else if this.login.is_some() && event.keystroke.key == "escape" {
-                    this.close_login_picker(cx);
-                    this.focus_input(window, cx);
-                    cx.stop_propagation();
-                } else if this.recovery_picker_open && event.keystroke.key == "escape" {
-                    this.recovery_picker_open = false;
-                    this.focus_input(window, cx);
-                    cx.notify();
-                    cx.stop_propagation();
-                } else if this.diff_review.is_some() && event.keystroke.key == "escape" {
-                    this.close_diff_review(window, cx);
-                    cx.stop_propagation();
-                } else if this.image_preview.is_some() && event.keystroke.key == "escape" {
-                    this.close_image_preview(window, cx);
                     cx.stop_propagation();
                 }
             }))

@@ -51,6 +51,7 @@ fn queue_card_actions_delete_and_edit(cx: &mut gpui::TestAppContext) {
 
 #[gpui::test]
 fn queue_card_menu_keyboard_controls(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = Panel::new("queue-keys".into(), None, None, bridge, cx);
@@ -388,6 +389,7 @@ fn remote_queue_row_edit_is_inline(cx: &mut gpui::TestAppContext) {
 
 #[gpui::test]
 fn escape_dismisses_row_actions_without_pausing_the_queue(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = Panel::new("queue-escape".into(), None, None, bridge, cx);

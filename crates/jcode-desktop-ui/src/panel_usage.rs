@@ -1056,6 +1056,7 @@ mod tests {
 
     #[gpui::test]
     fn context_meter_opens_read_only_usage_and_can_reopen(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
         let (bridge, commands) = crate::harness::spawn_recording();
         let (panel, vcx) =
             cx.add_window_view(|_, cx| Panel::new("usage-session".into(), None, None, bridge, cx));

@@ -13,6 +13,7 @@ use super::*;
 fn search_screen_takes_the_whole_window_and_escape_restores_the_workspace(
     cx: &mut gpui::TestAppContext,
 ) {
+    cx.update(crate::bind_workspace_keys);
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
         w.push_test_panel("chat", cx);
@@ -318,6 +319,7 @@ fn hit(
 /// with the query marked in its transcript.
 #[gpui::test]
 fn message_hits_list_under_their_session_and_open_marked(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);

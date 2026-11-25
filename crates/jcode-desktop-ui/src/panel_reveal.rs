@@ -17,6 +17,17 @@ pub(super) struct ControlReveal {
     expires_at: Instant,
 }
 
+/// How the search preview moves when the keyboard drives it.
+#[derive(Clone, Copy)]
+pub(crate) enum PreviewScroll {
+    LineUp,
+    LineDown,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
+}
+
 impl Panel {
     pub(super) fn control_highlight(&self) -> Option<&ControlReveal> {
         self.control_reveal.as_ref().filter(|reveal| {
@@ -152,16 +163,15 @@ impl Panel {
         true
     }
 
-    pub(crate) fn scroll_search_preview(&mut self, key: &str, cx: &mut Context<Self>) {
+    pub(crate) fn scroll_search_preview(&mut self, scroll: PreviewScroll, cx: &mut Context<Self>) {
         let page = f32::from(self.transcript_list.viewport_bounds().size.height) * 0.9;
-        let delta = match key {
-            "up" => 40.0,
-            "down" => -40.0,
-            "pageup" => page,
-            "pagedown" => -page,
-            "home" => f32::from(self.transcript_list.max_offset_for_scrollbar().y),
-            "end" => -f32::from(self.transcript_list.max_offset_for_scrollbar().y),
-            _ => return,
+        let delta = match scroll {
+            PreviewScroll::LineUp => 40.0,
+            PreviewScroll::LineDown => -40.0,
+            PreviewScroll::PageUp => page,
+            PreviewScroll::PageDown => -page,
+            PreviewScroll::Top => f32::from(self.transcript_list.max_offset_for_scrollbar().y),
+            PreviewScroll::Bottom => -f32::from(self.transcript_list.max_offset_for_scrollbar().y),
         };
         self.scroll_transcript_direct(delta, cx);
     }

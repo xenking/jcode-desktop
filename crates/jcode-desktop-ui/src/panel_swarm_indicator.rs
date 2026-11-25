@@ -577,6 +577,18 @@ impl Panel {
         }
         let scroll = self.swarm_list_scroll.clone();
         let limit = popup::scroll_height(window.viewport_size().height, false);
+        let row_focus = std::rc::Rc::new(row_focus);
+        let focus_row: std::rc::Rc<dyn Fn(&FocusHandle, &mut Window, &mut App)> = {
+            let rows = row_focus.clone();
+            std::rc::Rc::new(move |next, window, cx| {
+                if let Some(index) = rows.iter().position(|row| row == next) {
+                    scroll.scroll_to_item(if index == 0 { 0 } else { scroll_indices[index] });
+                }
+                window.focus(next, cx);
+            })
+        };
+        let row_focus_for_arrows = row_focus.clone();
+        let focus_row_for_arrows = focus_row.clone();
         Some(
             gpui::deferred(
                 Popup::new(
@@ -614,23 +626,33 @@ impl Panel {
                                         row_focus.get(peer)
                                     })
                                     .cloned();
-                                if let Some(next) = tab_peer.or_else(|| {
-                                    crate::keyboard::arrow_peer(event, &row_focus, window, cx)
-                                }) {
-                                    if let Some(index) =
-                                        row_focus.iter().position(|row| row == &next)
-                                    {
-                                        scroll.scroll_to_item(if index == 0 {
-                                            0
-                                        } else {
-                                            scroll_indices[index]
-                                        });
-                                    }
-                                    window.focus(&next, cx);
+                                if let Some(next) = tab_peer {
+                                    focus_row(&next, window, cx);
                                     cx.stop_propagation();
                                 }
                             },
                         ))
+                        .key_context(crate::menu::CONTEXT)
+                        .on_action({
+                            let row_focus = row_focus_for_arrows.clone();
+                            let focus_row = focus_row_for_arrows.clone();
+                            move |_: &crate::menu::SelectNext, window, cx| {
+                                match crate::keyboard::row_peer(&row_focus, true, window, cx) {
+                                    Some(next) => focus_row(&next, window, cx),
+                                    None => cx.propagate(),
+                                }
+                            }
+                        })
+                        .on_action({
+                            let row_focus = row_focus_for_arrows;
+                            let focus_row = focus_row_for_arrows;
+                            move |_: &crate::menu::SelectPrevious, window, cx| {
+                                match crate::keyboard::row_peer(&row_focus, false, window, cx) {
+                                    Some(next) => focus_row(&next, window, cx),
+                                    None => cx.propagate(),
+                                }
+                            }
+                        })
                         .w_full()
                         .min_w_0()
                         .max_h_full()
@@ -812,6 +834,7 @@ mod tests {
 
     #[gpui::test]
     fn swarm_popover_dismisses_with_escape_and_outside_click(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
         let (panel, vcx) = setup(cx);
         panel.update(vcx, |panel, cx| {
             panel.set_swarm_workers(vec![worker("rose", "running")], cx);
@@ -1021,6 +1044,7 @@ mod tests {
 
     #[gpui::test]
     fn a_long_swarm_list_scrolls_without_moving_the_transcript(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
         let (panel, vcx) = setup(cx);
         let window = vcx.update(|window, _| window.window_handle());
         vcx.simulate_window_resize(window, gpui::size(px(1060.), px(590.)));

@@ -15,13 +15,16 @@ pub(super) fn queue_card_surface(theme: &Theme) -> gpui::Rgba {
     surface
 }
 
+/// The prompt row whose action menu is open.
+enum CardRow {
+    Remote { id: String, index: usize },
+    Local { index: usize },
+}
+
 impl Panel {
-    pub(in crate::panel) fn handle_queue_card_key(
-        &mut self,
-        event: &gpui::KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    /// The open row, or `None` when no menu is open or its prompt is gone, in
+    /// which case the stale menu is closed.
+    fn queue_card_row(&mut self) -> Option<CardRow> {
         if let Some(id) = self
             .prompt_queue
             .card_menu
@@ -36,11 +39,37 @@ impl Panel {
                 .position(|prompt| prompt.client_id == id)
             else {
                 self.prompt_queue.card_menu = None;
-                return false;
+                return None;
             };
-            let key = event.keystroke.key.as_str();
-            let alt = event.keystroke.modifiers.alt;
-            match (key, alt) {
+            return Some(CardRow::Remote { id, index });
+        }
+        let index = self
+            .prompt_queue
+            .card_menu
+            .as_deref()
+            .and_then(|key| key.strip_prefix("local-"))
+            .and_then(|index| index.parse::<usize>().ok())?;
+        if index >= self.prompt_queue.prompts.len() {
+            self.prompt_queue.card_menu = None;
+            return None;
+        }
+        Some(CardRow::Local { index })
+    }
+
+    /// Alt+Up and Alt+Down reorder, M toggles the delivery mode. Escape and
+    /// Enter arrive as `menu` actions.
+    pub(in crate::panel) fn handle_queue_card_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(row) = self.queue_card_row() else {
+            return false;
+        };
+        let key = event.keystroke.key.as_str();
+        let alt = event.keystroke.modifiers.alt;
+        match row {
+            CardRow::Remote { id, index } => match (key, alt) {
                 ("up", true) => self.reorder_remote_card_prompt(index, true),
                 ("down", true) => self.reorder_remote_card_prompt(index, false),
                 ("m", false) => {
@@ -58,66 +87,68 @@ impl Panel {
                         mode,
                     });
                 }
-                ("enter", false) => {
-                    self.send_remote_queue_row(&id, self.prompt_queue.remote[index].mode, cx);
-                    self.prompt_queue.card_menu = None;
-                    self.focus_input(window, cx);
+                _ => return false,
+            },
+            CardRow::Local { index } => match (key, alt) {
+                ("up", true) if index > 0 => {
+                    self.prompt_queue.prompts.swap(index, index - 1);
+                    self.local_queue_swapped(index, index - 1);
+                    self.prompt_queue.card_menu = Some(format!("local-{}", index - 1));
                 }
-                ("escape", false) => {
-                    self.prompt_queue.card_menu = None;
-                    self.focus_input(window, cx);
+                ("down", true) if index + 1 < self.prompt_queue.prompts.len() => {
+                    self.prompt_queue.prompts.swap(index, index + 1);
+                    self.local_queue_swapped(index, index + 1);
+                    self.prompt_queue.card_menu = Some(format!("local-{}", index + 1));
+                }
+                ("up" | "down", true) => {}
+                ("m", false) => {
+                    self.prompt_queue.prompts[index].after_yield =
+                        !self.prompt_queue.prompts[index].after_yield
                 }
                 _ => return false,
-            }
-            cx.notify();
-            return true;
+            },
         }
-        let Some(index) = self
-            .prompt_queue
-            .card_menu
-            .as_deref()
-            .and_then(|key| key.strip_prefix("local-"))
-            .and_then(|index| index.parse::<usize>().ok())
-        else {
-            return false;
-        };
-        if index >= self.prompt_queue.prompts.len() {
-            self.prompt_queue.card_menu = None;
-            return false;
-        }
-        let key = event.keystroke.key.as_str();
-        let alt = event.keystroke.modifiers.alt;
-        match (key, alt) {
-            ("up", true) if index > 0 => {
-                self.prompt_queue.prompts.swap(index, index - 1);
-                self.local_queue_swapped(index, index - 1);
-                self.prompt_queue.card_menu = Some(format!("local-{}", index - 1));
+        cx.notify();
+        true
+    }
+
+    /// Enter sends the open row now.
+    pub(in crate::panel) fn confirm_queue_card(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match self.queue_card_row() {
+            Some(CardRow::Remote { id, index }) => {
+                self.send_remote_queue_row(&id, self.prompt_queue.remote[index].mode, cx);
+                self.prompt_queue.card_menu = None;
             }
-            ("down", true) if index + 1 < self.prompt_queue.prompts.len() => {
-                self.prompt_queue.prompts.swap(index, index + 1);
-                self.local_queue_swapped(index, index + 1);
-                self.prompt_queue.card_menu = Some(format!("local-{}", index + 1));
-            }
-            ("up" | "down", true) => {}
-            ("m", false) => {
-                self.prompt_queue.prompts[index].after_yield =
-                    !self.prompt_queue.prompts[index].after_yield
-            }
-            ("enter", false) if self.queue_connection_ready() => {
+            Some(CardRow::Local { index }) if self.queue_connection_ready() => {
                 self.prompt_queue.card_menu = None;
                 self.send_local_queue_row(index, cx);
-                self.focus_input(window, cx);
-            }
-            // Esc only dismisses what the card opened: it closes the row
-            // actions and gives focus back to the composer. Stopping a turn
-            // is a separate action, so Esc never pauses the queue by itself.
-            ("escape", false) => {
-                self.prompt_queue.card_menu = None;
-                self.prompt_queue.card_expanded = None;
-                self.focus_input(window, cx);
             }
             _ => return false,
         }
+        self.focus_input(window, cx);
+        cx.notify();
+        true
+    }
+
+    /// Esc only dismisses what the card opened: it closes the row actions and
+    /// gives focus back to the composer. Stopping a turn is a separate action,
+    /// so Esc never pauses the queue by itself.
+    pub(in crate::panel) fn cancel_queue_card(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match self.queue_card_row() {
+            Some(CardRow::Remote { .. }) => {}
+            Some(CardRow::Local { .. }) => self.prompt_queue.card_expanded = None,
+            None => return false,
+        }
+        self.prompt_queue.card_menu = None;
+        self.focus_input(window, cx);
         cx.notify();
         true
     }

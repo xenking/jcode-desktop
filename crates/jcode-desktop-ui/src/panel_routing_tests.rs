@@ -100,6 +100,7 @@ fn a_gate_replaces_the_text_slot_and_a_digit_answers_it(cx: &mut gpui::TestAppCo
 
 #[gpui::test]
 fn enter_answers_the_focused_switch_and_escape_cancels(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
     let (panel, vcx, commands) = panel_with_bridge(cx);
     panel.update(vcx, |panel, cx| panel.apply(&gate_event("g1"), cx));
     vcx.run_until_parked();
@@ -278,6 +279,7 @@ fn acct_is_a_registered_command(_cx: &mut gpui::TestAppContext) {
 
 #[gpui::test]
 fn an_opening_gate_takes_the_keyboard_so_keys_answer_without_a_click(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
     let (panel, vcx, commands) = panel_with_bridge(cx);
     vcx.update(|window, cx| window.blur(cx));
     panel.update(vcx, |panel, cx| panel.apply(&gate_event("g1"), cx));

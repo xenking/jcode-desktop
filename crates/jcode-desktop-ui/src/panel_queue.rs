@@ -64,7 +64,7 @@ pub struct PromptQueue {
     #[serde(default)]
     default_after_yield: bool,
     #[serde(skip)]
-    card_menu: Option<String>,
+    pub(in crate::panel) card_menu: Option<String>,
     #[serde(skip)]
     card_expanded: Option<String>,
 }

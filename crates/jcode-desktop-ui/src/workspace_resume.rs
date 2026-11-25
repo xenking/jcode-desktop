@@ -8,6 +8,7 @@
 //! the query marked, and opening a hit lands the session on that message.
 use super::*;
 use crate::global_search::{self, Effect, PickRow};
+use crate::panel::PreviewScroll;
 use std::time::Instant;
 
 const RESUME_ARROW: &[u8] = include_bytes!("../../../assets/icons/arrow-up.svg");
@@ -849,6 +850,8 @@ impl Workspace {
         }
     }
 
+    /// Page keys and Ctrl+1 to 4. Escape, Enter and the arrows arrive as
+    /// `menu` actions.
     fn resume_key_down(
         &mut self,
         event: &gpui::KeyDownEvent,
@@ -856,23 +859,19 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
-        let Some(state) = self.resume.as_ref() else {
-            return;
-        };
-        let query_focused = state.search.focus_handle(cx).is_focused(window);
-        if state.preview_focus.contains_focused(window, cx)
-            && matches!(key, "up" | "down" | "pageup" | "pagedown" | "home" | "end")
-        {
-            if let Some(Ok(panel)) = &state.preview {
-                panel.update(cx, |panel, cx| panel.scroll_search_preview(key, cx));
-            }
-            cx.stop_propagation();
-            return;
-        }
         match key {
-            "escape" => self.close_resume(window, cx),
-            "enter" if query_focused => self.resume_selected(window, cx),
-            "1" | "2" | "3" | "4" if event.keystroke.modifiers.control => {
+            "pageup" | "pagedown" => {
+                let forward = key == "pagedown";
+                let scroll = if forward {
+                    PreviewScroll::PageDown
+                } else {
+                    PreviewScroll::PageUp
+                };
+                if !self.scroll_resume_preview(scroll, window, cx) {
+                    self.step_resume_selection(if forward { 8 } else { -8 }, window, cx);
+                }
+            }
+            "1" | "2" | "3" | "4" if event.keystroke.modifiers.control && self.resume.is_some() => {
                 self.set_resume_filter(
                     match key {
                         "2" => Filter::Active,
@@ -883,28 +882,46 @@ impl Workspace {
                     cx,
                 );
             }
-            "up" | "down" | "pageup" | "pagedown" => {
-                window.focus(&state.search.focus_handle(cx), cx);
-                self.move_resume_selection(key, cx);
-            }
             _ => return,
         }
         cx.stop_propagation();
     }
 
-    fn move_resume_selection(&mut self, key: &str, cx: &mut Context<Self>) {
+    /// Scroll the session preview when it holds focus. False otherwise.
+    fn scroll_resume_preview(
+        &mut self,
+        scroll: PreviewScroll,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(state) = self.resume.as_ref() else {
+            return false;
+        };
+        if !state.preview_focus.contains_focused(window, cx) {
+            return false;
+        }
+        if let Some(Ok(panel)) = &state.preview {
+            panel.update(cx, |panel, cx| panel.scroll_search_preview(scroll, cx));
+        }
+        true
+    }
+
+    /// Move the list selection by `delta` rows, returning focus to the search field.
+    fn step_resume_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.resume.as_ref() else {
+            return;
+        };
+        window.focus(&state.search.focus_handle(cx), cx);
+        self.move_resume_selection(delta, cx);
+    }
+
+    fn move_resume_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         let matches = self.resume_matches(cx);
         let rows = self.resume_rows(&matches);
         let current = self
             .resume_selected_row()
             .filter(|row| rows.contains(row))
             .or_else(|| rows.first().cloned());
-        let delta = match key {
-            "up" => -1,
-            "pageup" => -8,
-            "pagedown" => 8,
-            _ => 1,
-        };
         let next = global_search::step(&rows, current.as_ref(), delta);
         let index = next
             .as_ref()
@@ -1393,7 +1410,42 @@ impl Workspace {
                     }
                 }),
             )
+            .key_context(crate::menu::CONTEXT)
             .capture_key_down(cx.listener(Self::resume_key_down))
+            .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
+                this.close_resume(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::menu::Confirm, window, cx| {
+                let query_focused = this
+                    .resume
+                    .as_ref()
+                    .is_some_and(|state| state.search.focus_handle(cx).is_focused(window));
+                if query_focused {
+                    this.resume_selected(window, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &crate::menu::SelectNext, window, cx| {
+                if !this.scroll_resume_preview(PreviewScroll::LineDown, window, cx) {
+                    this.step_resume_selection(1, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &crate::menu::SelectPrevious, window, cx| {
+                if !this.scroll_resume_preview(PreviewScroll::LineUp, window, cx) {
+                    this.step_resume_selection(-1, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &crate::menu::SelectFirst, window, cx| {
+                if !this.scroll_resume_preview(PreviewScroll::Top, window, cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &crate::menu::SelectLast, window, cx| {
+                if !this.scroll_resume_preview(PreviewScroll::Bottom, window, cx) {
+                    cx.propagate();
+                }
+            }))
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
                 this.close_resume(window, cx);
                 cx.stop_propagation();
@@ -1403,11 +1455,11 @@ impl Workspace {
                 cx.stop_propagation();
             }))
             .capture_action(cx.listener(|this, _: &crate::input::HistoryPrev, _, cx| {
-                this.move_resume_selection("up", cx);
+                this.move_resume_selection(-1, cx);
                 cx.stop_propagation();
             }))
             .capture_action(cx.listener(|this, _: &crate::input::HistoryNext, _, cx| {
-                this.move_resume_selection("down", cx);
+                this.move_resume_selection(1, cx);
                 cx.stop_propagation();
             }))
             .child(
@@ -2008,6 +2060,7 @@ mod tests {
 
     #[gpui::test]
     fn resume_click_selects_without_opening_and_keyboard_opens(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = picker(cx);
         click(vcx, "resume-row-1");
         workspace.read_with(vcx, |w, cx| {
@@ -2094,6 +2147,7 @@ mod tests {
     fn resume_preview_scrolls_with_tab_keys_and_wheel_without_changing_selection(
         cx: &mut gpui::TestAppContext,
     ) {
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = picker(cx);
         let preview = seed_preview(&workspace, vcx);
         let initial = visible_rows(&preview, vcx);
@@ -2134,6 +2188,7 @@ mod tests {
     fn resume_metadata_query_reveals_first_transcript_match_in_preview_and_panel(
         cx: &mut gpui::TestAppContext,
     ) {
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = picker(cx);
         workspace.update(vcx, |w, cx| {
             w.push_test_panel("beta", cx);
@@ -2905,6 +2960,7 @@ mod tests {
 
     #[gpui::test]
     fn resume_cancel_preserves_draft_and_never_watches_a_picker(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -2999,6 +3055,7 @@ mod tests {
     fn resume_keyboard_navigation_search_empty_and_catalog_refresh_are_safe(
         cx: &mut gpui::TestAppContext,
     ) {
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.single_panel = true;

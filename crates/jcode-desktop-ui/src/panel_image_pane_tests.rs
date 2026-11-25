@@ -258,6 +258,7 @@ fn image_pane_button_toggles_links_and_close_restores_inline(cx: &mut gpui::Test
 fn image_pane_thumbnails_select_item_indices_and_main_opens_lightbox(
     cx: &mut gpui::TestAppContext,
 ) {
+    cx.update(crate::bind_workspace_keys);
     let (panel, vcx) = setup(cx);
     click(vcx, "panel-images");
     assert_eq!(
@@ -324,6 +325,7 @@ fn image_pane_letterbox_does_not_open_the_preview(cx: &mut gpui::TestAppContext)
 fn image_pane_arrows_and_escape_only_capture_when_the_filmstrip_has_focus(
     cx: &mut gpui::TestAppContext,
 ) {
+    cx.update(crate::bind_workspace_keys);
     let (panel, vcx) = setup(cx);
     vcx.update(|window, cx| {
         let handle = panel.read(cx).input_focus_handle(cx);
@@ -459,6 +461,7 @@ fn image_pane_leaves_room_for_the_picture_with_a_full_metadata_list(
 fn historical_gallery_image_takes_keyboard_focus_when_its_bytes_arrive(
     cx: &mut gpui::TestAppContext,
 ) {
+    cx.update(crate::bind_workspace_keys);
     let (panel, vcx) = setup(cx);
     let id = "img_0123456789abcdef0123456789abcdef";
     vcx.update(|window, cx| {

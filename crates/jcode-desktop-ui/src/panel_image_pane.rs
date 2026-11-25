@@ -306,7 +306,7 @@ impl Panel {
     fn image_pane_key_down(
         &mut self,
         event: &gpui::KeyDownEvent,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if event.keystroke.modifiers != gpui::Modifiers::default() {
@@ -315,12 +315,6 @@ impl Panel {
         let step = match event.keystroke.key.as_str() {
             "left" => -1,
             "right" => 1,
-            "escape" => {
-                self.set_image_pane_open(false, cx);
-                self.focus_input(window, cx);
-                cx.stop_propagation();
-                return;
-            }
             _ => return,
         };
         let indices = self.session_image_indices();
@@ -737,6 +731,11 @@ impl Panel {
                         .id("session-image-thumbnails")
                         .debug_selector(|| "session-image-thumbnails".into())
                         .track_focus(&self.image_pane_focus)
+                        .key_context(crate::menu::CONTEXT)
+                        .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
+                            this.set_image_pane_open(false, cx);
+                            this.focus_input(window, cx);
+                        }))
                         .on_key_down(cx.listener(Self::image_pane_key_down))
                         .flex_none()
                         .h(px(70.))

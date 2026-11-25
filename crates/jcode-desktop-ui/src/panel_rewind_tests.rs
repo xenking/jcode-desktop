@@ -3,6 +3,7 @@ use jcode_sdk::api::RewindMessageKey;
 
 #[gpui::test]
 fn clean_chat_rewind_cancel_restores_tail_without_extra_whitespace(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
     let (bridge, _) = crate::harness::spawn_recording();
     let (panel, vcx) =
         cx.add_window_view(|_, cx| Panel::new("rewind".into(), None, None, bridge, cx));
@@ -48,6 +49,7 @@ fn clean_chat_rewind_cancel_restores_tail_without_extra_whitespace(cx: &mut gpui
 
 #[gpui::test]
 fn clean_chat_rewind_skips_hidden_messages_in_both_directions(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
     let (bridge, _) = crate::harness::spawn_recording();
     let (panel, vcx) =
         cx.add_window_view(|_, cx| Panel::new("rewind".into(), None, None, bridge, cx));
@@ -114,6 +116,7 @@ fn clean_chat_rewind_skips_hidden_messages_in_both_directions(cx: &mut gpui::Tes
 
 #[gpui::test]
 fn rewind_uses_transcript_rows_and_returns_focus_to_composer(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -198,6 +201,7 @@ fn rewind_uses_transcript_rows_and_returns_focus_to_composer(cx: &mut gpui::Test
 
 #[gpui::test]
 fn rewind_centers_messages_and_crosses_history_pages(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) =
         cx.add_window_view(|_, cx| Panel::new("rewind".into(), None, None, bridge, cx));

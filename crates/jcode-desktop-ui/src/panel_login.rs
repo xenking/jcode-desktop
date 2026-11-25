@@ -924,17 +924,6 @@ impl Panel {
                 .size_full()
                 .bg(theme.PANEL_BG)
                 .occlude()
-                .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" && !event.is_held {
-                        this.close_login_picker(cx);
-                        if this.is_accounts_panel() {
-                            cx.emit(AccountsPanelClosed);
-                        } else {
-                            this.focus_input(window, cx);
-                        }
-                        cx.stop_propagation();
-                    }
-                }))
                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                     if event.keystroke.key == "enter" && !event.is_held {
                         this.submit_login(cx);
