@@ -2,7 +2,7 @@
 //! windows, and budgets with used against limit. Fed by the routing view the
 //! runtime reports; absent when the runtime has none.
 use super::*;
-use crate::routing_rows::{BarRow, BudgetRow, KeyRow, SidebarRouting, Tone};
+use crate::routing::rows::{BarRow, BudgetRow, KeyRow, SidebarRouting, Tone};
 
 fn tone_color(tone: Tone) -> gpui::Rgba {
     let theme = Theme::global();

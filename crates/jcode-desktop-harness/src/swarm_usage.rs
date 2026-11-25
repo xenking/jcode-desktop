@@ -102,7 +102,11 @@ pub fn worker_usage(home: &Path, session_id: &str) -> Option<WorkerUsage> {
     }
     for line in journal {
         usage.model = line.meta.model.filter(|m| !m.is_empty()).or(usage.model);
-        usage.provider = line.meta.provider_key.filter(|p| !p.is_empty()).or(usage.provider);
+        usage.provider = line
+            .meta
+            .provider_key
+            .filter(|p| !p.is_empty())
+            .or(usage.provider);
         for message in &line.append_messages {
             usage.total_tokens += message.token_usage.as_ref().map_or(0, Usage::total);
         }
@@ -172,7 +176,8 @@ mod tests {
     /// showed as "~15 tok".
     #[test]
     fn total_is_the_workers_own_spend_not_the_tool_call_size() {
-        let usage = worker_usage(&fixtures(), "session_rose_1794717290730_574aea8d9f6adcc3").unwrap();
+        let usage =
+            worker_usage(&fixtures(), "session_rose_1794717290730_574aea8d9f6adcc3").unwrap();
         assert_eq!(usage.total_tokens, 4_478_262);
         assert_eq!(usage.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(usage.provider.as_deref(), Some("claude-oauth"));
@@ -183,7 +188,8 @@ mod tests {
     /// an edited stale value to prove the journal's metadata wins.
     #[test]
     fn journal_lines_extend_the_snapshot_and_override_its_model() {
-        let usage = worker_usage(&fixtures(), "session_badger_1794720615830_8c546c8d2a5870c4").unwrap();
+        let usage =
+            worker_usage(&fixtures(), "session_badger_1794720615830_8c546c8d2a5870c4").unwrap();
         assert_eq!(usage.total_tokens, 140_690 + 325_554);
         assert_eq!(usage.model.as_deref(), Some("claude-sonnet-5-5"));
     }
@@ -199,7 +205,11 @@ mod tests {
         let dir = home.path().join("sessions");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("w.json");
-        std::fs::write(&path, r#"{"model":"m","messages":[{"token_usage":{"prompt_tokens":10,"output_tokens":5}}]}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"model":"m","messages":[{"token_usage":{"prompt_tokens":10,"output_tokens":5}}]}"#,
+        )
+        .unwrap();
         let ids = vec!["w".to_string()];
         assert_eq!(usage_for(home.path(), &ids)["w"].total_tokens, 15);
         std::fs::write(&path, r#"{"model":"m","messages":[{"token_usage":{"prompt_tokens":10,"output_tokens":5}},{"token_usage":{"input_tokens":1,"cache_read_input_tokens":2,"output_tokens":3}}]}"#).unwrap();

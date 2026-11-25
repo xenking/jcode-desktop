@@ -1,10 +1,10 @@
 //! Real SDK socket-pair tests for the native SSH address routing boundary.
 use super::*;
-include!("harness_recovery_reconnect_tests.rs");
-include!("harness_recovery_acceptance_tests.rs");
-include!("harness_history_recovery_tests.rs");
-include!("harness_protocol_recovery_tests.rs");
-include!("harness_turn_retry_tests.rs");
+include!("recovery_reconnect.rs");
+include!("recovery_acceptance.rs");
+include!("history_recovery.rs");
+include!("protocol_recovery.rs");
+include!("turn_retry.rs");
 use jcode_sdk::api::{ApiRequest, ClientFrame, ServerFrame, read_frame, write_frame};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -56,10 +56,7 @@ impl Server {
         Self::with_failures(history_failures, 0)
     }
 
-    fn with_failures(
-        history_failures: usize,
-        attach_failures: usize,
-    ) -> (JcodeClient, Self) {
+    fn with_failures(history_failures: usize, attach_failures: usize) -> (JcodeClient, Self) {
         Self::with_pending_asks(history_failures, attach_failures, None)
     }
 
@@ -373,13 +370,13 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         .send(SessionCommand::Operation(SessionOperation::Rewind(2)))
         .unwrap();
     commands
-        .send(SessionCommand::Operation(SessionOperation::RewindTranscript(
-            jcode_sdk::api::RewindAnchor {
+        .send(SessionCommand::Operation(
+            SessionOperation::RewindTranscript(jcode_sdk::api::RewindAnchor {
                 selected: jcode_sdk::api::RewindMessageKey::new("user", "remote prompt").unwrap(),
                 before: None,
                 after: None,
-            },
-        )))
+            }),
+        ))
         .unwrap();
     commands
         .send(SessionCommand::Operation(SessionOperation::RewindUndo))
@@ -409,7 +406,10 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         matches!(u, Update::Event { session_id, event: ApiEvent::Compacted { message, .. } }
             if session_id == &ui_id && message == "scheduled")
     });
-    wait_update(&updates, |u| matches!(u, Update::RewoundHistory { session_id, bounded: false, .. } if session_id == &ui_id));
+    wait_update(
+        &updates,
+        |u| matches!(u, Update::RewoundHistory { session_id, bounded: false, .. } if session_id == &ui_id),
+    );
     wait_update(
         &updates,
         |u| matches!(u, Update::SessionForked { session, .. } if session.session_id == remote::namespace("user@desktop", "fork-id")),
@@ -443,16 +443,20 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         text: "corrected".into(),
         message_id: Some("response-id".into()),
     });
-    wait_update(&updates, |u| matches!(u, Update::Event {
+    wait_update(&updates, |u| {
+        matches!(u, Update::Event {
         session_id, event: ApiEvent::TextReplace { session_id: inner, text, message_id: Some(id) }
-    } if session_id == &ui_id && inner == &ui_id && id == "response-id" && text == "corrected"));
+    } if session_id == &ui_id && inner == &ui_id && id == "response-id" && text == "corrected")
+    });
     server.event(ApiEvent::TextDone {
         session_id: "same-id".into(),
         message_id: Some("response-id".into()),
     });
-    wait_update(&updates, |u| matches!(u, Update::Event {
+    wait_update(&updates, |u| {
+        matches!(u, Update::Event {
         session_id, event: ApiEvent::TextDone { session_id: inner, message_id: Some(id) }
-    } if session_id == &ui_id && inner == &ui_id && id == "response-id"));
+    } if session_id == &ui_id && inner == &ui_id && id == "response-id")
+    });
     server.event(ApiEvent::TurnDone {
         session_id: "same-id".into(),
         pending_soft_interrupts: None,
@@ -547,7 +551,11 @@ fn ask_reconnect_reports_new_pending_owner_and_never_replays_an_old_answer() {
     let worker = std::thread::spawn(move || {
         let mut attachment = 0;
         session_worker_with_connector("same-id".into(), rx, tx, None, |_| {
-            let request = if attachment == 0 { "ask-old" } else { "ask-new" };
+            let request = if attachment == 0 {
+                "ask-old"
+            } else {
+                "ask-new"
+            };
             attachment += 1;
             let (client, server) = Server::with_pending_asks(0, 0, Some(vec![request.into()]));
             connections_tx.send(server).unwrap();
@@ -555,9 +563,14 @@ fn ask_reconnect_reports_new_pending_owner_and_never_replays_an_old_answer() {
         });
     });
     let await_attachment = |request_id: &str| {
-        let Update::AskAttachment { attachment_id, pending_ask_ids, .. } =
-            wait_update(&updates, |u| matches!(u, Update::AskAttachment { .. }))
-        else { unreachable!() };
+        let Update::AskAttachment {
+            attachment_id,
+            pending_ask_ids,
+            ..
+        } = wait_update(&updates, |u| matches!(u, Update::AskAttachment { .. }))
+        else {
+            unreachable!()
+        };
         assert_eq!(pending_ask_ids.unwrap(), [request_id]);
         attachment_id
     };
@@ -567,28 +580,51 @@ fn ask_reconnect_reports_new_pending_owner_and_never_replays_an_old_answer() {
     wait_update(&updates, |u| matches!(u, Update::SessionLost { .. }));
 
     let answer = |request_id: &str, attachment_id, attempt_id| {
-        commands.send(SessionCommand::AskResponse {
-            request_id: request_id.into(),
-            attachment_id,
-            attempt_id,
-            response: jcode_sdk::AskResponse::default(),
-        }).unwrap();
+        commands
+            .send(SessionCommand::AskResponse {
+                request_id: request_id.into(),
+                attachment_id,
+                attempt_id,
+                response: jcode_sdk::AskResponse::default(),
+            })
+            .unwrap();
     };
     answer("ask-old", old_attachment, 1);
     let second = connections.recv_timeout(Duration::from_secs(3)).unwrap();
     let new_attachment = await_attachment("ask-new");
     assert_ne!(old_attachment, new_attachment);
-    wait_update(&updates, |u| matches!(u, Update::AskResponseSettled {
-        attempt_id: 1, result: Err(AskResponseError::ConnectionChanged), ..
-    }));
-    assert!(!second.requests.try_iter().any(|r| matches!(r, ApiRequest::AskResponse { .. })));
+    wait_update(&updates, |u| {
+        matches!(
+            u,
+            Update::AskResponseSettled {
+                attempt_id: 1,
+                result: Err(AskResponseError::ConnectionChanged),
+                ..
+            }
+        )
+    });
+    assert!(
+        !second
+            .requests
+            .try_iter()
+            .any(|r| matches!(r, ApiRequest::AskResponse { .. }))
+    );
 
     answer("ask-new", new_attachment, 2);
-    assert!(matches!(second.next(), ApiRequest::AskResponse { request_id, response, .. }
-        if request_id == "ask-new" && response.answers.is_none()));
-    wait_update(&updates, |u| matches!(u, Update::AskResponseSettled {
-        attempt_id: 2, result: Ok(()), ..
-    }));
+    assert!(
+        matches!(second.next(), ApiRequest::AskResponse { request_id, response, .. }
+        if request_id == "ask-new" && response.answers.is_none())
+    );
+    wait_update(&updates, |u| {
+        matches!(
+            u,
+            Update::AskResponseSettled {
+                attempt_id: 2,
+                result: Ok(()),
+                ..
+            }
+        )
+    });
     commands.send(SessionCommand::Stop).unwrap();
     worker.join().unwrap();
     second.disconnect();
@@ -623,9 +659,11 @@ fn restored_remote_address_reconnects_to_same_host_without_blocking_local_worker
         &updates,
         |u| matches!(u, Update::SessionLost { session_id, .. } if session_id == &ui_id),
     );
-    wait_update(&updates, |u| matches!(u,
-        Update::OpenrigHostIdentity { session_id, self_host_id: None } if session_id == &ui_id
-    ));
+    wait_update(&updates, |u| {
+        matches!(u,
+            Update::OpenrigHostIdentity { session_id, self_host_id: None } if session_id == &ui_id
+        )
+    });
 
     // The same raw ID on the local host remains independent and responsive.
     let (local_client, local_server) = Server::new();
@@ -761,16 +799,25 @@ fn paired_create_failure_carries_the_typed_cause_and_ssh_failure_does_not() {
     ] {
         let (internal, _created) = channel();
         let (tx, updates) = update_channel();
-        create_remote_session(host.into(), None, Some("draft-id".into()), tx, internal, |_| {
-            Err(jcode_sdk::Error::new(
-                jcode_sdk::ErrorKind::Paired(jcode_sdk::PairedFailure::Unresolved),
-                "The gateway's name did not resolve",
-            ))
-        });
+        create_remote_session(
+            host.into(),
+            None,
+            Some("draft-id".into()),
+            tx,
+            internal,
+            |_| {
+                Err(jcode_sdk::Error::new(
+                    jcode_sdk::ErrorKind::Paired(jcode_sdk::PairedFailure::Unresolved),
+                    "The gateway's name did not resolve",
+                ))
+            },
+        );
         let update = wait_update(&updates, |update| {
             matches!(update, Update::RemoteStatus { failed: true, .. })
         });
-        let Update::RemoteStatus { failure, .. } = update else { unreachable!() };
+        let Update::RemoteStatus { failure, .. } = update else {
+            unreachable!()
+        };
         assert_eq!(failure.is_some(), expect_typed, "{host}");
         if let Some(failure) = failure {
             assert_eq!(

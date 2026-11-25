@@ -1,6 +1,6 @@
 //! Clients observe recovery. Only the daemon admits continuation turns.
 #[derive(Default)]
-pub(super) struct Recovery {
+pub(in crate::harness) struct Recovery {
     consumed: bool,
 }
 
@@ -9,7 +9,7 @@ impl Recovery {
         self.consumed = true;
     }
 
-    pub(super) fn notice(&mut self, message: &str) -> bool {
+    pub(in crate::harness) fn notice(&mut self, message: &str) -> bool {
         if self.consumed || message.trim().is_empty() {
             return false;
         }

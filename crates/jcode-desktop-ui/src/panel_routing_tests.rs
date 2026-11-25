@@ -94,7 +94,7 @@ fn a_gate_replaces_the_text_slot_and_a_digit_answers_it(cx: &mut gpui::TestAppCo
         "the digit answers its row without moving the focus first"
     );
     panel.read_with(vcx, |panel, _| {
-        assert!(panel.routing_gate.as_ref().unwrap().submitting());
+        assert!(panel.routing_gate.as_ref().unwrap().view().submitting);
     });
 }
 

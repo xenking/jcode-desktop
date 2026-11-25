@@ -60,7 +60,7 @@ impl Panel {
         if self
             .routing_gate
             .as_ref()
-            .is_some_and(|gate| gate.gate_id() == gate_id)
+            .is_some_and(|gate| gate.view().gate_id == gate_id)
         {
             return;
         }
@@ -78,7 +78,7 @@ impl Panel {
         if self
             .routing_gate
             .as_ref()
-            .is_some_and(|gate| gate.gate_id() == gate_id)
+            .is_some_and(|gate| gate.view().gate_id == gate_id)
         {
             self.dismiss_routing_gate(cx);
         }
@@ -104,7 +104,7 @@ impl Panel {
         gate.mark_submitting(NEXT_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
         self.bridge.send(Command::RoutingGateAnswer {
             session_id: self.session_id.clone(),
-            gate_id: gate.gate_id().to_owned(),
+            gate_id: gate.view().gate_id.to_owned(),
             choice,
         });
         cx.notify();
@@ -120,7 +120,7 @@ impl Panel {
         let Some(gate) = self
             .routing_gate
             .as_mut()
-            .filter(|gate| gate.gate_id() == gate_id)
+            .filter(|gate| gate.view().gate_id == gate_id)
         else {
             return;
         };
@@ -191,7 +191,7 @@ impl Panel {
         let Some(gate) = self.routing_gate.as_mut() else {
             return false;
         };
-        if gate.submitting() {
+        if gate.view().submitting {
             return true;
         }
         match gate.press(key) {
@@ -307,15 +307,17 @@ impl Panel {
         let gate = self.routing_gate.as_ref()?;
         let theme = Theme::global();
         let focused = self.focus_handle.is_focused(window);
-        let submitting = gate.submitting();
+        let view = gate.view();
+        let submitting = view.submitting;
         let mut rows = div()
             .debug_selector(|| "routing-gate-rows".into())
             .flex()
             .flex_col()
             .gap_1();
-        for (index, text) in gate.rows().into_iter().enumerate() {
-            let selected = gate.cursor() == index;
-            let cancel = index + 1 == gate.row_count();
+        let row_count = view.rows.len();
+        for (index, text) in view.rows.into_iter().enumerate() {
+            let selected = view.cursor == index;
+            let cancel = index + 1 == row_count;
             rows = rows.child(
                 crate::keyboard::button(div().id(("routing-gate-row", index)))
                     .debug_selector(move || format!("routing-gate-row-{index}"))
@@ -418,7 +420,7 @@ impl Panel {
                     div()
                         .debug_selector(|| "routing-gate-reason".into())
                         .min_w_0()
-                        .child(gate.reason().to_owned()),
+                        .child(gate.view().reason.to_owned()),
                 )
                 .child(rows)
                 .children(gate.error.as_ref().map(|error| {

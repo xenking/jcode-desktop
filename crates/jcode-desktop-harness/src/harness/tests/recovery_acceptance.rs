@@ -63,7 +63,7 @@ fn real_bundle_bridge_replaces_stale_bridge_and_delivers_peer_prompt_live() {
     let session = std::env::var("JCODE_STALE_BRIDGE_SESSION").expect("isolated fixture session");
     let expected = std::env::var_os("JCODE_STALE_BRIDGE_EXPECTED_BINARY").expect("new bundle binary");
     let old_socket = jcode_sdk::api::api_socket_path();
-    let own_socket = crate::runtime_generation::local_bridge_socket().unwrap();
+    let own_socket = crate::harness::local_runtime::generation::local_bridge_socket().unwrap();
     assert_ne!(own_socket, old_socket, "old bridge lock must not block this bundle");
     let wrong_binary = std::env::var_os("JCODE_STALE_BRIDGE_WRONG_BINARY").expect("copied wrong bundle");
     struct OwnedBridge(std::process::Child);

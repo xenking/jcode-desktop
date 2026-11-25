@@ -6,7 +6,9 @@ use jcode_sdk::todo::{
     todo_waits_on_running_task,
 };
 
-use super::{Update, UpdateSender};
+use crate::harness::protocol::Update;
+use crate::harness::remote::remote_host;
+use crate::harness::updates::UpdateSender;
 
 const RECHECK: Duration = Duration::from_secs(3);
 
@@ -33,7 +35,7 @@ impl State {
         }
         if let Ok(snapshot) = client.todo_state(real_id) {
             let waiting =
-                waiting_on_dependencies(&snapshot, real_id, super::remote_host(display_id).is_some());
+                waiting_on_dependencies(&snapshot, real_id, remote_host(display_id).is_some());
             if std::mem::replace(&mut self.waiting, waiting) != waiting {
                 let _ = updates.send(Update::TabWaitingState {
                     session_id: display_id.to_string(),

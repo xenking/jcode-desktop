@@ -1,16 +1,17 @@
-use super::{
-    JcodeClient, SessionInfo, SideQuestionThread, SideQuestionTopic, SideQuestionTurn, connect,
-    remote, transport,
-};
+use crate::harness::local_runtime::connect;
+use crate::harness::protocol::{SideQuestionThread, SideQuestionTopic, SideQuestionTurn};
+use crate::harness::remote;
+use crate::harness::remote::transport;
+use jcode_sdk::{JcodeClient, SessionInfo};
 
-pub(super) fn read<T>(
+pub(in crate::harness) fn read<T>(
     transports: &transport::RemoteTransports,
     parent_session_id: &str,
     read: impl FnOnce(&JcodeClient, &remote::SessionAddress) -> Result<T, String>,
 ) -> Result<T, String> {
     let parent = remote::SessionAddress::parse(parent_session_id)?;
     #[cfg(unix)]
-    let mut private_route = super::private_routes::PrivateRoute::default();
+    let mut private_route = super::private_route::PrivateRoute::default();
     let client = match parent.host.as_deref() {
         Some(host) => transports.connect(host),
         None => {
@@ -39,7 +40,7 @@ fn read_side_question_api<T>(
     read(client, parent)
 }
 
-pub(super) fn list(
+pub(in crate::harness) fn list(
     client: &JcodeClient,
     parent: &remote::SessionAddress,
 ) -> Result<Vec<SideQuestionTopic>, String> {
@@ -74,7 +75,7 @@ fn one_line_preview(question: &str) -> String {
         .collect()
 }
 
-pub(super) fn open(
+pub(in crate::harness) fn open(
     client: &JcodeClient,
     parent: &remote::SessionAddress,
     session_id: &str,

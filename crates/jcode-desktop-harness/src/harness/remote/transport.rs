@@ -18,7 +18,7 @@ const CONFIG_TIMEOUT: Duration = Duration::from_secs(2);
 const CONFIG_LIMIT: u64 = 1024 * 1024;
 
 #[derive(Clone, Default)]
-pub(super) struct RemoteTransports {
+pub(in crate::harness) struct RemoteTransports {
     pool: Arc<Mutex<Pool<WeakSharedSshTransport>>>,
     cloud: Arc<Mutex<CloudPool<WeakSharedSshTransport>>>,
     #[cfg(test)]
@@ -28,7 +28,7 @@ pub(super) struct RemoteTransports {
 
 impl RemoteTransports {
     #[cfg(test)]
-    pub(super) fn testing(
+    pub(in crate::harness) fn testing(
         connector: impl Fn(&str) -> jcode_sdk::Result<JcodeClient> + Send + Sync + 'static,
     ) -> Self {
         Self {
@@ -37,13 +37,13 @@ impl RemoteTransports {
         }
     }
 
-    pub(super) fn connect(&self, host: &str) -> jcode_sdk::Result<JcodeClient> {
+    pub(in crate::harness) fn connect(&self, host: &str) -> jcode_sdk::Result<JcodeClient> {
         self.connect_with_progress(host, &mut |_| {})
             .map(|(client, _)| client)
     }
 
     /// Connect, reporting managed-cloud provisioning phases as they happen.
-    pub(super) fn connect_with_progress(
+    pub(in crate::harness) fn connect_with_progress(
         &self,
         host: &str,
         progress: &mut dyn FnMut(&str),
@@ -74,7 +74,8 @@ impl RemoteTransports {
                     ensure_runtime: false,
                     ..Default::default()
                 },
-            ).map(|client| (client, false));
+            )
+            .map(|client| (client, false));
         }
         let host = crate::remote_targets::validate_host(host).map_err(|message| {
             jcode_sdk::Error::new(jcode_sdk::ErrorKind::InvalidOption, message)
@@ -134,7 +135,7 @@ impl RemoteTransports {
     }
 
     #[cfg(test)]
-    pub(super) fn cloud_spare_ready(&self) -> bool {
+    pub(in crate::harness) fn cloud_spare_ready(&self) -> bool {
         let state = self
             .cloud
             .lock()
@@ -153,7 +154,7 @@ impl RemoteTransports {
         let state = self.cloud.lock().unwrap().target(destination);
         let mut cloud = state.lock().unwrap();
         let account = crate::managed_cloud::account();
-        let fingerprint = crate::managed_cloud_parity::Snapshot::collect().fingerprint();
+        let fingerprint = crate::managed_cloud::parity::Snapshot::collect().fingerprint();
         cloud.select_account(account.as_ref().ok(), fingerprint);
         let account = account.map_err(error)?;
         let result = if let Some(client) = cloud
@@ -196,7 +197,7 @@ impl RemoteTransports {
         // or an API handshake. Do not publish a client with stale parity.
         let unchanged = crate::managed_cloud::account()
             .is_ok_and(|current| same_cloud_account(&account, &current))
-            && fingerprint == crate::managed_cloud_parity::Snapshot::collect().fingerprint();
+            && fingerprint == crate::managed_cloud::parity::Snapshot::collect().fingerprint();
         if result.is_err() || !unchanged {
             cloud.invalidate();
         }
@@ -217,7 +218,7 @@ impl RemoteTransports {
                 // select another channel without waiting for this preparation.
                 let result = owner.connect();
                 let account = crate::managed_cloud::account();
-                let fingerprint = crate::managed_cloud_parity::Snapshot::collect().fingerprint();
+                let fingerprint = crate::managed_cloud::parity::Snapshot::collect().fingerprint();
                 let mut cloud = state.lock().unwrap();
                 cloud.select_account(account.as_ref().ok(), fingerprint);
                 let published = cloud.finish_prepare(generation, result.ok(), Instant::now());
@@ -576,11 +577,12 @@ fn fingerprint_with_environment(
     // The managed proxy reads this JSON at runtime, so ssh -G alone cannot
     // observe instance/account retargeting behind an unchanged ProxyCommand.
     if host.rsplit('@').next() == Some("jcode-cloud-alpha")
-        && let Some(home) = &home {
-            let home = std::path::Path::new(home);
-            hash_file(&home.join(".config/jcode/cloud-alpha.json"), &mut hash);
-            hash_file(&home.join(".local/bin/jcode-cloud-alpha"), &mut hash);
-        }
+        && let Some(home) = &home
+    {
+        let home = std::path::Path::new(home);
+        hash_file(&home.join(".config/jcode/cloud-alpha.json"), &mut hash);
+        hash_file(&home.join(".local/bin/jcode-cloud-alpha"), &mut hash);
+    }
     for line in config.lines() {
         let Some((name, value)) = line.split_once(' ') else {
             continue;
@@ -684,5 +686,4 @@ fn hash_file(path: &std::path::Path, hash: &mut impl Hasher) {
 }
 
 #[cfg(test)]
-#[path = "harness_transport_tests.rs"]
 mod tests;

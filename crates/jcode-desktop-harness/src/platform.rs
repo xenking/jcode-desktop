@@ -2,6 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
+/// The jcode data directory shared with the CLI and the daemon.
+pub fn jcode_home() -> Option<PathBuf> {
+    jcode_desktop_model::platform_dirs::jcode_home()
+}
+
 /// Whether the offline screenshot harness is driving this process. Network,
 /// updater and cloud side effects are suppressed so fixtures stay hermetic.
 pub fn screenshot_mode() -> bool {

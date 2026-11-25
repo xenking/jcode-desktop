@@ -1,7 +1,8 @@
-use super::{ApiEvent, Command, Update};
+use crate::harness::protocol::{Command, Update};
 use jcode_base::compaction::CompactionEvent;
 use jcode_base::message::{ContentBlock, Role};
 use jcode_base::session::{self, Session, StoredCompactionState};
+use jcode_sdk::ApiEvent;
 
 const ID: &str = "screenshot-fixture";
 const ARCHIVED: usize = 100;

@@ -76,7 +76,6 @@ mod workspace;
 // edits there do not recompile this one. Re-exported under their old paths.
 pub(crate) use jcode_desktop_harness::{
     accounts, connect_failure, harness, managed_cloud, platform, remote_targets, routing,
-    routing_rows,
 };
 // GPUI-free models (diff previews, learning coach, Todoist, PDF rendering).
 pub use jcode_desktop_model::todoist;

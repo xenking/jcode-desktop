@@ -1,5 +1,7 @@
 //! Failed bootstrap reads must not leave a connected panel without history forever.
 //! This budget belongs to one attachment and retries reads only, never prompts.
+use crate::harness::protocol::Update;
+use crate::harness::updates::UpdateSender;
 use std::time::{Duration, Instant};
 
 const MAX_RETRIES: u32 = 4;
@@ -20,13 +22,13 @@ impl HistoryRecovery {
         client: &jcode_sdk::JcodeClient,
         real_id: &str,
         session_id: &str,
-        updates: &super::UpdateSender,
+        updates: &UpdateSender,
     ) {
         if client.supports("bounded_history_v1") {
             match client.get_history_page(real_id, None) {
                 Ok(page) => {
                     self.loaded();
-                    let _ = updates.send(super::Update::BoundedHistory {
+                    let _ = updates.send(Update::BoundedHistory {
                         session_id: session_id.to_owned(),
                         page,
                     });
@@ -34,7 +36,7 @@ impl HistoryRecovery {
                 Err(error) => {
                     eprintln!("jcode desktop: session {session_id} history read failed: {error}");
                     if self.failed(Instant::now()) {
-                        let _ = updates.send(super::Update::CommandFailed { session_id: session_id.to_owned(), reason: format!("Could not load conversation history after repeated attempts. {error}") });
+                        let _ = updates.send(Update::CommandFailed { session_id: session_id.to_owned(), reason: format!("Could not load conversation history after repeated attempts. {error}") });
                     }
                 }
             }
@@ -43,7 +45,7 @@ impl HistoryRecovery {
         match client.get_history_with_images(real_id) {
             Ok((messages, images)) => {
                 self.loaded();
-                let _ = updates.send(super::Update::History {
+                let _ = updates.send(Update::History {
                     session_id: session_id.to_owned(),
                     messages,
                     images,
@@ -52,7 +54,7 @@ impl HistoryRecovery {
             Err(error) => {
                 eprintln!("jcode desktop: session {session_id} history read failed: {error}");
                 if self.failed(Instant::now()) {
-                    let _ = updates.send(super::Update::CommandFailed {
+                    let _ = updates.send(Update::CommandFailed {
                         session_id: session_id.to_owned(),
                         reason: format!(
                             "Could not load conversation history after repeated attempts. Close and reopen this panel to retry. Live updates remain connected. {error}"

@@ -1208,7 +1208,7 @@ impl Panel {
                 || self
                     .routing_gate
                     .as_ref()
-                    .is_some_and(|gate| !gate.submitting()) =>
+                    .is_some_and(|gate| !gate.view().submitting) =>
             {
                 return Some(TabRing::question());
             }

@@ -2,6 +2,8 @@
 //! spending-limit gate card. GPUI-free so the behaviour is tested without a
 //! window. The gate's keys and rows come from the model every client shares.
 
+pub mod rows;
+
 use jcode_session_types::routing::{RoutingGateChoice, RoutingGateOption, RoutingView};
 use jcode_session_types::routing_gate::{GateKey, GateOutcome, RoutingGateModel};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -93,6 +95,18 @@ pub struct GateCard {
     pub error: Option<String>,
 }
 
+/// A read-only snapshot of an open gate for rendering.
+pub struct GateView<'a> {
+    pub gate_id: &'a str,
+    pub reason: &'a str,
+    /// Display text of each answer row, the cancel row last.
+    pub rows: Vec<String>,
+    /// The focused row.
+    pub cursor: usize,
+    /// An answer is in flight, so the card accepts no input.
+    pub submitting: bool,
+}
+
 impl GateCard {
     pub fn new(gate_id: String, reason: String, options: Vec<RoutingGateOption>) -> Self {
         Self {
@@ -102,29 +116,18 @@ impl GateCard {
         }
     }
 
-    pub fn gate_id(&self) -> &str {
-        &self.model.gate_id
+    /// What the card shows right now.
+    pub fn view(&self) -> GateView<'_> {
+        GateView {
+            gate_id: &self.model.gate_id,
+            reason: &self.model.reason,
+            rows: self.model.rows(),
+            cursor: self.model.cursor,
+            submitting: self.submitting(),
+        }
     }
 
-    pub fn reason(&self) -> &str {
-        &self.model.reason
-    }
-
-    /// Display text of each answer row, the cancel row last.
-    pub fn rows(&self) -> Vec<String> {
-        self.model.rows()
-    }
-
-    pub fn row_count(&self) -> usize {
-        self.model.row_count()
-    }
-
-    /// The focused row.
-    pub fn cursor(&self) -> usize {
-        self.model.cursor
-    }
-
-    pub fn submitting(&self) -> bool {
+    fn submitting(&self) -> bool {
         self.attempt.is_some()
     }
 
@@ -164,12 +167,12 @@ const POLL: Duration = Duration::from_secs(60);
 const UNSUPPORTED_POLL: Duration = Duration::from_secs(600);
 
 /// Where the routing view comes from. The real source is the local runtime.
-pub trait ViewSource: Send + 'static {
+trait ViewSource: Send + 'static {
     fn fetch(&mut self) -> Result<RoutingView, FetchError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FetchError {
+enum FetchError {
     /// The runtime is up but carries no routing. Ask rarely.
     Unsupported,
     /// Anything else: not running, mid-reload, timed out. Ask again soon.
@@ -190,14 +193,14 @@ impl ViewSource for LocalRuntime {
 
 /// Keeps the last good view and reports only changes.
 #[derive(Default)]
-pub struct Publisher {
+struct Publisher {
     latest: Option<RoutingView>,
 }
 
 impl Publisher {
     /// The view to publish after `result`, if it differs from the last good
     /// one. A failure keeps what is already shown.
-    pub fn observe(&mut self, result: Result<RoutingView, FetchError>) -> Option<RoutingView> {
+    fn observe(&mut self, result: Result<RoutingView, FetchError>) -> Option<RoutingView> {
         let view = result.ok()?;
         (self.latest.as_ref() != Some(&view)).then(|| {
             self.latest = Some(view.clone());
@@ -206,7 +209,7 @@ impl Publisher {
     }
 
     /// How long to wait before the next fetch.
-    pub fn next_poll(result: &Result<RoutingView, FetchError>) -> Duration {
+    fn next_poll(result: &Result<RoutingView, FetchError>) -> Duration {
         match result {
             Err(FetchError::Unsupported) => UNSUPPORTED_POLL,
             _ => POLL,
@@ -382,5 +385,4 @@ pub fn fixture() -> RoutingView {
 }
 
 #[cfg(test)]
-#[path = "routing_tests.rs"]
 mod tests;

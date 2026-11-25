@@ -229,14 +229,17 @@ impl Panel {
                 "pending": chip.pending,
                 "label": chip.label(),
             })),
-            "gate": self.routing_gate.as_ref().map(|gate| serde_json::json!({
-                "gate_id": gate.gate_id(),
-                "reason": gate.reason(),
-                "rows": gate.rows(),
-                "cursor": gate.cursor(),
-                "submitting": gate.submitting(),
-                "error": gate.error,
-            })),
+            "gate": self.routing_gate.as_ref().map(|gate| {
+                let view = gate.view();
+                serde_json::json!({
+                    "gate_id": view.gate_id,
+                    "reason": view.reason,
+                    "rows": view.rows,
+                    "cursor": view.cursor,
+                    "submitting": view.submitting,
+                    "error": gate.error,
+                })
+            }),
         }?;
         let workers = self
             .swarm_workers

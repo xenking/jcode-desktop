@@ -7,17 +7,13 @@ use std::sync::OnceLock;
 
 pub mod accounts;
 pub mod connect_failure;
-mod edit_stats_watch;
 pub mod harness;
 pub mod managed_cloud;
-pub mod managed_cloud_parity;
 pub mod network;
 pub mod paired;
 pub mod platform;
 pub mod remote_targets;
 pub mod routing;
-pub mod routing_rows;
-mod runtime_generation;
 pub mod swarm_status;
 pub mod swarm_usage;
 

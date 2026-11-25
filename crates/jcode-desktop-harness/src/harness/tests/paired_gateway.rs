@@ -69,9 +69,16 @@ fn classify(host: &str) -> Result<(), ConnectFailure> {
 #[test]
 fn paired_gateways_report_why_they_fail_and_recover_on_retry() {
     crate::paired::with_home(|_| {
-        let endpoint = |listener: &TcpListener| format!("http://{}", listener.local_addr().unwrap());
+        let endpoint =
+            |listener: &TcpListener| format!("http://{}", listener.local_addr().unwrap());
         let machine = |id: &str, label: &str, endpoint: &str, token: &str| {
-            let destination = crate::paired::Destination::with_id(id.repeat(32 / id.len()), endpoint, label, "/work").unwrap();
+            let destination = crate::paired::Destination::with_id(
+                id.repeat(32 / id.len()),
+                endpoint,
+                label,
+                "/work",
+            )
+            .unwrap();
             crate::paired::set_test_token(&destination.id, token);
             destination
         };
@@ -101,7 +108,10 @@ fn paired_gateways_report_why_they_fail_and_recover_on_retry() {
         let revoked = classify(&host(1)).unwrap_err();
         assert_eq!(revoked.kind, FailureKind::Paired(PairedFailure::Revoked));
         assert_eq!(revoked.action(), FailureAction::Repair);
-        assert_eq!(revoked.summary("REVOKED"), "REVOKED no longer accepts this device. Pair it again.");
+        assert_eq!(
+            revoked.summary("REVOKED"),
+            "REVOKED no longer accepts this device. Pair it again."
+        );
 
         let down = classify(&host(2)).unwrap_err();
         assert_eq!(down.kind, FailureKind::Paired(PairedFailure::Refused));
@@ -115,14 +125,22 @@ fn paired_gateways_report_why_they_fail_and_recover_on_retry() {
             dns.summary("NODNS"),
             "Can't reach NODNS (name did not resolve). Is Tailscale or the VPN on?"
         );
-        assert!(started.elapsed() < Duration::from_secs(8), "DNS failure must not wait out the connect deadline");
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "DNS failure must not wait out the connect deadline"
+        );
 
         // The fixture comes back on the same address. Retry connects.
         let back = TcpListener::bind(down_address).expect("rebind the fixture's port");
         gateway_on(back, GOOD_TOKEN);
-        assert!(classify(&host(2)).is_ok(), "Retry reaches the gateway once it is back");
+        assert!(
+            classify(&host(2)).is_ok(),
+            "Retry reaches the gateway once it is back"
+        );
 
-        let no_token = crate::paired::Destination::with_id("ee".repeat(16), &up_endpoint, "NOTOKEN", "/work").unwrap();
+        let no_token =
+            crate::paired::Destination::with_id("ee".repeat(16), &up_endpoint, "NOTOKEN", "/work")
+                .unwrap();
         crate::paired::write_all(&[no_token.clone()]).unwrap();
         let missing = classify(&no_token.host()).unwrap_err();
         assert_eq!(missing.kind, FailureKind::Paired(PairedFailure::NoToken));

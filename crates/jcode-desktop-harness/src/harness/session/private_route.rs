@@ -181,7 +181,7 @@ impl PrivateBridge {
             supports_user_response: false,
             supports_applets: true,
         })?;
-        crate::runtime_generation::verify_capabilities(&client)?;
+        crate::harness::local_runtime::generation::verify_capabilities(&client)?;
         Ok(client)
     }
 }
@@ -208,7 +208,7 @@ pub(super) struct PrivateRoute {
 
 impl PrivateRoute {
     pub(super) fn connect(&mut self, session_id: &str) -> jcode_sdk::Result<Option<JcodeClient>> {
-        let route = super::jcode_home()
+        let route = crate::platform::jcode_home()
             .map(|home| load_route(&home, session_id))
             .transpose()
             .map_err(route_error)?
@@ -237,7 +237,10 @@ impl PrivateRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::{Update, spawn_session_worker, transport, update_channel};
+    use crate::harness::protocol::Update;
+    use crate::harness::remote::transport;
+    use crate::harness::session::spawn_session_worker;
+    use crate::harness::updates::update_channel;
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::os::unix::net::UnixListener;
     use std::time::Instant;

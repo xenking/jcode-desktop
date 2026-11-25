@@ -193,5 +193,4 @@ fn reset_in(resets_at: i64, now_unix: i64) -> Option<String> {
 }
 
 #[cfg(test)]
-#[path = "routing_rows_tests.rs"]
 mod tests;

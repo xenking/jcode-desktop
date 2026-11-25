@@ -119,19 +119,22 @@ impl Fixture {
                         ApiRequest::ForkSession { .. } => ApiEvent::SessionForked {
                             session: session(&format!("fork-{index}")),
                         },
-                        ApiRequest::ListSideQuestions { parent_session_id } => ApiEvent::SideQuestions {
-                            topics: vec![serde_json::from_value(serde_json::json!({
+                        ApiRequest::ListSideQuestions { parent_session_id } => {
+                            ApiEvent::SideQuestions {
+                                topics: vec![serde_json::from_value(serde_json::json!({
                                 "session_id": "btw-a", "parent_session_id": parent_session_id,
                                 "created_at_ms": 3, "message_start": 42,
                                 "context": { "model": "side-model", "reasoning_effort": "high" }
                             })).unwrap()],
-                        },
+                            }
+                        }
                         ApiRequest::GetSideQuestionHistory { session_id } => ApiEvent::History {
                             session_id: session_id.clone(),
                             messages: serde_json::from_value(serde_json::json!([
                                 {"role":"user","content":"Topic A"},
                                 {"role":"assistant","content":"Saved answer A"},
-                            ])).unwrap(),
+                            ]))
+                            .unwrap(),
                             images: vec![],
                         },
                         _ => ApiEvent::Ok,

@@ -1,16 +1,17 @@
 //! One record per creation attempt, with no prompts, paths, credentials or errors.
 //! Timings isolate SDK connection/handshake from runtime session initialization.
-use super::*;
+use jcode_sdk::{JcodeClient, SessionInfo};
+use std::time::Duration;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-pub(super) fn retry_startup(request_id: Option<&str>) -> bool {
+pub(in crate::harness) fn retry_startup(request_id: Option<&str>) -> bool {
     // Retain the original startup recovery policy. Ordinary pending panels
     // have unique correlation IDs too, but retrying an ambiguous timeout can
     // create a second session and is not safe for those user actions.
     request_id == Some("startup://draft")
 }
 
-pub(super) fn create(
+pub(in crate::harness) fn create(
     connector: impl FnOnce() -> jcode_sdk::Result<JcodeClient>,
     working_dir: Option<String>,
 ) -> jcode_sdk::Result<(SessionInfo, JcodeClient)> {

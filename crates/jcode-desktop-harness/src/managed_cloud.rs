@@ -6,6 +6,9 @@
 //! the control plane authorizes on the account's own host for 60 seconds, then
 //! connects with that key only, pinned to host keys the control plane captured
 //! at the host's first boot.
+
+pub mod parity;
+
 use jcode_sdk::{JcodeClient, SshConnectOptions};
 use serde::Deserialize;
 use std::path::Path;
@@ -352,7 +355,7 @@ pub(crate) fn connect_with_sync_status(
     // serves the new session. A failure is shown but never blocks the session.
     // A self-hosted machine is the user's own: its daemon also serves other
     // clients, so its provider defaults and logins are left alone.
-    let snapshot = crate::managed_cloud_parity::Snapshot::collect();
+    let snapshot = crate::managed_cloud::parity::Snapshot::collect();
     let mut synchronized = true;
     if !reply.self_hosted && !snapshot.is_empty() {
         progress("Syncing your models and logins…");
@@ -371,12 +374,12 @@ pub(crate) fn connect_with_sync_status(
 /// Model/login sync hook. Replaced in tests, which must never reach a host.
 fn sync(
     options: &SshConnectOptions,
-    snapshot: &crate::managed_cloud_parity::Snapshot,
+    snapshot: &crate::managed_cloud::parity::Snapshot,
 ) -> Result<(), String> {
     if cfg!(any(test, feature = "test-support")) || crate::platform::screenshot_mode() {
         return Ok(());
     }
-    crate::managed_cloud_parity::apply(options, snapshot)
+    crate::managed_cloud::parity::apply(options, snapshot)
 }
 
 fn write_private(path: &Path, contents: &str) -> Result<(), String> {

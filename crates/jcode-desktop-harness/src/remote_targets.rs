@@ -34,8 +34,11 @@ pub fn validate_destination(value: &str) -> Result<String, String> {
 /// A paired destination is a stable opaque identifier, never an endpoint or SSH alias.
 pub fn paired_id(value: &str) -> Option<&str> {
     let id = value.strip_prefix("paired:")?;
-    (id.len() == 32 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-        .then_some(id)
+    (id.len() == 32
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    .then_some(id)
 }
 
 /// Validate a single SSH destination, not an SSH command or URL.
@@ -200,9 +203,10 @@ impl Discovery<'_> {
                         return;
                     }
                     if let Ok(host) = validate_host(word)
-                        && !self.hosts.contains(&host) {
-                            self.hosts.push(host);
-                        }
+                        && !self.hosts.contains(&host)
+                    {
+                        self.hosts.push(host);
+                    }
                 }
             } else if key.eq_ignore_ascii_case("include") {
                 for pattern in &words[1..] {

@@ -35,7 +35,10 @@ impl Destination {
             reqwest::Url::parse(endpoint.trim()).map_err(|_| "Enter a valid HTTPS endpoint")?;
         let loopback_http = cfg!(test)
             && url.scheme() == "http"
-            && url.host_str().is_some_and(|h| h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback()));
+            && url.host_str().is_some_and(|h| {
+                h.parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+            });
         if !(url.scheme() == "https" || loopback_http)
             || url.host_str().is_none()
             || !url.username().is_empty()
@@ -90,7 +93,11 @@ pub fn find(host: &str) -> Result<Destination, String> {
         .into_iter()
         .find(|d| d.id == id)
         .ok_or_else(|| "Paired machine not found".to_owned())?;
-    Destination::new(&destination.endpoint, &destination.label, &destination.working_dir)?;
+    Destination::new(
+        &destination.endpoint,
+        &destination.label,
+        &destination.working_dir,
+    )?;
     Ok(destination)
 }
 
@@ -100,7 +107,8 @@ pub(crate) fn write_all(destinations: &[Destination]) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|_| "Could not create paired machines directory")?;
     let mut file =
         tempfile::NamedTempFile::new_in(dir).map_err(|_| "Could not save paired machine")?;
-    serde_json::to_writer(&mut file, destinations).map_err(|_| "Could not encode paired machine")?;
+    serde_json::to_writer(&mut file, destinations)
+        .map_err(|_| "Could not encode paired machine")?;
     file.flush().map_err(|_| "Could not save paired machine")?;
     file.persist(path)
         .map_err(|_| "Could not save paired machine")?;
@@ -150,12 +158,7 @@ pub fn set_working_dir(id: &str, working_dir: &str) -> Result<Destination, Strin
         .iter_mut()
         .find(|d| d.id == id)
         .ok_or("Paired machine not found")?;
-    let updated = Destination::with_id(
-        slot.id.clone(),
-        &slot.endpoint,
-        &slot.label,
-        working_dir,
-    )?;
+    let updated = Destination::with_id(slot.id.clone(), &slot.endpoint, &slot.label, working_dir)?;
     *slot = updated.clone();
     write_all(&destinations)?;
     Ok(updated)
@@ -170,7 +173,9 @@ static TEST_TOKENS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 #[cfg(test)]
 pub(crate) fn with_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
     static HOME_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = HOME_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = HOME_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().unwrap();
     // SAFETY: serialized by HOME_LOCK against every other user of this helper.
     unsafe { std::env::set_var("JCODE_HOME", home.path()) };

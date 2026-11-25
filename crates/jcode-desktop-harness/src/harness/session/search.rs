@@ -5,7 +5,10 @@
 //! attachment, and a slow first query (a cold backfill over every stored
 //! session) must not stall the turn traffic of a session the user is watching.
 
-use super::*;
+use crate::harness::local_runtime::connect;
+use crate::harness::protocol::Update;
+use crate::harness::updates::UpdateSender;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The daemon sections result cap. Titles and messages are each capped at this,
@@ -20,11 +23,7 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// `generation` lets the UI drop an answer for a query the user has already
 /// typed past: results arrive out of order because they are separate threads,
 /// and the newest query is the only one worth showing.
-pub(crate) fn spawn_search(
-    updates: UpdateSender,
-    query: String,
-    generation: u64,
-) {
+pub(crate) fn spawn_search(updates: UpdateSender, query: String, generation: u64) {
     let newest = GENERATION.fetch_max(generation, Ordering::AcqRel);
     if generation < newest {
         return;
@@ -33,9 +32,8 @@ pub(crate) fn spawn_search(
         .name("jcode-bridge-search".into())
         .spawn(move || {
             let started = std::time::Instant::now();
-            let result = connect("search").and_then(|client| {
-                client.search_sessions(&query, Some(SEARCH_LIMIT))
-            });
+            let result = connect("search")
+                .and_then(|client| client.search_sessions(&query, Some(SEARCH_LIMIT)));
             // A newer query may have been sent while this one ran; its answer
             // is the one the user is waiting for.
             if GENERATION.load(Ordering::Acquire) > generation {

@@ -1,5 +1,6 @@
 //! Match the TUI's fail-fast policy for corrupt remote protocol frames.
-use super::{Update, UpdateSender};
+use crate::harness::protocol::Update;
+use crate::harness::updates::UpdateSender;
 
 pub(super) fn report_protocol_failure(
     error: &jcode_sdk::Error,

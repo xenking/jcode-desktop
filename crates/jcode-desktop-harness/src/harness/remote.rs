@@ -3,9 +3,31 @@
 //! Only the address crosses the UI/snapshot boundary. SDK calls always receive
 //! the original remote ID, never its desktop namespace.
 
+pub(super) mod sessions;
+#[cfg(unix)]
+pub(super) mod transport;
+#[cfg(not(unix))]
+#[path = "remote/transport/portable.rs"]
+pub(super) mod transport;
+
 const PREFIX: &str = "ssh://";
 const CLOUD_PREFIX: &str = "cloud://";
 const PAIRED_PREFIX: &str = "paired://";
+
+/// Test whether an ID belongs to a remote namespace, even if malformed.
+pub fn is_remote_session(session_id: &str) -> bool {
+    is_remote(session_id)
+}
+
+/// Decode the destination carried by a persisted remote panel ID.
+pub fn remote_host(session_id: &str) -> Option<String> {
+    SessionAddress::parse(session_id).ok()?.host
+}
+
+pub fn session_address(session_id: &str) -> Option<(Option<String>, String)> {
+    let address = SessionAddress::parse(session_id).ok()?;
+    Some((address.host, address.session_id))
+}
 
 enum Kind {
     Ssh,
@@ -132,12 +154,18 @@ mod tests {
     fn paired_addresses_are_distinct_and_round_trip() {
         let host = "paired:0123456789abcdef0123456789abcdef";
         let id = namespace(host, "folder/session");
-        assert_eq!(id, "paired://0123456789abcdef0123456789abcdef/folder%2Fsession");
+        assert_eq!(
+            id,
+            "paired://0123456789abcdef0123456789abcdef/folder%2Fsession"
+        );
         let parsed = SessionAddress::parse(&id).unwrap();
         assert_eq!(parsed.host.as_deref(), Some(host));
         assert_eq!(parsed.session_id, "folder/session");
         assert!(is_remote(&id));
-        assert_ne!(id, namespace("0123456789abcdef0123456789abcdef", "folder/session"));
+        assert_ne!(
+            id,
+            namespace("0123456789abcdef0123456789abcdef", "folder/session")
+        );
         assert!(SessionAddress::parse("paired://broken/session").is_err());
         assert!(crate::remote_targets::validate_host(host).is_err());
     }
