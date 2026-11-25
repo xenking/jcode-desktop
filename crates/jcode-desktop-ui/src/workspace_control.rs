@@ -115,7 +115,7 @@ pub(super) fn handle_window_request(
                     "side question follow-up is not open",
                 );
             };
-            if !editor.read(cx).focus_handle.is_focused(window) {
+            if !editor.read(cx).is_focused(window) {
                 return error(
                     "selector_not_focused",
                     "side question follow-up must have native focus",

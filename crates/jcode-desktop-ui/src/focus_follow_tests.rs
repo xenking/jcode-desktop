@@ -18,7 +18,6 @@ fn clicking_transcript_background_unfocuses_until_typing(cx: &mut gpui::TestAppC
                 .read(cx)
                 .input
                 .read(cx)
-                .focus_handle
                 .is_focused(window)
         );
     });
@@ -37,7 +36,6 @@ fn clicking_transcript_background_unfocuses_until_typing(cx: &mut gpui::TestAppC
                 .read(cx)
                 .input
                 .read(cx)
-                .focus_handle
                 .is_focused(window)
         );
     });
@@ -268,7 +266,6 @@ fn clicking_another_docked_composer_highlights_its_panel(cx: &mut gpui::TestAppC
                 .read(cx)
                 .input
                 .read(cx)
-                .focus_handle
                 .is_focused(window)
         });
         assert!(typing, "the click must put the caret in composer {target}");

@@ -291,7 +291,6 @@ mod tests {
                     .read(cx)
                     .input
                     .read(cx)
-                    .focus_handle
                     .is_focused(window)
             );
         });

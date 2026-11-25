@@ -205,7 +205,7 @@ fn default_directory_panel_snapshot_restores_search_and_focus_without_watching_s
         assert!(w.slots[w.active].panel.read(cx).is_default_directory());
         let search = w.picker_search(cx).unwrap();
         assert_eq!(search.read(cx).content, "draft");
-        assert!(search.read(cx).focus_handle.is_focused(window));
+        assert!(search.read(cx).is_focused(window));
         assert_eq!(
             w.slots[w.active].panel.read(cx).input.entity_id(),
             search.entity_id()
@@ -268,7 +268,6 @@ fn destination_pill_opens_picker_with_focused_change_directory_action(
                     .picker_search(cx)
                     .expect("default picker reuses the search input")
                     .read(cx)
-                    .focus_handle
                     .is_focused(window)
             );
             assert_eq!(

@@ -812,7 +812,7 @@ fn settings_default_send_mode_controls_active_panel(cx: &mut gpui::TestAppContex
             .update(cx, |p, _| p.status = "running".into())
     });
     vcx.update(|window, cx| {
-        let focus = input.read(cx).focus_handle.clone();
+        let focus = input.read(cx).editor_focus();
         window.focus(&focus, cx);
     });
     vcx.simulate_input("settings decides this prompt");

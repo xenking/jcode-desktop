@@ -360,7 +360,6 @@ fn local_connect_keeps_new_panel_selected_after_mouse_release(cx: &mut gpui::Tes
                 .read(cx)
                 .input
                 .read(cx)
-                .focus_handle
                 .is_focused(window)
         );
     });

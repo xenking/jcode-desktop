@@ -76,7 +76,7 @@ const PENDING_COMMAND_NOTICE: &str =
 
 pub struct PromptInput {
     session_image_base: usize,
-    pub(crate) focus_handle: FocusHandle,
+    focus_handle: FocusHandle,
     #[cfg(target_os = "macos")]
     ime_log_focus_subscriptions: Option<Vec<gpui::Subscription>>,
     pub(crate) content: SharedString,

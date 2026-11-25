@@ -208,7 +208,7 @@ fn folder_picker_dismissal_restores_navigation_focus(cx: &mut gpui::TestAppConte
         vcx.run_until_parked();
         vcx.update(|window, cx| {
             let search = workspace.read(cx).picker_search(cx).unwrap();
-            assert!(search.read(cx).focus_handle.is_focused(window));
+            assert!(search.read(cx).is_focused(window));
         });
         if button == "enter" {
             vcx.simulate_keystrokes(". enter");
@@ -313,7 +313,7 @@ fn ctrl_o_focuses_search_and_enter_opens_the_matching_folder(cx: &mut gpui::Test
     assert!(vcx.debug_bounds("folder-picker-search").is_some());
     vcx.update(|window, cx| {
         let search = workspace.read(cx).picker_search(cx).unwrap();
-        assert!(search.read(cx).focus_handle.is_focused(window));
+        assert!(search.read(cx).is_focused(window));
 
         window.focus(&workspace.read(cx).focus_handle.clone(), cx);
     });
@@ -321,7 +321,7 @@ fn ctrl_o_focuses_search_and_enter_opens_the_matching_folder(cx: &mut gpui::Test
     vcx.simulate_click(search_bounds.center(), gpui::Modifiers::default());
     vcx.update(|window, cx| {
         let search = workspace.read(cx).picker_search(cx).unwrap();
-        assert!(search.read(cx).focus_handle.is_focused(window));
+        assert!(search.read(cx).is_focused(window));
     });
 
     vcx.simulate_keystrokes("n o t e s enter");

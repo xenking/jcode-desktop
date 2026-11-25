@@ -92,7 +92,6 @@ fn f2_enter_renames_selected_session_without_consuming_composer(cx: &mut gpui::T
                     .read(cx)
                     .input
                     .read(cx)
-                    .focus_handle
                     .is_focused(window)
             );
         })
