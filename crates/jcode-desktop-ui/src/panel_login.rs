@@ -20,7 +20,7 @@ mod provider_picker;
 mod provider_picker_tests;
 #[path = "panel_login_steps.rs"]
 mod steps;
-use steps::manual_input_visible;
+use steps::{StepAction, manual_input_visible};
 
 pub(super) struct LoginState {
     /// Composer account selection never starts a sign-in flow.
@@ -929,7 +929,12 @@ impl Panel {
                 self.login_target_session().is_some(),
             );
             if let Some(provider) = state.provider {
-                body = body.child(self.render_login_steps(state, provider, cx));
+                body = body.child(state.render_login_steps(
+                    provider,
+                    self.preview_state.is_some(),
+                    Self::handle_login_step,
+                    cx,
+                ));
             }
             body = body
                 .child(
@@ -993,7 +998,12 @@ impl Panel {
                         .child(status.detail()),
                 );
             }
-            body = body.child(self.render_login_steps(state, provider, cx));
+            body = body.child(state.render_login_steps(
+                provider,
+                self.preview_state.is_some(),
+                Self::handle_login_step,
+                cx,
+            ));
         } else if !remote {
             let providers = catalog::filtered_providers(
                 &state.providers,
@@ -1054,7 +1064,11 @@ impl Panel {
                                 el.child(
                                     login_button(
                                         "login-test-all",
-                                        if running { "Testing all…" } else { "Test all" },
+                                        if running {
+                                            "Testing all…"
+                                        } else {
+                                            "Test all"
+                                        },
                                     )
                                     .when(running, |el| el.opacity(0.6))
                                     .tooltip(|_, cx| {
@@ -1065,9 +1079,9 @@ impl Panel {
                                         })
                                         .into()
                                     })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.live_test_providers(None, cx)
-                                    })),
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| this.live_test_providers(None, cx),
+                                    )),
                                 )
                             },
                         )
@@ -1110,6 +1124,30 @@ impl Panel {
                 )
                 .into_any_element(),
         )
+    }
+
+    fn handle_login_step(
+        &mut self,
+        action: StepAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            StepAction::ChangeProvider => {
+                self.close_login_picker(cx);
+                self.open_login_picker(cx);
+            }
+            StepAction::EnterCallbackManually => {
+                if let Some(state) = self.login.as_mut() {
+                    state.manual_entry = true;
+                    state.focus_pending = true;
+                }
+                cx.notify();
+            }
+            StepAction::Paste => self.paste_login(window, cx),
+            StepAction::Submit => self.submit_login(cx),
+            StepAction::Retry(provider) => self.select_login_provider(provider, cx),
+        }
     }
 
     fn paste_login(&mut self, window: &mut Window, cx: &mut Context<Self>) {

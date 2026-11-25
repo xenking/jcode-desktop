@@ -170,13 +170,26 @@ pub(super) fn manual_input_visible(state: &LoginState) -> bool {
         && (state.manual_entry || !state.callback_waiting)
 }
 
-impl Panel {
-    pub(super) fn render_login_steps(
+#[derive(Clone, Copy)]
+pub(super) enum StepAction {
+    ChangeProvider,
+    EnterCallbackManually,
+    Paste,
+    Submit,
+    Retry(LoginProvider),
+}
+
+type StepHandler<T> = fn(&mut T, StepAction, &mut Window, &mut Context<T>);
+
+impl LoginState {
+    pub(super) fn render_login_steps<T: 'static>(
         &self,
-        state: &LoginState,
         provider: LoginProvider,
-        cx: &mut Context<Self>,
+        preview: bool,
+        handle: StepHandler<T>,
+        cx: &mut Context<T>,
     ) -> gpui::AnyElement {
+        let state = self;
         let theme = Theme::global();
         let mut list = div()
             .debug_selector(|| "login-steps".into())
@@ -248,53 +261,50 @@ impl Panel {
                                 .px_3()
                                 .py_0p5()
                                 .text_size(px(12.))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_login_picker(cx);
-                                    this.open_login_picker(cx);
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    handle(this, StepAction::ChangeProvider, window, cx);
                                 })),
                         )
                     },
                 );
             let step_id = format!("login-step-{number}");
             let row = div().debug_selector(move || step_id.clone());
-            list = list.child(if expanded {
-                row.child(
-                    div()
-                        .debug_selector(|| "login-current-step".into())
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .p_3()
-                        .rounded_xl()
-                        .bg(theme.HEADER_BG)
+            list =
+                list.child(if expanded {
+                    row.child(
+                        div()
+                            .debug_selector(|| "login-current-step".into())
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .p_3()
+                            .rounded_xl()
+                            .bg(theme.HEADER_BG)
+                            .child(header)
+                            .child(div().pl(px(34.)).flex().flex_col().gap_3().children(
+                                self.render_step_body(kind, provider, preview, handle, cx),
+                            )),
+                    )
+                } else {
+                    row.px_3()
+                        .py_1p5()
+                        .rounded_full()
+                        .when(status == StepStatus::Done, |el| el.bg(theme.HEADER_BG))
                         .child(header)
-                        .child(
-                            div()
-                                .pl(px(34.))
-                                .flex()
-                                .flex_col()
-                                .gap_3()
-                                .children(self.render_step_body(kind, state, provider, cx)),
-                        ),
-                )
-            } else {
-                row.px_3()
-                    .py_1p5()
-                    .rounded_full()
-                    .when(status == StepStatus::Done, |el| el.bg(theme.HEADER_BG))
-                    .child(header)
-            });
+                });
         }
         list.into_any_element()
     }
 
-    fn render_step_body(
+    fn render_step_body<T: 'static>(
         &self,
         kind: StepKind,
-        state: &LoginState,
         provider: LoginProvider,
-        cx: &mut Context<Self>,
+        preview: bool,
+        handle: StepHandler<T>,
+        cx: &mut Context<T>,
     ) -> Vec<gpui::AnyElement> {
+        let state = self;
         let theme = Theme::global();
         let mut body: Vec<gpui::AnyElement> = Vec::new();
         let status_line = |text: &'static str, busy: bool| {
@@ -349,7 +359,7 @@ impl Panel {
                 if !state.busy || device {
                     let url = prompt.auth_url.clone();
                     let copy_url = url.clone();
-                    let preview = self.preview_state.is_some() || crate::harness::screenshot_mode();
+                    let preview = preview || crate::harness::screenshot_mode();
                     let mut actions = div()
                         .flex()
                         .gap_2()
@@ -373,12 +383,8 @@ impl Panel {
                     if state.callback_waiting && !state.manual_entry {
                         actions = actions.child(
                             login_button("login-manual-entry", "Paste callback URL instead")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Some(state) = this.login.as_mut() {
-                                        state.manual_entry = true;
-                                        state.focus_pending = true;
-                                    }
-                                    cx.notify();
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    handle(this, StepAction::EnterCallbackManually, window, cx);
                                 })),
                         );
                     }
@@ -428,13 +434,16 @@ impl Panel {
                             .gap_2()
                             .child(
                                 login_button("login-paste", "Paste from clipboard").on_click(
-                                    cx.listener(|this, _, window, cx| this.paste_login(window, cx)),
+                                    cx.listener(move |this, _, window, cx| {
+                                        handle(this, StepAction::Paste, window, cx)
+                                    }),
                                 ),
                             )
-                            .child(
-                                login_button("login-submit", "Finish sign-in")
-                                    .on_click(cx.listener(|this, _, _, cx| this.submit_login(cx))),
-                            )
+                            .child(login_button("login-submit", "Finish sign-in").on_click(
+                                cx.listener(move |this, _, window, cx| {
+                                    handle(this, StepAction::Submit, window, cx)
+                                }),
+                            ))
                             .into_any_element(),
                     );
                 }
@@ -462,13 +471,16 @@ impl Panel {
                         .gap_2()
                         .child(
                             login_button("login-paste", "Paste from clipboard").on_click(
-                                cx.listener(|this, _, window, cx| this.paste_login(window, cx)),
+                                cx.listener(move |this, _, window, cx| {
+                                    handle(this, StepAction::Paste, window, cx)
+                                }),
                             ),
                         )
-                        .child(
-                            login_button("login-submit", "Connect account")
-                                .on_click(cx.listener(|this, _, _, cx| this.submit_login(cx))),
-                        )
+                        .child(login_button("login-submit", "Connect account").on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                handle(this, StepAction::Submit, window, cx)
+                            }),
+                        ))
                         .into_any_element(),
                 );
             }
@@ -481,9 +493,9 @@ impl Panel {
         if state.error.is_some() && (kind != StepKind::EnterKey || state.busy) {
             body.push(
                 login_button("login-retry", "Start a new sign-in")
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.select_login_provider(provider, cx)),
-                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        handle(this, StepAction::Retry(provider), window, cx)
+                    }))
                     .into_any_element(),
             );
         }
