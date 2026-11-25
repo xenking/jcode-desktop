@@ -573,6 +573,28 @@ mod tests {
     }
 
     #[test]
+    fn a_project_that_regroups_under_its_repository_is_revealed_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = std::fs::canonicalize(temp.path()).unwrap().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("crates/ui")).unwrap();
+        let mut info = super::super::tests::session_info("a", None);
+        info.working_dir = Some(repo.join("crates/ui").to_string_lossy().into_owned());
+        let mut state = State::default();
+        // Before the probe lands the session groups under its own directory.
+        let (cold, _) = state.project(&info);
+        assert_ne!(cold.key, repo.to_string_lossy());
+        state.sync_focus(Some("a"), Some(&cold.key));
+        assert!(settle(&mut state));
+        let (warm, _) = state.project(&info);
+        assert_eq!(warm.key, repo.to_string_lossy());
+        assert!(warm.git);
+        // Collapsed by default as history, but focus reveals the new key.
+        state.sync_focus(Some("a"), Some(&warm.key));
+        assert!(!state.collapsed(&warm.key, true));
+    }
+
+    #[test]
     fn answers_are_not_probed_again_within_the_ttl() {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path().to_str().unwrap();

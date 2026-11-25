@@ -17,7 +17,9 @@ thread_local! {
     static SKEW: Cell<Duration> = const { Cell::new(Duration::ZERO) };
 }
 
-fn note() {
+/// Count a probe made by code that cannot use the wrappers below, such as a
+/// loader that reads several files.
+pub fn note() {
     let counter = if OFF_MAIN.with(Cell::get) {
         &BACKGROUND_PROBES
     } else {

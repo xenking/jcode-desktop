@@ -40,6 +40,7 @@ thread_local! {
 
 impl JcodeAccount {
     fn load() -> Self {
+        fs_probe::note();
         if account_menu::fixture_enabled() {
             return Self {
                 signed_in: true,
