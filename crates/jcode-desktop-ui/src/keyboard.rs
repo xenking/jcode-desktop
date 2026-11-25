@@ -1,17 +1,6 @@
-use gpui::{
-    BoxShadow, Div, FocusHandle, InteractiveElement, Stateful, StatefulInteractiveElement,
-    StyleRefinement, Styled, px,
-};
+use gpui::{Div, FocusHandle, InteractiveElement, Stateful, StatefulInteractiveElement};
 
-use crate::theme::Theme;
-
-fn ring(style: StyleRefinement) -> StyleRefinement {
-    style.shadow(vec![
-        BoxShadow::new(px(0.), px(0.), Theme::global().TEXT.into())
-            .spread_radius(px(2.))
-            .inset(),
-    ])
-}
+use crate::components::focus_ring as ring;
 
 /// GPUI's stateful div supplies a stable handle and turns Enter and Space
 /// into the same `on_click` event as a pointer.
