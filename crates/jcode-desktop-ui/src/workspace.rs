@@ -1426,9 +1426,9 @@ impl Workspace {
         {
             workspace.show_cloud_picker_fixture(cx);
         } else if harness::screenshot_mode()
-            && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_MACHINES").is_some()
+            && let Some(variant) = std::env::var_os("JCODE_DESKTOP_SCREENSHOT_MACHINES")
         {
-            workspace.show_machines_fixture(cx);
+            workspace.show_machines_fixture(variant == "paired", cx);
         } else if harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE").is_ok()
         {
@@ -2685,6 +2685,8 @@ impl Workspace {
                         self.remotes.row_notices.remove(&key);
                         if message.starts_with("Connected") {
                             self.remotes.reachable.insert(key);
+                        } else {
+                            self.remotes.reachable.remove(&key);
                         }
                     }
                 }

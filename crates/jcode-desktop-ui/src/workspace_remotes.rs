@@ -169,6 +169,7 @@ impl Workspace {
         cx.new(|cx| {
             let mut input = PromptInput::new(cx, placeholder, |_, _, _, _| {})
                 .without_chrome()
+                .with_compact_padding()
                 .without_command_completion();
             if !content.is_empty() {
                 input.set_content(content, cx);
@@ -259,6 +260,7 @@ impl Workspace {
             return;
         }
         self.remotes.row_notices.remove(&host);
+        self.remotes.reachable.remove(&host);
         self.remotes.status_host = Some(host.clone());
         self.remotes.status = Some("Connecting…".into());
         self.remotes.failed = false;
@@ -270,6 +272,7 @@ impl Workspace {
     /// draft when one exists, else start a new connect.
     fn retry_machine(&mut self, host: &str, cx: &mut Context<Self>) {
         self.remotes.row_notices.remove(host);
+        self.remotes.reachable.remove(host);
         let pending = self.slots.iter().position(|slot| {
             !slot.closing
                 && slot.panel.read_chat(cx).is_some_and(|panel| {
@@ -391,26 +394,30 @@ impl Workspace {
     /// Offline Machines screen for the screenshot harness: a cloud default,
     /// paired machines in each failure state, one reachable machine and an
     /// SSH host. Failures arrive as the same updates a live connect sends.
-    pub(super) fn show_machines_fixture(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn show_machines_fixture(&mut self, only_paired: bool, cx: &mut Context<Self>) {
         let paired = |id: &str, label: &str, origin: &str, dir: &str| paired::Destination {
             id: id.repeat(32 / id.len()),
             endpoint: format!("https://{origin}"),
             label: label.into(),
             working_dir: dir.into(),
         };
-        self.remotes.registered = vec![
-            RegisteredMachine {
-                name: "ai-core".into(),
-                is_default: true,
-                last_seen_at: Some(1_795_236_600_000),
-            },
-            RegisteredMachine {
-                name: "studio".into(),
-                is_default: false,
-                last_seen_at: None,
-            },
-        ];
-        self.remotes.hosts = vec!["build-server".into()];
+        self.remotes.registered = if only_paired {
+            Vec::new()
+        } else {
+            vec![
+                RegisteredMachine {
+                    name: "ai-core".into(),
+                    is_default: true,
+                    last_seen_at: Some(1_795_236_600_000),
+                },
+                RegisteredMachine {
+                    name: "studio".into(),
+                    is_default: false,
+                    last_seen_at: None,
+                },
+            ]
+        };
+        self.remotes.hosts = if only_paired { Vec::new() } else { vec!["build-server".into()] };
         self.remotes.paired = vec![
             paired("aa", "WORK", "work-mac.tailnet.example", "/Users/me/project"),
             paired("bb", "frame", "frame.tailnet.example", "/home/me/frame"),
@@ -418,6 +425,7 @@ impl Workspace {
             paired("dd", "personal", "personal.tailnet.example", "/Users/me/notes"),
         ];
         self.remotes.default_host = Some("cloud:ai-core".into());
+        publish_paired_labels(&self.remotes.paired);
         let failure = |kind: jcode_sdk::PairedFailure| {
             crate::connect_failure::ConnectFailure::from_error(&jcode_sdk::Error::new(
                 jcode_sdk::ErrorKind::Paired(kind),
@@ -1273,6 +1281,7 @@ impl Workspace {
             self.remotes.status = Some(format!("Connecting to {}…", machine_label(&host)));
             self.remotes.status_host = Some(host.clone());
             self.remotes.row_notices.remove(&host);
+            self.remotes.reachable.remove(&host);
             self.open_remote_draft(host, cx);
         } else {
             self.remotes.notice = None;
@@ -1688,10 +1697,10 @@ impl Workspace {
                 _ => "Not reachable",
             };
             (format!("{state} · {base_status}"), theme.ERROR)
-        } else if connecting {
-            ("Connecting…".to_owned(), theme.ACCENT)
         } else if paired.is_some() && self.remotes.reachable.contains(&key) {
             (format!("Reachable · {base_status}"), theme.TEXT_DIM)
+        } else if connecting {
+            ("Connecting…".to_owned(), theme.ACCENT)
         } else {
             (base_status, theme.TEXT_DIM)
         };
@@ -1862,9 +1871,24 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .gap_1p5()
-                .child(div().text_color(theme.ERROR).child(notice.summary.clone()))
                 .child(
                     div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_x_3()
+                        .gap_y_1()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(180.0))
+                                .text_color(theme.ERROR)
+                                .child(notice.summary.clone()),
+                        )
+                        .child(
+                            div()
+                        .flex_none()
+                        .ml_auto()
                         .flex()
                         .items_center()
                         .gap_1p5()
@@ -1904,6 +1928,7 @@ impl Workspace {
                                 }))
                                 .child(if open { "Hide details" } else { "Details" })
                         })),
+                        ),
                 )
                 .children(open.then(|| notice.detail.clone()).flatten().map(|detail| {
                     div().text_color(theme.TEXT_DIM).font_family(theme.FONT_MONO).child(detail)
@@ -2073,6 +2098,39 @@ mod cloud_routing_tests {
             click(vcx, "machine-connect-2");
             assert!(matches!(commands.try_recv(), Ok(Command::CreateRemoteSession { host, working_dir: Some(dir), .. })
                 if host == WORK_HOST && dir == path));
+        }
+    }
+
+    #[gpui::test]
+    fn machine_rows_keep_their_actions_inside_the_row_at_narrow_and_wide_widths(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx, _commands) = paired_workspace(cx);
+        fail(&workspace, vcx, jcode_sdk::PairedFailure::Unresolved);
+        for width in [420.0, 700.0, 1600.0] {
+            vcx.simulate_resize(gpui::size(px(width), px(900.0)));
+            vcx.executor().advance_clock(Duration::from_secs(2));
+            vcx.run_until_parked();
+            let row = vcx.debug_bounds("machine-row-2").unwrap();
+            let mut previous_right = None;
+            for selector in ["machine-connect-2", "machine-sessions-2", "machine-default-2"] {
+                let pill = vcx.debug_bounds(selector).unwrap();
+                assert!(
+                    pill.left() >= row.left() && pill.right() <= row.right(),
+                    "{selector} escapes its row at {width}: {pill:?} vs {row:?}"
+                );
+                if let Some(right) = previous_right {
+                    assert!(pill.left() >= right, "{selector} overlaps its neighbour at {width}");
+                }
+                previous_right = Some(pill.right());
+            }
+            let status = vcx.debug_bounds("machine-status-2").unwrap();
+            let connect = vcx.debug_bounds("machine-connect-2").unwrap();
+            let same_line = status.top() < connect.bottom() && connect.top() < status.bottom();
+            assert!(
+                !same_line || status.right() <= connect.left(),
+                "status runs under the actions at {width}: {status:?} vs {connect:?}"
+            );
         }
     }
 

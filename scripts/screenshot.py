@@ -72,8 +72,8 @@ def main():
                         help="verify Ctrl+Enter queues prompts on the private display")
     parser.add_argument("--pending-interact", action="store_true",
                         help="verify Enter, retry and local fallback for an offline pending startup")
-    parser.add_argument("--machines", action="store_true",
-                        help="open the Machines screen with offline cloud, paired (reachable, DNS, revoked, timeout) and SSH fixtures")
+    parser.add_argument("--machines", nargs="?", const="all", choices=("all", "paired"),
+                        help="open the Machines screen with offline cloud, paired (reachable, DNS, revoked, timeout) and SSH fixtures; 'paired' keeps only the paired machines so every failure state fits")
     parser.add_argument("--cloud-picker", action="store_true", help="show registered Cloud machines in the destination picker")
     parser.add_argument("--cloud-startup", choices=("connecting", "failed"),
                         help="render managed Jcode Cloud unavailability without cloud operations (both modes currently unavailable)")
@@ -574,7 +574,7 @@ def main():
         if args.cloud_picker:
             env["JCODE_DESKTOP_SCREENSHOT_CLOUD_PICKER"] = "1"
         if args.machines:
-            env["JCODE_DESKTOP_SCREENSHOT_MACHINES"] = "1"
+            env["JCODE_DESKTOP_SCREENSHOT_MACHINES"] = args.machines
         if args.account_sign_in or args.account_sign_in_interact:
             env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_SIGN_IN"] = "1"
         if args.account_sign_in_no_emails:
