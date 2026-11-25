@@ -33,9 +33,9 @@ impl Workspace {
                             "id": slot.panel.entity_id().as_u64(),
                             "session": slot.panel.session_id(cx),
                             "history_loaded": chat.is_some_and(Panel::history_loaded),
-                            "history_items": chat.map_or(0, |panel| panel.items.len()),
+                            "history_items": chat.map_or(0, Panel::history_len),
                             // Length only: the dump must never contain draft text.
-                            "draft_chars": chat.map_or(0, |panel| panel.input.read(cx).snapshot().content.chars().count()),
+                            "draft_chars": chat.map_or(0, |panel| panel.draft_chars(cx)),
                             "terminal": slot.panel.terminal_debug_snapshot(cx),
                             "width": slot.width_fraction,
                             "focused": focused == Some(index),
