@@ -730,7 +730,7 @@ impl Workspace {
             .get(self.active)
             .filter(|slot| slot.row == self.active_row && !slot.closing)
         {
-            slot.panel.focus_input(window, cx);
+            slot.panel.surface().focus_input(window, cx);
         } else {
             window.focus(&self.focus_handle, cx);
         }
