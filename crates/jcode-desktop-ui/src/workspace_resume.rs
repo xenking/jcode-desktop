@@ -244,7 +244,7 @@ impl Workspace {
                 sessions.push(jcode_sdk::SessionInfo {
                     user_connected: false,
                     session_id: panel.session_id.clone(),
-                    title: Some(panel.title.to_string()),
+                    title: Some(panel.title_text()),
                     working_dir: panel.working_dir.clone(),
                     status: "open".into(),
                     transcript_bytes: None,
