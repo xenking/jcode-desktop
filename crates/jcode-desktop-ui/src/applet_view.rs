@@ -5,6 +5,7 @@
 //! applet cannot break Desktop's visual language. Unknown nodes render their
 //! fallback text. Images reserve their layout box before pixels decode.
 use crate::applet_host::AssetCache;
+use crate::components::{Pill, PillVariant};
 use crate::input::PromptInput;
 use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
@@ -315,7 +316,7 @@ fn node(
                 let bind = bind.clone();
                 let tab_id = tab.id.clone();
                 let then = on_change.clone();
-                bar = bar.child(pill(
+                bar = bar.child(segment(
                     ElementId::Name(format!("{}:tab:{path}:{index}", cx.scope).into()),
                     &tab.label,
                     index == active,
@@ -461,9 +462,23 @@ fn node(
             let tasks = source(app);
             let shown = tasks.rows.len();
             let count = format!("{}/{}", tasks.completed, tasks.total);
-            let badge = div().flex().items_center().gap(px(2.)).text_size(px(11.)).text_color(if tasks.total > 0 && tasks.completed == tasks.total { theme.OK } else { theme.TEXT_DIM })
-                .child(svg().data(include_bytes!("../../../assets/icons/todo-check.svg").as_slice()).size(px(9.)))
-                .child(count.clone()).debug_selector(move || format!("task-count-{count}"));
+            let badge = div()
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .text_size(px(11.))
+                .text_color(if tasks.total > 0 && tasks.completed == tasks.total {
+                    theme.OK
+                } else {
+                    theme.TEXT_DIM
+                })
+                .child(
+                    svg()
+                        .data(include_bytes!("../../../assets/icons/todo-check.svg").as_slice())
+                        .size(px(9.)),
+                )
+                .child(count.clone())
+                .debug_selector(move || format!("task-count-{count}"));
             let table = Node::new(NodeKind::Table {
                 columns: vec!["Task".into(), "Status".into()],
                 rows: tasks.rows,
@@ -481,11 +496,7 @@ fn node(
                     el.child(node(cx, &table, &format!("{path}.table"), window, app))
                 })
                 .when(tasks.total > shown, |el| {
-                    el.child(format!(
-                        "Showing {} of {} tasks",
-                        shown,
-                        tasks.total
-                    ))
+                    el.child(format!("Showing {} of {} tasks", shown, tasks.total))
                 })
                 .into_any_element()
         }
@@ -736,7 +747,7 @@ fn node(
                 let bind = bind.clone();
                 let value = option.value.clone();
                 let then = on_change.clone();
-                row = row.child(pill(
+                row = row.child(segment(
                     ElementId::Name(format!("{}:opt:{path}:{index}", cx.scope).into()),
                     &option.label,
                     option.value == selected,
@@ -876,33 +887,24 @@ fn stable_row(key: &str) -> usize {
     (hasher.finish() as usize) | (1 << (usize::BITS - 2))
 }
 
-fn pill(
+/// A segmented choice in a tab bar or option row.
+fn segment(
     id: ElementId,
     label: &str,
     selected: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> AnyElement {
+) -> Pill {
     let theme = Theme::global();
-    div()
-        .id(id)
+    Pill::secondary(id, label.to_owned())
+        .selected(selected)
         .px_3()
         .py(px(3.))
-        .rounded_full()
-        .cursor_pointer()
         .text_size(px(12.))
-        .bg(if selected {
-            theme.ACCENT_DIM
-        } else {
-            theme.INLINE_CODE_BG
-        })
-        .text_color(if selected { theme.TEXT } else { theme.TEXT_DIM })
-        .hover(|el| el.bg(theme.ACCENT_DIM))
+        .when(!selected, |pill| pill.text_color(theme.TEXT_DIM))
         .on_click(move |event, window, app| {
             app.stop_propagation();
             on_click(event, window, app)
         })
-        .child(label.to_owned())
-        .into_any_element()
 }
 
 fn button(
@@ -913,42 +915,20 @@ fn button(
     disabled: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let theme = Theme::global();
-    let (bg, fg, hover) = match variant {
-        ButtonVariant::Primary => (theme.ACCENT, theme.PANEL_BG, theme.ACCENT_MUTED),
-        ButtonVariant::Secondary | ButtonVariant::Compact => {
-            (theme.INLINE_CODE_BG, theme.TEXT, theme.ACCENT_DIM)
-        }
-        ButtonVariant::Danger => (theme.ERROR_BG, theme.ERROR, theme.ERROR_BG),
+    let variant = match variant {
+        ButtonVariant::Primary => PillVariant::Primary,
+        ButtonVariant::Secondary => PillVariant::Secondary,
+        ButtonVariant::Compact => PillVariant::Compact,
+        ButtonVariant::Danger => PillVariant::Danger,
     };
-    let compact = matches!(variant, ButtonVariant::Compact);
-    div()
-        .id(id)
-        .debug_selector(|| "applet-action".into())
-        .flex()
-        .flex_row()
-        .flex_none()
-        .items_center()
-        .gap_1()
-        .px(px(if compact { 8. } else { 14. }))
-        .py(px(if compact { 2. } else { 5. }))
-        .rounded_full()
-        .text_size(px(if compact { 11. } else { 13. }))
-        .font_weight(if matches!(variant, ButtonVariant::Primary) {
-            FontWeight::SEMIBOLD
-        } else {
-            FontWeight::NORMAL
-        })
-        .bg(bg)
-        .text_color(fg)
-        .when(disabled, |el| el.opacity(0.45))
-        .when(!disabled, |el| {
-            el.cursor_pointer()
-                .hover(move |el| el.bg(hover))
-                .on_click(on_click)
-        })
-        .when_some(icon, |el, icon| el.child(icon_glyph(icon)))
-        .child(label.to_owned())
+    Pill::new(variant, id, label.to_owned())
+        .debug_selector("applet-action")
+        .disabled(disabled)
+        .on_click(on_click)
+        .when_some(
+            icon.map(icon_glyph).filter(|glyph| !glyph.is_empty()),
+            |pill, glyph| pill.glyph(glyph),
+        )
         .into_any_element()
 }
 

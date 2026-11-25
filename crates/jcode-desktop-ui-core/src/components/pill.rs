@@ -61,6 +61,7 @@ pub struct Pill {
     label: Option<SharedString>,
     aria_label: Option<SharedString>,
     icon: Option<&'static [u8]>,
+    glyph: Option<SharedString>,
     selected: bool,
     disabled: bool,
     tooltip: Option<Tooltip>,
@@ -84,6 +85,7 @@ impl Pill {
             label: Some(label.into()),
             aria_label: None,
             icon: None,
+            glyph: None,
             selected: false,
             disabled: false,
             tooltip: None,
@@ -133,6 +135,13 @@ impl Pill {
     /// A leading SVG glyph, drawn in the pill's text color.
     pub fn icon(mut self, icon: &'static [u8]) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// A leading text glyph such as `✓` or `→`, for icon vocabularies that
+    /// ship characters instead of SVG.
+    pub fn glyph(mut self, glyph: impl Into<SharedString>) -> Self {
+        self.glyph = Some(glyph.into());
         self
     }
 
@@ -302,6 +311,7 @@ impl RenderOnce for Pill {
                     .text_color(fg),
             )
         })
+        .children(self.glyph)
         .children(self.label)
         .children(self.children)
     }
