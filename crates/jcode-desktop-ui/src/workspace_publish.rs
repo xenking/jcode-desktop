@@ -44,9 +44,8 @@ impl Workspace {
         );
         let panel = self.slots[self.active].panel.clone();
         panel.update_chat(cx, |panel, cx| {
-            panel.set_publish_tracker(true);
-            panel.status = "Starting publish…".into();
-            cx.notify();
+            panel.set_publish_tracker(true, cx);
+            panel.set_status("Starting publish…", cx);
         });
         self.bridge.send(Command::CreateSession {
             working_dir: Some(directory),
@@ -60,10 +59,8 @@ impl Workspace {
             .display()
             .to_string();
         if let Some(slot) = self.slots.get(self.active) {
-            slot.panel.update_chat(cx, |panel, cx| {
-                panel.working_dir = Some(checkout.clone());
-                cx.notify();
-            });
+            slot.panel
+                .update_chat(cx, |panel, cx| panel.set_working_dir(Some(checkout.clone()), cx));
         }
         let mut session = self.sessions[0].clone();
         session.session_id = "screenshot-publish".into();
@@ -72,7 +69,7 @@ impl Workspace {
         self.sessions.push(session.clone());
         self.active = self.open_session(session, cx);
         self.slots[self.active].panel.update_chat(cx, |panel, cx| {
-            panel.set_publish_tracker(true);
+            panel.set_publish_tracker(true, cx);
             panel.seed_publish_fixture();
             cx.notify();
         });
