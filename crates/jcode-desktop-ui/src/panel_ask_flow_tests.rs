@@ -232,7 +232,6 @@ fn stale_cold_wake_releases_composer_without_another_response(cx: &mut gpui::Tes
             .read(cx)
             .input
             .read(cx)
-            .focus_handle
             .is_focused(window)
     }));
     let responses: Vec<_> = commands
@@ -362,7 +361,6 @@ fn acknowledged_ask_returns_keyboard_focus_to_composer(cx: &mut gpui::TestAppCon
             .read(cx)
             .input
             .read(cx)
-            .focus_handle
             .is_focused(window)
     }));
 }

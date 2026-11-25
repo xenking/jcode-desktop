@@ -910,7 +910,7 @@ mod tests {
                         panic!("{opening} did not open {selector}");
                     };
                     assert!(*opened == kind, "{selector} opened the other picker");
-                    assert!(search.read(cx).focus_handle.is_focused(window));
+                    assert!(search.read(cx).is_focused(window));
                 });
                 vcx.simulate_keystrokes("escape");
                 vcx.run_until_parked();
@@ -962,7 +962,7 @@ mod tests {
             search.clone()
         });
         let check_query = |vcx: &mut gpui::VisualTestContext, keys, query| {
-            vcx.update(|window, cx| assert!(search.read(cx).focus_handle.is_focused(window)));
+            vcx.update(|window, cx| assert!(search.read(cx).is_focused(window)));
             vcx.simulate_keystrokes(keys);
             assert_eq!(
                 search.read_with(vcx, |search, _| search.content.to_string()),

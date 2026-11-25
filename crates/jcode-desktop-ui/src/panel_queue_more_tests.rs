@@ -9,7 +9,7 @@ fn startup_enter_and_ctrl_enter_queue_until_attached_history_ready(cx: &mut gpui
     });
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.simulate_input("first startup prompt");
@@ -91,7 +91,7 @@ fn startup_slash_command_stays_in_editor_until_explicit_ready_submission(
     });
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.simulate_input("/clear");
@@ -603,7 +603,7 @@ pub(super) fn queue_edit_panel(
     vcx.simulate_window_resize(handle, gpui::size(px(900.), px(700.)));
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.run_until_parked();
@@ -638,7 +638,7 @@ fn daemon_row_edit_opens_in_place_and_leaves_the_composer_alone(cx: &mut gpui::T
     assert!(editor.bottom() <= composer.top(), "the editor is in the queue, above the composer");
     let input = edit_input(&panel, vcx);
     assert_eq!(input.read_with(vcx, |input, _| input.content.to_string()), "second queued");
-    assert!(vcx.update(|window, cx| input.read(cx).focus_handle.is_focused(window)));
+    assert!(vcx.update(|window, cx| input.read(cx).is_focused(window)));
     panel.read_with(vcx, |p, cx| {
         assert_eq!(p.input.read(cx).content, "my draft", "the composer draft is untouched");
         assert_eq!(p.prompt_queue.remote.len(), 2);
@@ -964,7 +964,7 @@ fn rejected_save_keeps_the_edited_text_with_a_note(cx: &mut gpui::TestAppContext
         assert!(!p.items.iter().any(|item| matches!(item, Item::Error(_))), "no red error for a race");
     });
     // Esc dismisses it; nothing is sent again by itself.
-    vcx.update(|window, cx| window.focus(&input.read(cx).focus_handle.clone(), cx));
+    vcx.update(|window, cx| window.focus(&input.read(cx).editor_focus(), cx));
     vcx.simulate_keystrokes("escape");
     assert!(!drain_commands(&commands).iter().any(|command| matches!(command, Command::QueuePrompt { .. })));
 }

@@ -87,7 +87,7 @@ impl Panel {
     }
 
     pub(crate) fn composer_focused(&self, window: &Window, cx: &App) -> bool {
-        self.input.read(cx).focus_handle.is_focused(window)
+        self.input.read(cx).is_focused(window)
     }
 
     /// The composer's draft, and the revision of its text that automation

@@ -674,7 +674,7 @@ fn voice_shortcut_toggles_focused_composer_without_sending(cx: &mut gpui::TestAp
         });
     });
     vcx.update(|window, cx| {
-        let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+        let focus = panel.read(cx).input.read(cx).editor_focus();
         focus.focus(window, cx);
     });
     vcx.simulate_keystrokes("ctrl-shift-v");
@@ -821,7 +821,7 @@ fn voice_insertion_is_undoable(cx: &mut gpui::TestAppContext) {
         );
     });
     vcx.update(|window, cx| {
-        let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+        let focus = panel.read(cx).input.read(cx).editor_focus();
         focus.focus(window, cx);
     });
     vcx.simulate_keystrokes("ctrl-z");
@@ -949,7 +949,7 @@ fn global_voice_to_focused_free_answer_requires_permission(cx: &mut gpui::TestAp
     vcx.run_until_parked();
     vcx.update(|window, cx| {
         let input = panel.read(cx).ask_card.as_ref().unwrap().other_inputs[0].clone();
-        window.focus(&input.read(cx).focus_handle.clone(), cx);
+        window.focus(&input.read(cx).editor_focus(), cx);
         panel.update(cx, |panel, cx| assert!(panel.capture_focused_ask_voice_target(window, cx)));
     });
     panel.update(vcx, |panel, cx| {
@@ -1111,7 +1111,7 @@ fn voice_replacement_is_one_undoable_edit(cx: &mut gpui::TestAppContext) {
         });
     });
     vcx.update(|window, cx| {
-        let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+        let focus = panel.read(cx).input.read(cx).editor_focus();
         focus.focus(window, cx);
     });
     vcx.simulate_keystrokes("ctrl-z");
@@ -1150,7 +1150,7 @@ fn command_transcript_replacement_is_one_undoable_edit(cx: &mut gpui::TestAppCon
         });
     });
     vcx.update(|window, cx| {
-        let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+        let focus = panel.read(cx).input.read(cx).editor_focus();
         focus.focus(window, cx);
     });
     vcx.simulate_keystrokes("ctrl-z");

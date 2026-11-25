@@ -27,7 +27,7 @@ fn focused_startup_panel(
     });
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
-        let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+        let focus = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&focus, cx);
     });
     vcx.run_until_parked();

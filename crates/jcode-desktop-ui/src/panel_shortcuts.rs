@@ -147,7 +147,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("jump-to-latest").is_some());
         vcx.update(|window, cx| {
-            let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+            let handle = panel.read(cx).input.read(cx).editor_focus();
             window.focus(&handle, cx);
         });
         vcx.run_until_parked();
@@ -217,7 +217,7 @@ mod tests {
             cx.add_window_view(|_, cx| Panel::new("bg-test".into(), None, None, bridge, cx));
         vcx.update(|window, cx| {
             Panel::connect_input(&panel, cx);
-            let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+            let handle = panel.read(cx).input.read(cx).editor_focus();
             handle.focus(window, cx);
         });
         let drain = |commands: &std::sync::mpsc::Receiver<crate::harness::Command>| {

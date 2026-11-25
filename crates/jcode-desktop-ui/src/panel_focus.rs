@@ -23,7 +23,7 @@ impl Panel {
             || self.routing_gate.is_some()
             || self.login.is_some()
             || self.recovery_picker_open
-            || self.input_focus_handle(cx) != self.input.read(cx).focus_handle
+            || self.input_focus_handle(cx) != self.input.read(cx).editor_focus()
             || !(workspace_focused
                 || self
                     .transcript_selection
@@ -51,7 +51,7 @@ impl Panel {
             return handle;
         }
         if let Some((_, search)) = &self.picker_search {
-            return search.read(cx).focus_handle.clone();
+            return search.read(cx).editor_focus();
         }
         if let Some(handle) = self.document_focus_handle(cx) {
             return handle;
@@ -69,7 +69,7 @@ impl Panel {
             // bubbling through the rendered panel tree.
             self.focus_handle.clone()
         } else {
-            self.input.read(cx).focus_handle.clone()
+            self.input.read(cx).editor_focus()
         }
     }
 }

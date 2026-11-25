@@ -25,7 +25,7 @@ fn composer_wheel_does_not_move_transcript_at_editor_edge(cx: &mut gpui::TestApp
     });
     vcx.run_until_parked();
     let input = panel.read_with(vcx, |panel, _| panel.input.clone());
-    vcx.update(|window, cx| input.update(cx, |input, cx| input.focus_handle.focus(window, cx)));
+    vcx.update(|window, cx| input.update(cx, |input, cx| input.editor_focus().focus(window, cx)));
     vcx.simulate_keystrokes("ctrl-home");
     vcx.run_until_parked();
     panel.update(vcx, |panel, cx| {

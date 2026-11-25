@@ -156,8 +156,7 @@ fn actual_prompt_submit_sounds_sent_and_escape_cancels_silently(cx: &mut gpui::T
             .read(cx)
             .input
             .read(cx)
-            .focus_handle
-            .clone()
+            .editor_focus()
             .focus(window, cx);
         assert!(drain_requested(cx).is_empty());
     });

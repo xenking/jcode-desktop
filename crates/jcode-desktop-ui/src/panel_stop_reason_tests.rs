@@ -327,7 +327,7 @@ fn user_cancel_notice_is_replaced_by_confirmed_interruption(cx: &mut gpui::TestA
     let (panel, vcx) = cx.add_window_view(|_, cx| active_panel(cx));
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
-        window.focus(&panel.read(cx).input.read(cx).focus_handle.clone(), cx);
+        window.focus(&panel.read(cx).input.read(cx).editor_focus(), cx);
     });
     vcx.simulate_keystrokes("escape");
     panel.update(vcx, |panel, cx| {

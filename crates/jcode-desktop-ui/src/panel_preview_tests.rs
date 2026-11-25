@@ -130,7 +130,7 @@ fn preview_keyboard_and_model_recovery_stay_offline(cx: &mut gpui::TestAppContex
     panel.update(vcx, |panel, _| panel.bridge = bridge);
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
-        let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+        let focus = panel.read(cx).input.read(cx).editor_focus();
         focus.focus(window, cx);
     });
     for input in [

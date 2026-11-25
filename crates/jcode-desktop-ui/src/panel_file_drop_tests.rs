@@ -24,7 +24,7 @@ fn files_dropped_from_the_file_manager_attach_images_and_reference_paths(
     });
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.simulate_input("look at");

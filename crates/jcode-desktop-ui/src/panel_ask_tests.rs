@@ -370,7 +370,6 @@ fn tabs_digits_and_comment_keep_answers(cx: &mut gpui::TestAppContext) {
         assert!(
             panel.ask_card.as_ref().unwrap().comment_inputs[0][1]
                 .read(cx)
-                .focus_handle
                 .is_focused(window),
             "N should focus comment"
         );
@@ -1288,7 +1287,7 @@ fn ask_comment_image_survives_draft_and_explicit_submit(cx: &mut gpui::TestAppCo
         );
     });
     vcx.run_until_parked();
-    vcx.update(|window, cx| window.focus(&input.read(cx).focus_handle.clone(), cx));
+    vcx.update(|window, cx| window.focus(&input.read(cx).editor_focus(), cx));
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     assert!(
@@ -1338,7 +1337,7 @@ fn ask_answer_image_is_sent_and_survives_incomplete_enter(cx: &mut gpui::TestApp
     vcx.run_until_parked();
     vcx.update(|window, cx| {
         let input = panel.read(cx).ask_card.as_ref().unwrap().other_inputs[0].clone();
-        window.focus(&input.read(cx).focus_handle.clone(), cx);
+        window.focus(&input.read(cx).editor_focus(), cx);
         input.update(cx, |input, cx| {
             input.attach_image(
                 crate::clipboard_image::ClipboardImage {
@@ -1423,8 +1422,7 @@ fn ask_editor_receives_space_and_printable_shortcuts(cx: &mut gpui::TestAppConte
     vcx.update(|window, cx| {
         let focus = panel.read(cx).ask_card.as_ref().unwrap().other_inputs[0]
             .read(cx)
-            .focus_handle
-            .clone();
+            .editor_focus();
         window.focus(&focus, cx);
     });
     vcx.simulate_input("a");

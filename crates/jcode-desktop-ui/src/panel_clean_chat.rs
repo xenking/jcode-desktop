@@ -605,7 +605,7 @@ mod tests {
             input.update(cx, |input, cx| {
                 input.set_content("Unsent draft".into(), cx);
                 input.set_caret(4, cx);
-                window.focus(&input.focus_handle, cx);
+                window.focus(&input.editor_focus(), cx);
             });
             panel.update(cx, |panel, cx| {
                 panel.stick_to_bottom = false;
@@ -637,7 +637,6 @@ mod tests {
                     .read(cx)
                     .input
                     .read(cx)
-                    .focus_handle
                     .is_focused(window)
             );
         });

@@ -243,7 +243,7 @@ mod tests {
             );
         });
         vcx.update(|window, cx| {
-            let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+            let handle = panel.read(cx).input.read(cx).editor_focus();
             window.focus(&handle, cx);
         });
         vcx.run_until_parked();

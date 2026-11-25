@@ -997,7 +997,7 @@ impl Panel {
     fn composer_popover_focus(&self, cx: &App) -> Option<FocusHandle> {
         self.picker_search
             .as_ref()
-            .map(|(_, search)| search.read(cx).focus_handle.clone())
+            .map(|(_, search)| search.read(cx).editor_focus())
             .or_else(|| self.swarm_list_open.then(|| self.swarm_list_focus.clone()))
     }
 
@@ -1221,7 +1221,7 @@ impl Panel {
     /// Whether keys typed now are delivered to this panel: its composer, its
     /// current primary surface, or its selectable transcript.
     pub(crate) fn workspace_focus_handles(&self, cx: &App) -> ([Option<FocusHandle>; 4], FocusHandle) {
-        ([Some(self.input.read(cx).focus_handle.clone()), Some(self.input_focus_handle(cx)),
+        ([Some(self.input.read(cx).editor_focus()), Some(self.input_focus_handle(cx)),
           self.image_pane_open.then(|| self.image_pane_focus.clone()),
           Some(self.transcript_selection.read(cx).focus_handle().clone())], self.focus_handle.clone())
     }
@@ -1231,7 +1231,7 @@ impl Panel {
     }
 
     pub(crate) fn owns_keyboard_focus(&self, window: &Window, cx: &App) -> bool {
-        self.input.read(cx).focus_handle.is_focused(window)
+        self.input.read(cx).is_focused(window)
             || self.input_focus_handle(cx).is_focused(window)
             || (self.image_pane_open && self.image_pane_focus.is_focused(window))
             || self.focus_handle.contains_focused(window, cx)

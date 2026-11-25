@@ -341,7 +341,7 @@ impl Panel {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .track_focus(&self.input.read(cx).focus_handle)
+            .track_focus(&self.input.read(cx).editor_focus())
             .child(
                 div()
                     .debug_selector(|| "todoist-header".into())

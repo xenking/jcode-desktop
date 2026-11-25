@@ -18,7 +18,7 @@ fn fresh_session_composer_is_centered_compact_and_stable_while_typing(
         .unwrap();
     panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     vcx.update(|window, cx| {
-        let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+        let focus = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&focus, cx);
     });
     let handle = vcx.update(|window, _| window.window_handle());
@@ -82,7 +82,7 @@ fn fresh_session_slash_palette_stays_above_the_larger_composer(cx: &mut gpui::Te
         .read_with(vcx, |workspace, _| workspace.test_panel(0))
         .unwrap();
     vcx.update(|window, cx| {
-        let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+        let focus = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&focus, cx);
     });
     vcx.simulate_input("/help");

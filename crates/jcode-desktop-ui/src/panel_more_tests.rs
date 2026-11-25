@@ -1157,7 +1157,7 @@ fn keyboard_submission_reaches_the_bridge_and_streamed_text_paints(
     let panel = panel.expect("test panel exists");
     panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.run_until_parked();
@@ -1205,7 +1205,7 @@ fn escape_cancels_an_active_transcript_from_the_focused_prompt(cx: &mut gpui::Te
     workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
     let panel = panel.expect("test panel exists");
     vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     panel.update(vcx, |panel, cx| {
@@ -1326,7 +1326,7 @@ fn slash_commands_dispatch_native_session_operations(cx: &mut gpui::TestAppConte
     workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
     let panel = panel.expect("test panel exists");
     vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
 
@@ -1370,7 +1370,7 @@ fn update_command_submits_through_the_prompt_and_reports_platform_availability(
     workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
     let panel = panel.expect("test panel exists");
     vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
 
@@ -1468,7 +1468,7 @@ fn model_command_replaces_suggestions_above_input_and_enter_switches_selection(
     });
     let panel = panel.expect("test panel exists");
     vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
 

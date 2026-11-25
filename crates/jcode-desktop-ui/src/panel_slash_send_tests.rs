@@ -19,7 +19,7 @@ fn composer(
     let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
     panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     (vcx, commands)

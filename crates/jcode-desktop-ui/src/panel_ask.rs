@@ -275,7 +275,7 @@ impl AskCard {
     }
 
     fn focused_editor(&self, window: &Window, cx: &App) -> Option<(usize, Option<usize>)> {
-        let focused = |input: &Entity<PromptInput>| input.read(cx).focus_handle.is_focused(window);
+        let focused = |input: &Entity<PromptInput>| input.read(cx).is_focused(window);
         if let Some(q) = self.other_inputs.iter().position(focused) {
             return Some((q, None));
         }
@@ -669,7 +669,7 @@ impl Panel {
                     card.voice_target = Some((q, option));
                 }
                 if let Some(input) = this.ask_voice_input() {
-                    window.focus(&input.read(cx).focus_handle.clone(), cx);
+                    window.focus(&input.read(cx).editor_focus(), cx);
                 }
                 window.dispatch_action(Box::new(voice::ToggleVoice), cx);
                 cx.stop_propagation();
@@ -749,7 +749,7 @@ impl Panel {
                 let o = card.cursor_option.min(count - 1);
                 card.open_comment(q, o);
                 if let Some(input) = card.comment_inputs.get(q).and_then(|inputs| inputs.get(o)) {
-                    let focus = input.read(cx).focus_handle.clone();
+                    let focus = input.read(cx).editor_focus();
                     window.focus(&focus, cx);
                 }
             }
@@ -1386,7 +1386,7 @@ impl Panel {
                                                 .get(q)
                                                 .and_then(|inputs| inputs.get(o))
                                             {
-                                                let focus = input.read(cx).focus_handle.clone();
+                                                let focus = input.read(cx).editor_focus();
                                                 window.focus(&focus, cx);
                                             }
                                             cx.stop_propagation();

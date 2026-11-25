@@ -141,7 +141,7 @@ fn composer_bare_selfdev_activates_for_next_prompt(cx: &mut gpui::TestAppContext
             .update(cx, |input, cx| input.set_skills(panel.skills.clone(), cx));
     });
     vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.simulate_input("/selfdev");
@@ -178,7 +178,7 @@ fn composer_sends_selected_skill_prompt(cx: &mut gpui::TestAppContext) {
             .update(cx, |input, cx| input.set_skills(panel.skills.clone(), cx));
     });
     vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.simulate_input("/poteto-mode fix this please");
@@ -203,7 +203,7 @@ fn composer_runs_compact_as_a_session_operation(cx: &mut gpui::TestAppContext) {
     let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
     panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.simulate_input("/compact");
@@ -238,7 +238,7 @@ fn composer_dispatches_selected_command_even_when_prompts_are_queued(
         panel.seed_screenshot_queued(1, 0);
     });
     vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.simulate_input("/skills please now");
@@ -267,7 +267,7 @@ fn composer_routes_selected_workspace_command(cx: &mut gpui::TestAppContext) {
     let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
     panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.simulate_input("/btw ask please");

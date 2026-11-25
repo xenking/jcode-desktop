@@ -16,7 +16,7 @@ fn effort_command_during_running_turn_is_immediate_not_a_steer(cx: &mut gpui::Te
     });
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.simulate_input("/effort high");
@@ -833,7 +833,7 @@ fn enter_with_text_sends_only_the_new_prompt_and_keeps_after_yield_queued(
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
         panel.update(cx, |p, cx| p.apply(&event(json!({"ev":"queued_prompts", "prompts":[{"client_id":"a","content":"first","mode":"steer"},{"client_id":"b","content":"second","mode":"after_yield"}]})), cx));
-        let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+        let focus = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&focus, cx);
     });
     vcx.simulate_input("new text");
@@ -887,7 +887,7 @@ fn enter_while_pending_promotes_only_the_new_prompt_once_connected(
     });
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.simulate_input("after yield prompt");
@@ -969,7 +969,7 @@ fn empty_enter_with_queue_interrupts_now(cx: &mut gpui::TestAppContext) {
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
         panel.update(cx, |p, cx| p.apply(&event(json!({"ev":"queued_prompts", "prompts":[{"client_id":"a","content":"first","mode":"steer"},{"client_id":"b","content":"second","mode":"after_yield"}]})), cx));
-        let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+        let focus = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&focus, cx);
     });
     vcx.simulate_keystrokes("enter");
@@ -1133,7 +1133,7 @@ fn ctrl_enter_queues_until_completion_and_enter_still_sends(cx: &mut gpui::TestA
     });
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        let handle = panel.read(cx).input.read(cx).editor_focus();
         window.focus(&handle, cx);
     });
     vcx.simulate_input("first queued prompt");

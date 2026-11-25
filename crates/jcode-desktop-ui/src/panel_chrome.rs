@@ -99,7 +99,7 @@ pub(super) fn embedded_reply_frame(
     cx: &App,
 ) -> gpui::Div {
     let theme = Theme::global();
-    let focused = input.read(cx).focus_handle.is_focused(window);
+    let focused = input.read(cx).is_focused(window);
     div()
         .flex_1()
         .min_w_0()
