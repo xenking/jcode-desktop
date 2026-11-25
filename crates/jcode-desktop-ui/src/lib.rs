@@ -321,6 +321,77 @@ fn activate_keymap(cx: &mut App, generation: &'static u8) {
     });
 }
 
+/// Quit from the keyboard or the menu.
+fn quit_window_or_app(cx: &mut App) {
+    // A shared single-panel host owns other people's windows. Quit closes this
+    // one; the process exits after its last window.
+    if let Some(window) = cx.active_window()
+        && (jcode_desktop_api::WindowLaunches::shared(cx)
+            || jcode_desktop_api::WindowLaunches::is_forwarded(cx, window.window_id().as_u64()))
+    {
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |_, window, cx| {
+                workspace::recovery::clean_window(window, cx);
+                window.remove_window();
+            });
+        });
+        return;
+    }
+    cx.quit()
+}
+
+/// The active UI generation's quit behaviour.
+///
+/// GPUI cannot remove a global action listener, and every activation of every
+/// window would add another one that outlives its generation. The App gets one
+/// listener, and a generation only replaces the function it calls.
+struct QuitHandler(fn(&mut App));
+
+impl gpui::Global for QuitHandler {}
+
+fn install_quit_action(cx: &mut App, handler: fn(&mut App)) {
+    let registered = cx.has_global::<QuitHandler>();
+    cx.set_global(QuitHandler(handler));
+    if !registered {
+        cx.on_action(|_: &Quit, cx| {
+            let handler = cx.global::<QuitHandler>().0;
+            handler(cx);
+        });
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+    static RUNS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
+
+    fn first(_: &mut App) {
+        RUNS[0].fetch_add(1, SeqCst);
+    }
+    fn second(_: &mut App) {
+        RUNS[1].fetch_add(1, SeqCst);
+    }
+    fn third(_: &mut App) {
+        RUNS[2].fetch_add(1, SeqCst);
+    }
+
+    #[gpui::test]
+    fn repeated_activations_leave_one_quit_handler_running_the_latest_generation(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            for handler in [first as fn(&mut App), second, third] {
+                install_quit_action(cx, handler);
+            }
+            cx.dispatch_action(&Quit);
+        });
+        let runs: Vec<_> = RUNS.iter().map(|runs| runs.load(SeqCst)).collect();
+        assert_eq!(runs, [0, 0, 1], "handler runs per generation");
+    }
+}
+
 use jcode_desktop_api::{
     ACTIVATE_FAILED, ACTIVATE_OK, ACTIVATE_STATE_INCOMPATIBLE, HostApi, HostHandle, PluginApi,
     STATE_SCHEMA_VERSION,
@@ -400,26 +471,7 @@ unsafe extern "C-unwind" fn activate(
         // activate for each window, including when it restores an earlier image.
         static KEYMAP_GENERATION: u8 = 0;
         activate_keymap(app, &KEYMAP_GENERATION);
-        app.on_action(|_: &Quit, cx| {
-            // A shared single-panel host owns other people's windows. Quit
-            // closes this one; the process exits after its last window.
-            if let Some(window) = cx.active_window()
-                && (jcode_desktop_api::WindowLaunches::shared(cx)
-                    || jcode_desktop_api::WindowLaunches::is_forwarded(
-                        cx,
-                        window.window_id().as_u64(),
-                    ))
-            {
-                cx.defer(move |cx| {
-                    let _ = window.update(cx, |_, window, cx| {
-                        workspace::recovery::clean_window(window, cx);
-                        window.remove_window();
-                    });
-                });
-                return;
-            }
-            cx.quit()
-        });
+        install_quit_action(app, quit_window_or_app);
         let crash_launch = crash_owner.as_ref().map(|_| {
             jcode_desktop_api::WindowLaunches::get(app, window.window_handle().window_id().as_u64())
         });
