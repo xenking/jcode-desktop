@@ -2184,7 +2184,18 @@ impl PromptInput {
                         value,
                         help: description.clone(),
                         active_choice: false,
-                        detail: Some("Skill".into()),
+                        detail: Some(
+                            match (
+                                crate::mode_catalog::is_mode(name, self.mode_catalog.get(name)),
+                                self.current_modes.iter().any(|active| active == name),
+                            ) {
+                                (true, true) => "Active mode",
+                                (true, false) => "Mode",
+                                (false, true) => "Active skill",
+                                (false, false) => "Skill",
+                            }
+                            .into(),
+                        ),
                         header: None,
                         toggle: None,
                         context_action: None,
@@ -4708,6 +4719,7 @@ impl Render for PromptInput {
                 let _ = input.update(cx, |_, cx| cx.notify());
             });
         }
+        let picker_detail = self.picker_detail(&suggestions, window);
         let attachment_overlay = self.render_paste_preview(window, cx);
         div()
             .debug_selector(|| "prompt-input".into())
@@ -4841,7 +4853,8 @@ impl Render for PromptInput {
                                             &self.command_scroll,
                                             "slash-command-scrollbar",
                                         )),
-                                ),
+                                )
+                                .children(picker_detail),
                             px(4.0 + 6.0 * (1.0 - menu_progress)),
                         )
                         .dismiss_outside(self.on_picker_outside.clone()),
@@ -7837,6 +7850,10 @@ mod model_profile_tests;
 #[cfg(test)]
 #[path = "input_model_picker_tests.rs"]
 mod model_picker_tests;
+
+#[cfg(test)]
+#[path = "input_picker_grid_tests.rs"]
+mod picker_grid_tests;
 
 #[cfg(test)]
 #[path = "input_model_order_tests.rs"]

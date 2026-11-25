@@ -8,9 +8,9 @@ impl Panel {
             data: serde_json::json!({"pinned_skills": ["selfdev", "swarm", "poteto-mode"], "skills": [
                 {"name": "selfdev", "description": "Work on Jcode"},
                 {"name": "swarm", "description": "Coordinate agents"},
-                {"name": "poteto-mode", "description": "Concise development style", "icon": "crown"},
+                {"name": "poteto-mode", "description": "Concise development style with deliberate subagents, plain prose, simple code and verified work. Use for requests to work in this style.", "icon": "crown"},
                 {"name": "quiet", "description": "Keep output brief", "mode": true, "icon": "moon"},
-                {"name": "verify-jcode", "description": "Run a native verification"},
+                {"name": "verify-jcode", "description": "Verify the real CLI and TUI after a behavior or rendering change by driving an isolated instance and inspecting its frames"},
                 {"name": "write-guide", "description": "Write product documentation"}
             ]}), message: String::new(),
         }, cx);

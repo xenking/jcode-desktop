@@ -13,7 +13,7 @@ pub(crate) type ModeCatalog = HashMap<String, ModeMetadata>;
 pub(crate) fn is_mode(name: &str, metadata: Option<&ModeMetadata>) -> bool {
     metadata
         .and_then(|item| item.mode)
-        .unwrap_or_else(|| matches!(name, "selfdev" | "swarm") || name.ends_with("-mode"))
+        .unwrap_or_else(|| jcode_base::skill::name_implies_mode(name))
 }
 
 macro_rules! mode_icons {

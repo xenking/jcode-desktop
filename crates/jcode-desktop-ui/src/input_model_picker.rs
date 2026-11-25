@@ -11,6 +11,46 @@ pub(super) struct SuggestionsCache {
     rows: Arc<Vec<CommandSuggestion>>,
 }
 
+/// Longest name the grid gives its own column, in characters.
+const GRID_NAME_CHARS: usize = 28;
+/// Share of the row the name column may take, so descriptions keep the rest.
+const GRID_NAME_SHARE: f32 = 0.4;
+const GRID_ICON: f32 = 18.0;
+const GRID_GAP: f32 = 12.0;
+const GRID_TEXT: f32 = 12.0;
+
+/// What a grid row shows after its name: the kind tag and the description on
+/// one line. `None` for rows that are not plain text commands, skills or modes
+/// (model, effort and speed rows lay themselves out).
+pub(super) fn grid_description(row: &CommandSuggestion) -> Option<String> {
+    if row.toggle.is_some()
+        || row.action.is_some()
+        || row.value.starts_with("/model ")
+        || row.value.starts_with("/effort ")
+        || crate::speed_icon::command_tier(&row.value).is_some()
+    {
+        return None;
+    }
+    let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let detail = row.detail.as_deref().map(one_line).filter(|d| !d.is_empty());
+    let help = one_line(&row.help);
+    let text = match (detail, help.is_empty()) {
+        (Some(detail), false) => format!("{detail} · {help}"),
+        (Some(detail), true) => detail,
+        (None, _) => help,
+    };
+    (!text.is_empty()).then_some(text)
+}
+
+/// The name a grid row shows in its name column.
+fn grid_label(row: &CommandSuggestion) -> &str {
+    match row.value.strip_prefix("/mode ") {
+        Some("off") => "Clear all",
+        Some(name) => name,
+        None => &row.value,
+    }
+}
+
 impl PromptInput {
     /// Rows for whichever step of the two-step model picker is showing.
     pub(super) fn model_stage_rows(&self, query: &str) -> Vec<CommandSuggestion> {
@@ -402,6 +442,97 @@ impl PromptInput {
         rows
     }
 
+    /// Width of the name column every grid row shares: the widest name in the
+    /// list (capped), plus the icon slot when any row has an icon. Descriptions
+    /// start right after it, so they share one x whatever the row holds.
+    fn grid_name_column(&self, window: &Window, row_width: Pixels) -> (Pixels, bool) {
+        let rows = self.command_suggestions();
+        let grid = || rows.iter().filter(|row| grid_description(row).is_some());
+        let longest = grid()
+            .map(|row| grid_label(row).chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(GRID_NAME_CHARS);
+        let any_icon = grid().any(|row| {
+            row.value.starts_with("/mode ")
+                || matches!(
+                    row.context_action,
+                    Some(
+                        context_picker::Action::File(_)
+                            | context_picker::Action::Browse
+                            | context_picker::Action::Attach
+                    )
+                )
+        });
+        let cell = window
+            .text_system()
+            .shape_line(
+                "M".into(),
+                px(GRID_TEXT),
+                &[gpui::TextRun {
+                    len: 1,
+                    font: gpui::font(Theme::global().FONT_MONO),
+                    ..Default::default()
+                }],
+                None,
+            )
+            .width;
+        let icon = if any_icon { px(GRID_ICON + GRID_GAP) } else { px(0.) };
+        let text = (cell * longest as f32 + px(2.)).min(row_width * GRID_NAME_SHARE);
+        (icon + text, any_icon)
+    }
+
+    /// The focused grid row's whole description, shown under the list when the
+    /// row cannot fit it on one line. Hover moves the focus, so the pointer
+    /// reads it the same way the keyboard does.
+    pub(super) fn picker_detail(
+        &self,
+        suggestions: &[CommandSuggestion],
+        window: &Window,
+    ) -> Option<gpui::Div> {
+        let row = suggestions.get(self.command_selection)?;
+        let text = grid_description(row)?;
+        let row_width = self
+            .composer_bounds
+            .get()
+            .map_or(window.viewport_size().width, |bounds| bounds.size.width);
+        let (name_column, _) = self.grid_name_column(window, row_width);
+        // Row padding, scrollbar gutter, the check mark, the column gaps and,
+        // on the rows that offer one, the focused row's key hint.
+        let hint = if row.context_action.is_some() && row_width >= px(340.) {
+            GRID_GAP + 120.
+        } else {
+            0.
+        };
+        let reserved = name_column + px(2. * 12. + 8. + 8. + 14. + 2. * GRID_GAP + hint);
+        let measured = window
+            .text_system()
+            .shape_line(
+                text.clone().into(),
+                px(GRID_TEXT),
+                &[gpui::TextRun {
+                    len: text.len(),
+                    font: gpui::font(Theme::global().FONT_UI),
+                    ..Default::default()
+                }],
+                None,
+            )
+            .width;
+        (measured > row_width - reserved).then(|| {
+            div()
+                .debug_selector(|| "picker-detail".into())
+                .flex_none()
+                .px_3()
+                .py_2()
+                .border_t_1()
+                .border_color(Theme::global().PANEL_BORDER)
+                .text_size(px(11.0))
+                .text_color(Theme::global().TEXT_DIM)
+                .line_clamp(4)
+                .child(text)
+        })
+    }
+
     pub(super) fn render_command_row(
         &self,
         index: usize,
@@ -409,11 +540,18 @@ impl PromptInput {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let compact = self
+        let row_width = self
             .composer_bounds
             .get()
-            .map_or(window.viewport_size().width, |bounds| bounds.size.width)
-            < px(430.);
+            .map_or(window.viewport_size().width, |bounds| bounds.size.width);
+        let compact = row_width < px(430.);
+        // Too narrow for the key hint to share a row with a description.
+        let tiny = row_width < px(340.);
+        let grid_help = grid_description(&suggestion);
+        let grid = grid_help.is_some();
+        let (name_column, icon_slot) = grid
+            .then(|| self.grid_name_column(window, row_width))
+            .map_or((None, false), |(width, icon)| (Some(width), icon));
         let is_toggle = suggestion.toggle.is_some();
         let selected = index == self.command_selection;
         let active_choice = suggestion.active_choice;
@@ -449,7 +587,7 @@ impl PromptInput {
             Some(context_picker::Action::File(_)) if selected && !compact => {
                 Some(format!("{alternate_key} Include contents"))
             }
-            Some(context_picker::Action::Skill(name)) if selected && name != "off" => {
+            Some(context_picker::Action::Skill(name)) if selected && !tiny && name != "off" => {
                 let pin = match (active_mode, compact) {
                     (true, _) => "Unpin",
                     (false, true) => "Pin",
@@ -627,12 +765,16 @@ impl PromptInput {
                     .child(
                         div()
                             .flex()
-                            .flex_1()
                             .min_w_0()
                             .overflow_hidden()
                             .items_center()
+                            .when(!grid, |row| row.flex_1())
+                            .when_some(name_column, |row, width| row.flex_none().w(width))
                             .when(compact && model.is_some(), |row| row.gap_1())
                             .when(!compact || model.is_none(), |row| row.gap_3())
+                            .when(icon_slot && mode_icon.is_none(), |row| {
+                                row.child(div().w(px(GRID_ICON)).flex_none())
+                            })
                             .children(logo)
                             .children(effort_mark)
                             .children(speed.map(|tier| div().flex_none()
@@ -666,9 +808,16 @@ impl PromptInput {
                                     .flex()
                                     .flex_col()
                                     .min_w_0()
+                                    .when(grid, |column| column.flex_1())
                                     .gap_1()
-                                    .child(div().min_w_0().truncate().child(label))
-                                    .children(suggestion.detail.map(|detail| {
+                                    .child(
+                                        div()
+                                            .debug_selector(move || format!("picker-name-{index}"))
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(label),
+                                    )
+                                    .children(suggestion.detail.clone().filter(|_| !grid).map(|detail| {
                                         div()
                                             .debug_selector(move || {
                                                 format!("model-picker-detail-{index}")
@@ -686,8 +835,22 @@ impl PromptInput {
                                     })),
                             ),
                     )
-                    .children((!suggestion.help.is_empty()).then(|| {
+                    .children(grid_help.map(|text| {
                         div()
+                            .debug_selector(move || format!("picker-help-{index}"))
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(if selected {
+                                ink
+                            } else {
+                                Theme::global().TEXT_FAINT
+                            })
+                            .child(text)
+                    }))
+                    .children((!grid && !suggestion.help.is_empty()).then(|| {
+                        div()
+                            .debug_selector(move || format!("picker-help-{index}"))
                             .max_w(relative(0.4))
                             .min_w_0()
                             .when(mode.is_none(), |help| help.truncate())
