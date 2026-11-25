@@ -102,10 +102,7 @@ impl Workspace {
             .filter(|slot| slot.row == self.active_row && !slot.closing)?;
         let panel = slot.panel.chat()?;
         let state = panel.read(cx);
-        (state.can_fork()
-            && (!state.session_id.contains("://")
-                || crate::harness::is_remote_session(&state.session_id)))
-        .then(|| panel.clone())
+        state.can_rename().then(|| panel.clone())
     }
 
     pub(super) fn rename_session(
@@ -123,11 +120,7 @@ impl Workspace {
         let Some(target) = self.rename_target(cx) else {
             return;
         };
-        let title = crate::panel::folder_session_title(
-            &target.read(cx).session_id,
-            target.read(cx).title.as_ref(),
-        )
-        .to_string();
+        let title = target.read(cx).folder_title();
         let workspace = cx.weak_entity();
         self.modal_layer.update(cx, |layer, cx| {
             layer.toggle(window, cx, |_, cx| Rename::new(workspace, target, title, cx))
