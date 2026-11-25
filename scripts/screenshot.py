@@ -72,6 +72,8 @@ def main():
                         help="verify Ctrl+Enter queues prompts on the private display")
     parser.add_argument("--pending-interact", action="store_true",
                         help="verify Enter, retry and local fallback for an offline pending startup")
+    parser.add_argument("--machines", action="store_true",
+                        help="open the Machines screen with offline cloud, paired (reachable, DNS, revoked, timeout) and SSH fixtures")
     parser.add_argument("--cloud-picker", action="store_true", help="show registered Cloud machines in the destination picker")
     parser.add_argument("--cloud-startup", choices=("connecting", "failed"),
                         help="render managed Jcode Cloud unavailability without cloud operations (both modes currently unavailable)")
@@ -468,7 +470,7 @@ def main():
         parser.error("native focus verification needs at least 320px per panel beside the sidebar")
     if args.markdown_file and not args.markdown_file.is_file():
         parser.error("--markdown-file must be a readable file")
-    native_capture = (sys.platform == "darwin" and (args.markdown_file or args.composer_picker or args.sidebar_accounts or args.cache_warning or args.paired_update
+    native_capture = (sys.platform == "darwin" and (args.markdown_file or args.machines or args.accounts or args.composer_picker or args.sidebar_accounts or args.cache_warning or args.paired_update
                         or args.rig_hud or args.transcript in (
                         "openrig", "openrig-inspector", "image-ordinals", "image-ordinals-resolved",
                         "tool-cards", "tool-cards-details", "file-mentions", "external-dm", "external-dm-clean",
@@ -571,6 +573,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_CLOUD_STARTUP"] = args.cloud_startup
         if args.cloud_picker:
             env["JCODE_DESKTOP_SCREENSHOT_CLOUD_PICKER"] = "1"
+        if args.machines:
+            env["JCODE_DESKTOP_SCREENSHOT_MACHINES"] = "1"
         if args.account_sign_in or args.account_sign_in_interact:
             env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_SIGN_IN"] = "1"
         if args.account_sign_in_no_emails:

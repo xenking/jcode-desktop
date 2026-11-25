@@ -1426,6 +1426,10 @@ impl Workspace {
         {
             workspace.show_cloud_picker_fixture(cx);
         } else if harness::screenshot_mode()
+            && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_MACHINES").is_some()
+        {
+            workspace.show_machines_fixture(cx);
+        } else if harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE").is_ok()
         {
             if let Ok(state) = std::env::var("JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE")
@@ -2637,19 +2641,53 @@ impl Workspace {
                 message,
                 request_id,
                 failed,
+                failure,
             } => {
                 if failed {
                     self.invalidate_cloud_connection(&host);
                 }
-                let host = remotes::machine_label(&host);
-                self.update_pending_remote_status(
-                    request_id.as_deref(),
-                    &format!("{host}: {message}"),
-                    failed,
-                    cx,
-                );
+                let label = remotes::machine_label(&host);
+                let key = remotes::new_session_host(&host).to_owned();
+                // A typed paired failure carries its own one-line sentence. Other
+                // failures show the runtime's message, prefixed by the machine.
+                let (line, notice) = match (&failure, failed) {
+                    (Some(failure), true) => {
+                        let summary = failure.summary(&label);
+                        let notice = remotes::RowNotice {
+                            summary: summary.clone(),
+                            action: Some(failure.action()),
+                            detail: Some(failure.detail.clone()),
+                        };
+                        (summary, Some(notice))
+                    }
+                    (None, true) => {
+                        let raw = message.strip_prefix("Remote session failed: ").unwrap_or(&message);
+                        let notice = remotes::RowNotice {
+                            summary: crate::friendly_error::summarize(raw),
+                            action: Some(crate::connect_failure::FailureAction::Retry),
+                            detail: crate::friendly_error::summary_hides_details(raw)
+                                .then(|| raw.to_owned()),
+                        };
+                        (format!("{label}: {message}"), Some(notice))
+                    }
+                    _ => (format!("{label}: {message}"), None),
+                };
+                self.update_pending_remote_status(request_id.as_deref(), &line, failed, cx);
                 self.remotes.failed = failed;
-                self.remotes.status = Some(format!("{host}: {message}"));
+                self.remotes.status = Some(line);
+                self.remotes.status_host = Some(key.clone());
+                match notice {
+                    Some(notice) => {
+                        self.remotes.reachable.remove(&key);
+                        self.remotes.row_notices.insert(key, notice);
+                    }
+                    None => {
+                        self.remotes.row_notices.remove(&key);
+                        if message.starts_with("Connected") {
+                            self.remotes.reachable.insert(key);
+                        }
+                    }
+                }
             }
             Update::RemoteSessions { request_id, result } => {
                 self.apply_machine_sessions(request_id, result);
