@@ -244,6 +244,10 @@ pub(crate) use tab_outline::{TabRing, tab_corner_radius};
 mod tool_streaming;
 #[path = "panel_usage.rs"]
 pub(crate) mod usage;
+#[path = "panel_voice_state.rs"]
+mod voice_state;
+#[path = "panel_voice_trace.rs"]
+mod voice_trace;
 #[path = "panel_voice.rs"]
 pub(crate) mod voice;
 pub use side_document::SideDocumentSnapshot;
@@ -852,7 +856,7 @@ pub struct Panel {
     /// Worker spend (model, provider, total tokens) for inline swarm cards.
     swarm_usage: HashMap<String, jcode_desktop_harness::swarm_usage::WorkerUsage>,
     swarm_row_focus: std::cell::RefCell<HashMap<String, gpui::FocusHandle>>,
-    voice: voice::VoiceState,
+    voice: voice_state::VoiceState,
     image_pane_open: bool,
     session_image_gallery: image_pane::Gallery,
     session_image_base: usize,
@@ -1846,7 +1850,7 @@ impl Panel {
                 .new(|cx| activity::Spinner::for_sidebar(activity_owner.clone(), cx)),
             surface_focused: true,
             input,
-            voice: voice::VoiceState::default(),
+            voice: voice_state::VoiceState::default(),
             image_pane_open: false,
             session_image_gallery: Default::default(),
             session_image_base: 0,

@@ -244,8 +244,7 @@ impl Workspace {
             },
         );
         panel.update(cx, |panel, _| {
-            panel.configure_voice_navigation(sessions, subscription);
-            panel.configure_voice_actions(action_subscription);
+            panel.configure_voice_routing(sessions, subscription, action_subscription);
         });
     }
 

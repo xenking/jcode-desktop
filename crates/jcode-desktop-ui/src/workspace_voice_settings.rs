@@ -116,18 +116,7 @@ fn model_label(backend: StreamingBackend, saved: &str) -> String {
 /// Install the SuperWhisper bridge next to the jcode config and return the
 /// command line to store in `[dictation] command`.
 fn install_superwhisper_bridge() -> std::io::Result<String> {
-    let path = crate::panel::voice::superwhisper_bridge_path()
-        .ok_or_else(|| std::io::Error::other("no jcode home"))?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, SUPERWHISPER_SCRIPT)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
-    }
-    Ok(crate::panel::voice::bridge_command(&path))
+    jcode_desktop_voice::superwhisper::install(SUPERWHISPER_SCRIPT)
 }
 
 thread_local! {

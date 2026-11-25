@@ -4,13 +4,29 @@
 
 use std::path::{Path, PathBuf};
 
+/// Write `script` as the bridge next to the jcode config and return the
+/// command line to store in `[dictation] command`.
+pub fn install(script: &str) -> std::io::Result<String> {
+    let path = bridge_path().ok_or_else(|| std::io::Error::other("no jcode home"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(command_for(&path))
+}
+
 /// Where the bridge script lives.
-pub fn bridge_path() -> Option<PathBuf> {
+fn bridge_path() -> Option<PathBuf> {
     Some(jcode_desktop_model::platform_dirs::jcode_home()?.join("bin/superwhisper-dictate.sh"))
 }
 
 /// The shell command line that runs the script at `path`.
-pub fn command_for(path: &Path) -> String {
+fn command_for(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
 }
 

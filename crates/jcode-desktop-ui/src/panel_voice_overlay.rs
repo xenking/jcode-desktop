@@ -1,14 +1,12 @@
 //! A bottom-of-window microphone meter, independent of the draft composer.
 use super::*;
+use jcode_base::voice_intent::SessionCandidate;
 
 #[path = "panel_voice_pills.rs"]
 mod pills;
 
-fn meter_height(level: f32) -> f32 {
-    // Speech RMS is far below full scale. Compress the visual range so quiet
-    // speech is visible without making silence look like incoming audio.
-    2.0 + (level.max(0.0) * 4.0).sqrt().min(1.0) * 16.0
-}
+/// Tallest meter bar, in pixels.
+const METER_BAR_MAX: f32 = 18.;
 
 impl Panel {
     pub(in crate::panel) fn render_voice_overlay(
@@ -17,38 +15,38 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         // The active microphone button is the only in-window listening indicator.
-        if self.voice.phase == Phase::Recording && self.voice.error.is_none() {
+        if self.voice.phase() == Phase::Recording && self.voice.error().is_none() {
             return None;
         }
         // A global hold's status is shown by the OS pill while this window is
         // unfocused. Never show a second, in-panel copy at the same time.
-        if self.voice.global_capture && !window.is_window_active() {
+        if self.voice.is_global() && !window.is_window_active() {
             return None;
         }
         // The sent prompt already appears in the transcript. Never add a
         // boxy in-panel "Sent to agent" card on top of it.
-        if self.voice.global_capture
-            && self.voice.phase == Phase::Idle
-            && self.voice.error.is_none()
-            && self.voice.decision.is_some()
+        if self.voice.is_global()
+            && self.voice.phase() == Phase::Idle
+            && self.voice.error().is_none()
+            && self.voice.decision().is_some()
         {
             return None;
         }
-        if self.voice.trace.is_some() && !self.voice.trace_expanded {
+        if self.voice.has_trace() && !self.voice.trace_expanded() {
             return Some(self.render_voice_pills(window, cx));
         }
         if !self.voice_active()
-            && self.voice.error.is_none()
-            && self.voice.decision.is_none()
-            && self.voice.trace.is_none()
+            && self.voice.error().is_none()
+            && self.voice.decision().is_none()
+            && !self.voice.has_trace()
         {
             return None;
         }
-        if self.voice.trace.is_some() {
+        if self.voice.has_trace() {
             return Some(self.render_voice_trace(window, cx));
         }
         let theme = Theme::global();
-        let phase = self.voice.phase;
+        let phase = self.voice.phase();
         let title = match phase {
             Phase::Idle => "Voice unavailable",
             Phase::Checking => "Connecting…",
@@ -60,7 +58,7 @@ impl Panel {
         // Every state is one pill that hugs its content: status or waveform
         // plus a round control. Results and errors use short wording, with
         // the full message kept in the tooltip.
-        let full_status = self.voice.error.clone();
+        let full_status = self.voice.error().map(str::to_owned);
         let card = div()
             .id("voice-overlay")
             .debug_selector(|| "voice-overlay".into())
@@ -95,19 +93,19 @@ impl Panel {
                         .items_center()
                         .justify_center()
                         .gap(px(1.5))
-                        .children(self.voice.levels.iter().map(|level| {
+                        .children(self.voice.levels().iter().map(|level| {
                             div()
                                 .w(px(2.))
-                                .h(px(meter_height(*level)))
+                                .h(px(jcode_desktop_voice::meter::bar_height(*level, METER_BAR_MAX)))
                                 .rounded_full()
                                 .bg(theme.wash(Ink::Accent, 0.9))
                         })),
                 )
             })
             .when(
-                phase == Phase::Idle && self.voice.error.is_none() && self.voice.decision.is_some(),
+                phase == Phase::Idle && self.voice.error().is_none() && self.voice.decision().is_some(),
                 |el| {
-                    let decision = self.voice.decision.as_deref().unwrap_or_default();
+                    let decision = self.voice.decision().unwrap_or_default();
                     let (route, detail) = decision.split_once(" · ").unwrap_or((decision, ""));
                     el.child(
                         div()
@@ -138,8 +136,8 @@ impl Panel {
             .when(
                 phase != Phase::Recording
                     && (phase != Phase::Idle
-                        || self.voice.error.is_some()
-                        || self.voice.decision.is_none()),
+                        || self.voice.error().is_some()
+                        || self.voice.decision().is_none()),
                 |el| {
                     el.child(
                         div()
@@ -147,17 +145,16 @@ impl Panel {
                             .min_w_0()
                             .whitespace_nowrap()
                             .truncate()
-                            .text_color(if self.voice.error.is_some() {
+                            .text_color(if self.voice.error().is_some() {
                                 theme.TEXT
                             } else {
                                 theme.TEXT_DIM
                             })
                             .child(
                                 self.voice
-                                    .error
-                                    .as_deref()
+                                    .error()
                                     .map(global_pill_error)
-                                    .or_else(|| self.voice.decision.clone())
+                                    .or_else(|| self.voice.decision().map(str::to_owned))
                                     .unwrap_or_else(|| title.into()),
                             ),
                     )
@@ -238,15 +235,15 @@ impl Panel {
     fn render_voice_trace(&self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let trace = self
             .voice
-            .trace
-            .as_ref()
+            .trace_card()
             .expect("trace card requires a trace");
+        let trace = &trace;
         let theme = Theme::global();
         let viewport = window.viewport_size();
-        let expanded = self.voice.trace_expanded;
-        let heading = if self.voice.phase == Phase::Routing {
+        let expanded = self.voice.trace_expanded();
+        let heading = if self.voice.phase() == Phase::Routing {
             "Jev · Choosing a route"
-        } else if self.voice.error.is_some() {
+        } else if self.voice.error().is_some() {
             "Jev · Could not choose"
         } else {
             "Jev · Decision"
@@ -310,7 +307,7 @@ impl Panel {
             let score = answer
                 .map(|answer| format!("{:.1}% yes", answer.probability * 100.))
                 .unwrap_or_else(|| {
-                    if self.voice.phase == Phase::Routing {
+                    if self.voice.phase() == Phase::Routing {
                         "Waiting…"
                     } else {
                         "Not returned"
@@ -430,7 +427,7 @@ impl Panel {
                     .gap_2()
                     .flex_shrink_0()
                     .child(div().flex_1().min_w_0().text_size(px(12.)).child(heading))
-                    .when(self.voice.trace_preview, |el| {
+                    .when(self.voice.trace_preview(), |el| {
                         el.child(div().text_color(theme.TEXT_DIM).child("Preview"))
                     })
                     .child(
@@ -468,7 +465,7 @@ impl Panel {
                     .cursor_pointer()
                     .text_color(theme.ACCENT)
                     .on_click(cx.listener(|panel, _, _, cx| {
-                        panel.voice.trace_expanded = !panel.voice.trace_expanded;
+                        panel.voice.toggle_trace_details();
                         cx.notify();
                         cx.stop_propagation();
                     }))
@@ -478,7 +475,7 @@ impl Panel {
                         "Show full questions and candidates"
                     }),
             )
-            .when_some(self.voice.error.clone(), |el, error| {
+            .when_some(self.voice.error().map(str::to_owned), |el, error| {
                 el.child(
                     div()
                         .debug_selector(|| "voice-status".into())
@@ -486,7 +483,7 @@ impl Panel {
                         .child(error),
                 )
             })
-            .when_some(self.voice.decision.clone(), |el, decision| {
+            .when_some(self.voice.decision().map(str::to_owned), |el, decision| {
                 el.child(
                     div()
                         .debug_selector(|| "voice-decision".into())
@@ -520,9 +517,8 @@ impl Panel {
     }
 
     pub(in crate::panel) fn seed_voice_preview(&mut self, state: PreviewState) {
-        self.voice = VoiceState::default();
         if state == PreviewState::VoiceTimeout {
-            self.voice.error = Some("Voice transcription request timed out".into());
+            self.voice.preview(Preview::TimedOut);
             return;
         }
         if matches!(
@@ -569,7 +565,7 @@ impl Panel {
                     .collect()
             };
             let routed = state != PreviewState::VoiceRouting;
-            self.voice.trace = Some(VoiceTrace {
+            let trace = VoiceTrace {
                 transcript,
                 questions,
                 answers,
@@ -581,34 +577,27 @@ impl Panel {
                     output_tokens: 9,
                     requests: 1,
                 }),
-            });
-            self.voice.trace_preview = true;
-            if state == PreviewState::VoiceRouting {
-                self.voice.phase = Phase::Routing;
+            };
+            self.voice.preview(if state == PreviewState::VoiceRouting {
+                Preview::Routing(trace)
             } else {
-                self.voice.decision = Some(
-                    if coding {
+                Preview::Routed {
+                    trace,
+                    decision: if coding {
                         "Jev chose: Coding agent · Sent now"
                     } else {
                         "Jev chose: Quick action · Open Terminal rendering"
                     }
                     .into(),
-                );
-            }
+                }
+            });
             return;
         }
-        self.voice.hold_capture = true;
-        self.voice.phase = if state == PreviewState::VoiceConnecting {
-            Phase::Checking
-        } else {
-            Phase::Recording
-        };
-        if state == PreviewState::VoiceListening {
-            self.voice.started = Some(Instant::now());
-            // Deterministic offline microphone fixture, never used in live capture.
-            self.voice.levels =
-                std::array::from_fn(|i| ((i as f32 * 0.7).sin().abs() * 0.2) + 0.002);
-        }
+        self.voice.preview(match state {
+            PreviewState::VoiceConnecting => Preview::Connecting,
+            PreviewState::VoiceListening => Preview::Listening,
+            _ => Preview::Recording,
+        });
     }
 }
 
@@ -652,8 +641,8 @@ mod tests {
     fn global_sent_confirmation_never_shows_an_in_panel_card(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(vcx, |panel, cx| {
-            panel.voice.global_capture = true;
-            panel.voice.decision = Some("Sent to agent".into());
+            panel.voice.set_global(true);
+            panel.voice.set_decision(Some("Sent to agent".into()));
             cx.notify();
         });
         vcx.update(|window, _| window.activate_window());
@@ -687,8 +676,8 @@ mod tests {
             ] {
                 panel.update(vcx, |panel, cx| {
                     panel.seed_voice_preview(state);
-                    panel.voice.trace_expanded = true;
-                    let trace = panel.voice.trace.as_mut().unwrap();
+                    panel.voice.set_trace_expanded(true);
+                    let trace = panel.voice.trace_mut().unwrap();
                     trace.candidates = (0..20)
                         .map(|index| SessionCandidate {
                             id: format!("preview-session-{index}"),
@@ -707,7 +696,7 @@ mod tests {
                 {
                     let expanded = true;
                     panel.read_with(vcx, |panel, _| {
-                        assert_eq!(panel.voice.trace_expanded, expanded)
+                        assert_eq!(panel.voice.trace_expanded(), expanded)
                     });
                     let card = vcx.debug_bounds("voice-overlay").unwrap();
                     assert!(
@@ -735,7 +724,7 @@ mod tests {
                 vcx.simulate_click(dismiss.center(), gpui::Modifiers::default());
                 vcx.run_until_parked();
                 assert!(vcx.debug_bounds("voice-overlay").is_none());
-                panel.read_with(vcx, |panel, _| assert!(panel.voice.trace.is_none()));
+                panel.read_with(vcx, |panel, _| assert!(panel.voice.trace_card().is_none()));
             }
         }
     }
@@ -745,9 +734,9 @@ mod tests {
         let (panel, vcx) =
             cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::VoiceRouting, cx));
         panel.update(vcx, |panel, cx| {
-            panel.voice.phase = Phase::Idle;
-            panel.voice.error = Some("Jev request failed. Transcript kept in draft.".into());
-            panel.voice.trace_expanded = true;
+            panel.voice.set_phase(Phase::Idle);
+            panel.voice.set_error(Some("Jev request failed. Transcript kept in draft.".into()));
+            panel.voice.set_trace_expanded(true);
             cx.notify();
         });
         vcx.run_until_parked();
@@ -755,7 +744,7 @@ mod tests {
         assert!(vcx.debug_bounds("voice-status").is_some());
         assert!(vcx.debug_bounds("voice-transcript").is_some());
         panel.read_with(vcx, |panel, _| {
-            let trace = panel.voice.trace.as_ref().unwrap();
+            let trace = panel.voice.trace_card().unwrap();
             assert!(!trace.questions.is_empty());
             assert!(trace.answers.is_empty());
         });
@@ -778,7 +767,7 @@ mod tests {
         ] {
             panel.update(vcx, |panel, cx| {
                 panel.seed_voice_preview(PreviewState::Empty);
-                panel.voice.error = Some(error.into());
+                panel.voice.set_error(Some(error.into()));
                 cx.notify();
             });
             vcx.run_until_parked();
@@ -790,14 +779,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn meter_tracks_silence_and_clamps_loud_audio() {
-        assert_eq!(meter_height(0.), 2.);
-        assert_eq!(meter_height(1.), 18.);
-        assert_eq!(meter_height(2.), 18.);
-        assert!(meter_height(0.1) > meter_height(0.01));
-        assert!(meter_height(0.02) > 6.);
-    }
     #[gpui::test]
     fn voice_overlay_stays_at_bottom_without_moving_composer(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
@@ -815,7 +796,7 @@ mod tests {
                 Phase::Routing,
             ] {
                 panel.update(vcx, |panel, cx| {
-                    panel.voice.phase = phase;
+                    panel.voice.set_phase(phase);
                     cx.notify();
                 });
                 vcx.run_until_parked();
@@ -880,13 +861,13 @@ mod tests {
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, cx| {
             assert_eq!(
-                panel.voice.live_transcript,
+                panel.voice.transcript(),
                 "Revised live words. ".repeat(100)
             );
 
             assert_eq!(panel.input.read(cx).content.as_ref(), "Keep my draft");
             assert!(
-                panel.voice.recording.is_none(),
+                !panel.voice.has_pending_work(),
                 "fixtures never access the microphone"
             );
         });
@@ -926,6 +907,6 @@ mod tests {
         vcx.simulate_click(cancel.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("voice-overlay").is_none());
-        panel.read_with(vcx, |panel, _| assert!(panel.voice.error.is_none()));
+        panel.read_with(vcx, |panel, _| assert!(panel.voice.error().is_none()));
     }
 }

@@ -52,9 +52,9 @@ fn live_voice_transcript_to_jev_to_panel(cx: &mut gpui::TestAppContext) {
                 cx,
             );
         });
-        panel.voice.sessions = Some(sessions.clone());
+        panel.voice.set_sessions(Some(sessions.clone()));
         let recorded = navigations.clone();
-        panel.voice.navigation = Some(cx.subscribe(
+        panel.voice.set_navigation(cx.subscribe(
             &cx.entity(),
             move |_, _, event: &VoiceSessionRequested, _| {
                 recorded
@@ -63,7 +63,7 @@ fn live_voice_transcript_to_jev_to_panel(cx: &mut gpui::TestAppContext) {
             },
         ));
         let recorded = actions.clone();
-        panel.voice.actions = Some(cx.subscribe(
+        panel.voice.set_actions(cx.subscribe(
             &cx.entity(),
             move |_, _, event: &VoiceActionRequested, _| {
                 recorded.borrow_mut().push((event.0, event.1.clone()));
@@ -93,8 +93,8 @@ fn live_voice_transcript_to_jev_to_panel(cx: &mut gpui::TestAppContext) {
             "unexpected command before fixture"
         );
         panel.update(cx, |panel, cx| {
-            panel.prepare_voice_attempt(true);
-            panel.voice.phase = Phase::Transcribing;
+            panel.voice.begin(true, false);
+            panel.voice.set_phase(Phase::Transcribing);
             // This is the production final-transcript boundary. Do NOT inject a
             // VoiceIntent/report or call resolve_voice_for_test here.
             panel.finish_voice_with_mode(
@@ -102,12 +102,11 @@ fn live_voice_transcript_to_jev_to_panel(cx: &mut gpui::TestAppContext) {
                 jcode_base::protocol::TranscriptMode::Send,
                 cx,
             );
-            assert!(panel.voice.phase == Phase::Routing);
-            assert!(panel.voice.task.is_some());
+            assert!(panel.voice.phase() == Phase::Routing);
+            assert!(panel.voice.has_pending_work());
             let trace = panel
                 .voice
-                .trace
-                .as_ref()
+                .trace_card()
                 .expect("production request trace");
             assert_eq!(trace.transcript, transcript);
             assert!(trace.answers.is_empty(), "network has not completed yet");
@@ -118,12 +117,12 @@ fn live_voice_transcript_to_jev_to_panel(cx: &mut gpui::TestAppContext) {
         // runs the foreground finish_voice_report continuation and UI events.
         cx.run_until_parked();
         panel.read_with(cx, |panel, cx| {
-            assert!(panel.voice.phase == Phase::Idle, "production routing did not finish");
-            if let Some(trace) = &panel.voice.trace {
+            assert!(panel.voice.phase() == Phase::Idle, "production routing did not finish");
+            if let Some(trace) = panel.voice.trace_card() {
                 eprintln!("LIVE DESKTOP {provider}/{model}: {transcript:?} answers={:?}", trace.answers);
             }
-            assert!(panel.voice.error.is_none(), "live Jev routing failed: {:?}", panel.voice.error);
-            let trace = panel.voice.trace.as_ref().expect("actual report retained in UI");
+            assert!(panel.voice.error().is_none(), "live Jev routing failed: {:?}", panel.voice.error());
+            let trace = panel.voice.trace_card().expect("actual report retained in UI");
             assert_eq!(trace.transcript, transcript);
             assert_eq!(trace.candidates.len(), sessions.len());
             assert_eq!(trace.questions.len(), 7 + sessions.len());
@@ -134,8 +133,8 @@ fn live_voice_transcript_to_jev_to_panel(cx: &mut gpui::TestAppContext) {
                 assert!((0.0..=1.0).contains(&matching[0].probability));
             }
             assert_eq!(panel.input.read(cx).content.as_ref(), draft);
-            assert!(panel.voice.live_transcript.is_empty());
-            let decision = panel.voice.decision.as_deref().expect("UI decision label");
+            assert!(panel.voice.transcript().is_empty());
+            let decision = panel.voice.decision().expect("UI decision label");
             assert!(decision.starts_with("Jev chose:"));
             eprintln!("LIVE DESKTOP {provider}/{model}: {transcript:?} => {decision}, {} validated answers", trace.answers.len());
         });
