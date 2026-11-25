@@ -263,7 +263,7 @@ pub(super) fn render_about_block(
                         .truncate()
                         .text_color(theme.TEXT_DIM)
                         .tooltip(
-                            live_tabs::tab_tooltip(
+                            sidebar_atoms::tab_tooltip(
                                 "Checks this update channel. Betas published separately may not appear here.",
                             )
                             .builder(),

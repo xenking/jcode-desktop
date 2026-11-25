@@ -656,7 +656,7 @@ impl Workspace {
                     details: (row.subdirectory.is_some()
                         || sidebar_session_created_ms(&session.session_id).is_some()
                         || session.transcript_bytes.is_some_and(|bytes| bytes > 0)),
-                    menu: self.collections.menu_is_open_for(&session.session_id),
+                    menu: self.collection_menu.is_open_for(&session.session_id),
                     workers: (!row.collapsed)
                         .then(|| nested_workers.get(&session.session_id))
                         .flatten()
@@ -869,7 +869,7 @@ impl Workspace {
                             let release_id = session.session_id.clone();
                             let release_out_id = session.session_id.clone();
                             let context_id = session.session_id.clone();
-                            let menu_open = this.collections.menu_is_open_for(&session.session_id);
+                            let menu_open = this.collection_menu.is_open_for(&session.session_id);
                             let menu_session = session.session_id.clone();
                             let selection_order = selection_order.clone();
                             let hovered = this.sidebar_hovered_session.as_deref() == Some(session.session_id.as_str());
@@ -958,7 +958,7 @@ impl Workspace {
                                         window.prevent_default();
                                         cx.stop_propagation();
                                         this.sidebar_gesture = None;
-                                        this.collections.show_menu(&context_id);
+                                        this.collection_menu.show(&context_id);
                                         cx.notify();
                                     }))
                                     .on_scroll_wheel(cx.listener(|this, _, _, _| {

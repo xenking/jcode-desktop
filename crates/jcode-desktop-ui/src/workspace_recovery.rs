@@ -1,6 +1,6 @@
 //! On-disk tab checkpoints, separate from in-process hot reload snapshots.
 //! Only a workspace which restored the dead owner's state can replace it.
-use super::{Workspace, WorkspaceSnapshot};
+use super::{Panel, Workspace, WorkspaceSnapshot};
 use gpui::{App, Entity, Window};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -219,6 +219,26 @@ fn restore(checkpoint: &Checkpoint, alive: bool) -> Option<WorkspaceSnapshot> {
         slot.panel.terminal_output_cursor = None;
     }
     Some(snapshot)
+}
+
+impl Workspace {
+    pub fn snapshot_for_reload(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> anyhow::Result<WorkspaceSnapshot> {
+        // The old generation's panels are dropped next, ending any recording.
+        if self
+            .slots
+            .iter()
+            .any(|slot| slot.panel.read_chat(cx).is_some_and(Panel::voice_active))
+        {
+            eprintln!("voice: hot reload is replacing the UI while a recording is active");
+        }
+        let snapshot = self.snapshot_inner(window, cx, true)?;
+        remember_reload_snapshot(&snapshot, window, cx);
+        Ok(snapshot)
+    }
 }
 
 #[cfg(test)]

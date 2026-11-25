@@ -68,7 +68,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-pub(super) fn observe_title(id: &str, layout: &gpui::TextLayout) {
+pub(in crate::workspace) fn observe_title(id: &str, layout: &gpui::TextLayout) {
     OBSERVED_TITLES.with_borrow_mut(|titles| {
         if let Some(titles) = titles {
             titles.insert(id.to_owned(), layout.clone());

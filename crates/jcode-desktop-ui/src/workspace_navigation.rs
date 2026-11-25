@@ -48,18 +48,6 @@ impl Workspace {
         Self::width_for_fraction(fraction, viewport)
     }
 
-    pub(super) fn width_for_fraction(fraction: f32, viewport: f32) -> f32 {
-        // Narrow windows show one readable conversation without overwriting the
-        // user's width presets. Widening restores the original arrangement.
-        let fraction = if viewport < responsive::SINGLE_PANEL_BREAKPOINT {
-            1.0
-        } else {
-            fraction
-        };
-        ((viewport - STRUT * 2.0) * fraction - GAP)
-            .max(320.0_f32.min((viewport - STRUT * 2.0).max(1.0)))
-    }
-
     pub(super) fn slot_left(&self, index: usize, viewport: f32) -> f32 {
         let mut x = STRUT;
         for i in self.row_indices(self.slots[index].row) {
@@ -598,11 +586,11 @@ impl Workspace {
             // Sleep through the readable hold, then wake rendering for the fade.
             // Replacing this task on every press cancels the previous expiry.
             cx.background_executor()
-                .timer(SHOWCASE_DURATION - notifications::SHOWCASE_FADE)
+                .timer(SHOWCASE_DURATION - SHOWCASE_FADE)
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
             cx.background_executor()
-                .timer(notifications::SHOWCASE_FADE)
+                .timer(SHOWCASE_FADE)
                 .await;
             let _ = this.update(cx, |workspace, cx| {
                 workspace.showcase_cue = None;

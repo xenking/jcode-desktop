@@ -808,8 +808,24 @@ impl Lifecycle {
         updates.push((message, failed, request_id));
     }
 
+    /// Hand every queued progress line to `apply`. Returns whether there were any.
+    pub(in crate::workspace) fn drain_updates(
+        &self,
+        mut apply: impl FnMut(String, bool, Option<String>),
+    ) -> bool {
+        let updates = std::mem::take(&mut *self.updates.lock().unwrap());
+        let any = !updates.is_empty();
+        for (message, failed, request_id) in updates {
+            apply(message, failed, request_id);
+        }
+        any
+    }
+
+    #[cfg(test)]
     pub(in crate::workspace) fn take_updates(&self) -> Vec<(String, bool, Option<String>)> {
-        std::mem::take(&mut self.updates.lock().unwrap())
+        let mut taken = Vec::new();
+        self.drain_updates(|message, failed, id| taken.push((message, failed, id)));
+        taken
     }
 
     pub(in crate::workspace) fn refresh(&self) {

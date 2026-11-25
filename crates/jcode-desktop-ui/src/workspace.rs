@@ -35,6 +35,8 @@ mod side_panel;
 
 #[path = "workspace_resume.rs"]
 pub(crate) mod resume;
+#[path = "workspace_resume_view.rs"]
+mod resume_view;
 
 #[path = "workspace_menu.rs"]
 mod menu;
@@ -335,6 +337,8 @@ const GMAIL_APPLET: &str = "gmail";
 /// the canvas feel detached from the fingers.
 const TOUCH_PAN_DURATION: Duration = Duration::from_millis(42);
 /// niri `layout { gaps 0 }`: columns sit flush against each other.
+const SHOWCASE_FADE: Duration = Duration::from_millis(280);
+const SINGLE_PANEL_BREAKPOINT: f32 = 1100.0;
 const GAP: f32 = 0.0;
 /// niri `layout { struts { ... 0.58 } }`, the outer gap around the strip.
 const STRUT: f32 = 0.58;
@@ -642,6 +646,7 @@ pub struct Workspace {
     worktrees: sidebar_worktrees::State,
     /// User-created collections of sessions (issue #7).
     collections: sidebar_collections::State,
+    collection_menu: sidebar_collections::RowMenu,
     /// Drafts started inside a collection: (draft request id, collection id).
     pending_collection_drafts: Vec<(String, String)>,
     tutorial_page: usize,
@@ -912,7 +917,7 @@ impl Render for Workspace {
         }
         let render_started = Instant::now();
         let viewport = window.viewport_size();
-        let compact = responsive::is_compact(f32::from(viewport.width));
+        let compact = is_compact(f32::from(viewport.width));
         if !compact || !self.show_sidebar {
             self.compact_sidebar_open = false;
         }

@@ -178,7 +178,7 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
                 workspace.sidebar_view = SidebarView::Learn;
                 workspace.show_sidebar = true;
                 workspace.tutorial_page = stage;
-                workspace.compact_sidebar_open = responsive::is_compact(width);
+                workspace.compact_sidebar_open = is_compact(width);
                 cx.set_reduce_motion(true);
                 cx.notify();
             });
@@ -196,7 +196,7 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
                 .or_else(|| vcx.debug_bounds("transcript-row-0"))
                 .expect("prompt should be visible in the transcript or pinned");
             let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
-            if responsive::is_compact(width) {
+            if is_compact(width) {
                 assert!(vcx.debug_bounds("compact-sidebar-overlay").is_some());
             } else {
                 assert_eq!(overlap_area(guide, panel), 0.0);
@@ -222,7 +222,7 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
                         bounds.right() <= guide.right() && bounds.left() >= guide.left(),
                         "{id} must fit the Learn panel"
                     );
-                    if !responsive::is_compact(width) {
+                    if !is_compact(width) {
                         assert_eq!(overlap_area(bounds, panel), 0.0, "{id} covers the session");
                     }
                     regions.push((id, bounds));

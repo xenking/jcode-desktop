@@ -11,11 +11,8 @@ use crate::global_search::{self, Effect, PickRow};
 use crate::panel::PreviewScroll;
 use std::time::Instant;
 
-#[path = "workspace_resume_view.rs"]
-mod view;
-
-const RESUME_ARROW: &[u8] = include_bytes!("../../../assets/icons/arrow-up.svg");
-const RESUME_STACKED_WIDTH: f32 = 640.;
+pub(super) const RESUME_ARROW: &[u8] = include_bytes!("../../../assets/icons/arrow-up.svg");
+pub(super) const RESUME_STACKED_WIDTH: f32 = 640.;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub(super) enum Filter {
@@ -45,43 +42,43 @@ pub(super) enum Snapshot {
 
 pub(super) struct State {
     pub(super) search: Entity<PromptInput>,
-    query: String,
-    selected: Option<String>,
-    filter: Filter,
-    scroll: ScrollHandle,
-    focus: FocusHandle,
-    preview_focus: FocusHandle,
+    pub(super) query: String,
+    pub(super) selected: Option<String>,
+    pub(super) filter: Filter,
+    pub(super) scroll: ScrollHandle,
+    pub(super) focus: FocusHandle,
+    pub(super) preview_focus: FocusHandle,
     pub(super) start_on_close: bool,
-    preview_id: Option<String>,
+    pub(super) preview_id: Option<String>,
     /// The real chat panel in transcript-only mode, hydrated through the same
     /// `load_history` path a resumed session uses, so the preview is identical.
-    preview: Option<Result<Entity<Panel>, String>>,
-    preview_task: Option<gpui::Task<()>>,
+    pub(super) preview: Option<Result<Entity<Panel>, String>>,
+    pub(super) preview_task: Option<gpui::Task<()>>,
     /// Sessions the daemon is generating for right now, from its streaming
     /// markers. Refreshed off the UI thread while the picker is open.
-    streaming: HashSet<String>,
-    _presence_task: Option<gpui::Task<()>>,
+    pub(super) streaming: HashSet<String>,
+    pub(super) _presence_task: Option<gpui::Task<()>>,
     /// The selected message hit inside `selected`, if a hit row is selected.
     pub(super) selected_hit: Option<usize>,
     /// Conversation search through the daemon's full-text index.
-    daemon: global_search::Search,
-    _debounce: Option<gpui::Task<()>>,
+    pub(super) daemon: global_search::Search,
+    pub(super) _debounce: Option<gpui::Task<()>>,
     /// The row the preview was last scrolled to, so it scrolls once per
     /// selection instead of fighting the user's own scrolling.
-    preview_revealed: Option<PickRow>,
+    pub(super) preview_revealed: Option<PickRow>,
 }
 
 /// How long an opened session's transcript is polled for the message to
 /// reveal. History arrives asynchronously; this covers a slow daemon without
 /// leaving a timer running forever.
-const REVEAL_WINDOW: Duration = Duration::from_secs(6);
-const REVEAL_INTERVAL: Duration = Duration::from_millis(60);
+pub(super) const REVEAL_WINDOW: Duration = Duration::from_secs(6);
+pub(super) const REVEAL_INTERVAL: Duration = Duration::from_millis(60);
 
-const PRESENCE_REFRESH: Duration = Duration::from_millis(1500);
+pub(super) const PRESENCE_REFRESH: Duration = Duration::from_millis(1500);
 
 /// How a row relates to live work, strongest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Liveness {
+pub(super) enum Liveness {
     Working,
     Open,
     /// Not running, and its last owner died without a clean shutdown.
@@ -89,11 +86,11 @@ enum Liveness {
     Inactive,
 }
 
-fn status_is_crashed(status: &str) -> bool {
+pub(super) fn status_is_crashed(status: &str) -> bool {
     status == "crashed"
 }
 
-fn status_is_working(status: &str) -> bool {
+pub(super) fn status_is_working(status: &str) -> bool {
     matches!(
         status,
         "running"
@@ -110,7 +107,7 @@ fn status_is_working(status: &str) -> bool {
 
 /// Streaming markers written by every live jcode process, filtered to
 /// sessions whose owning process is still alive.
-fn streaming_sessions() -> HashSet<String> {
+pub(super) fn streaming_sessions() -> HashSet<String> {
     if cfg!(test) || harness::screenshot_mode() {
         return HashSet::new();
     }
@@ -126,7 +123,7 @@ use crate::commands::is_resume_command;
 
 /// Extract a session ID from a pasted query such as `session_x_123_abc` or
 /// `jcode --resume session_x_123_abc`.
-fn pasted_session_id(query: &str) -> Option<String> {
+pub(super) fn pasted_session_id(query: &str) -> Option<String> {
     let mut words = query.split_whitespace().peekable();
     if words.peek() == Some(&"jcode") {
         words.next();
@@ -147,7 +144,7 @@ fn pasted_session_id(query: &str) -> Option<String> {
 }
 
 /// `content` lists sessions the conversation search matched, best first.
-fn filtered_sessions(
+pub(super) fn filtered_sessions(
     mut sessions: Vec<jcode_sdk::SessionInfo>,
     query: &str,
     filter: Filter,
@@ -349,7 +346,7 @@ impl Workspace {
     }
 
     /// Sessions open in this window, and whether each is mid-turn.
-    fn resume_open_activity(&self, cx: &App) -> HashMap<String, bool> {
+    pub(super) fn resume_open_activity(&self, cx: &App) -> HashMap<String, bool> {
         self.slots
             .iter()
             .filter(|slot| !slot.closing)
@@ -358,7 +355,7 @@ impl Workspace {
             .collect()
     }
 
-    fn resume_working(&self, cx: &App) -> HashSet<String> {
+    pub(super) fn resume_working(&self, cx: &App) -> HashSet<String> {
         let mut working = self
             .resume
             .as_ref()
@@ -372,7 +369,7 @@ impl Workspace {
         working
     }
 
-    fn resume_matches(&self, cx: &App) -> Vec<jcode_sdk::SessionInfo> {
+    pub(super) fn resume_matches(&self, cx: &App) -> Vec<jcode_sdk::SessionInfo> {
         let Some(state) = &self.resume else {
             return Vec::new();
         };
@@ -393,7 +390,7 @@ impl Workspace {
     }
 
     /// Every list row: each matching session, then its message hits.
-    fn resume_rows(&self, matches: &[jcode_sdk::SessionInfo]) -> Vec<PickRow> {
+    pub(super) fn resume_rows(&self, matches: &[jcode_sdk::SessionInfo]) -> Vec<PickRow> {
         let Some(state) = &self.resume else {
             return Vec::new();
         };
@@ -401,7 +398,7 @@ impl Workspace {
         state.daemon.rows(&ids)
     }
 
-    fn resume_selected_row(&self) -> Option<PickRow> {
+    pub(super) fn resume_selected_row(&self) -> Option<PickRow> {
         let state = self.resume.as_ref()?;
         let session_id = state.selected.clone()?;
         Some(match state.selected_hit {
@@ -410,7 +407,7 @@ impl Workspace {
         })
     }
 
-    fn set_resume_selection(&mut self, row: Option<PickRow>) {
+    pub(super) fn set_resume_selection(&mut self, row: Option<PickRow>) {
         if let Some(state) = &mut self.resume {
             state.selected_hit = row.as_ref().and_then(PickRow::hit);
             state.selected = row.map(|row| row.session_id().to_owned());
@@ -419,7 +416,7 @@ impl Workspace {
 
     /// Apply new query text: the local filter reacts at once, the
     /// conversation search after the debounce.
-    fn resume_query_changed(&mut self, query: &str, cx: &mut Context<Self>) {
+    pub(super) fn resume_query_changed(&mut self, query: &str, cx: &mut Context<Self>) {
         let Some(state) = self.resume.as_mut() else {
             return;
         };
@@ -484,7 +481,7 @@ impl Workspace {
     }
 
     /// Mark the query in a transcript panel and scroll it to `row`'s message.
-    fn reveal_in_preview(
+    pub(super) fn reveal_in_preview(
         &mut self,
         panel: &Entity<Panel>,
         window: &mut Window,
@@ -522,7 +519,7 @@ impl Workspace {
     /// Poll the opened transcript until the searched message appears, then
     /// scroll to it. Opened sessions load history asynchronously, so the
     /// first frames have nothing to scroll to.
-    fn reveal_after_load(
+    pub(super) fn reveal_after_load(
         &mut self,
         needle: Option<String>,
         exact_hit: bool,
@@ -563,7 +560,7 @@ impl Workspace {
 
     /// Poll the daemon's streaming markers while the picker stays open.
     /// Dropping the picker state drops this task and stops the loop.
-    fn watch_resume_presence(cx: &mut Context<Self>) -> gpui::Task<()> {
+    pub(super) fn watch_resume_presence(cx: &mut Context<Self>) -> gpui::Task<()> {
         cx.spawn(async move |this, cx| {
             loop {
                 let streaming = cx
@@ -715,7 +712,7 @@ impl Workspace {
         self.close_resume(window, cx);
     }
 
-    fn close_resume(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_resume(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let start_on_close = self.resume.take().is_some_and(|state| state.start_on_close);
         if start_on_close && (self.connected || self.remotes.default_host.is_some()) {
             self.start_default_startup(cx);
@@ -724,7 +721,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn resume_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn resume_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let matches = self.resume_matches(cx);
         let selected = self.resume.as_ref().and_then(|s| s.selected.as_deref());
         // A pasted session ID (or `jcode --resume <id>`) opens directly, even
@@ -802,7 +799,7 @@ impl Workspace {
         self.resume_session(session, window, cx);
     }
 
-    fn resume_session(
+    pub(super) fn resume_session(
         &mut self,
         session: jcode_sdk::SessionInfo,
         window: &mut Window,
@@ -841,7 +838,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn click_resume_row(
+    pub(super) fn click_resume_row(
         &mut self,
         row: &PickRow,
         open: bool,
@@ -858,7 +855,7 @@ impl Workspace {
 
     /// Page keys and Ctrl+1 to 4. Escape, Enter and the arrows arrive as
     /// `menu` actions.
-    fn resume_key_down(
+    pub(super) fn resume_key_down(
         &mut self,
         event: &gpui::KeyDownEvent,
         window: &mut Window,
@@ -894,7 +891,7 @@ impl Workspace {
     }
 
     /// Scroll the session preview when it holds focus. False otherwise.
-    fn scroll_resume_preview(
+    pub(super) fn scroll_resume_preview(
         &mut self,
         scroll: PreviewScroll,
         window: &Window,
@@ -913,7 +910,7 @@ impl Workspace {
     }
 
     /// Move the list selection by `delta` rows, returning focus to the search field.
-    fn step_resume_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn step_resume_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(state) = self.resume.as_ref() else {
             return;
         };
@@ -921,7 +918,7 @@ impl Workspace {
         self.move_resume_selection(delta, cx);
     }
 
-    fn move_resume_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+    pub(super) fn move_resume_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         let matches = self.resume_matches(cx);
         let rows = self.resume_rows(&matches);
         let current = self
@@ -939,7 +936,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn set_resume_filter(&mut self, filter: Filter, cx: &mut Context<Self>) {
+    pub(super) fn set_resume_filter(&mut self, filter: Filter, cx: &mut Context<Self>) {
         if let Some(state) = &mut self.resume {
             state.filter = filter;
             state.selected = None;
@@ -949,7 +946,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn load_resume_preview(&mut self, selected: Option<&str>, cx: &mut Context<Self>) {
+    pub(super) fn load_resume_preview(&mut self, selected: Option<&str>, cx: &mut Context<Self>) {
         let Some(id) = selected else { return };
         let state = self.resume.as_mut().expect("resume picker is open");
         if state.preview_id.as_deref() == Some(id) {
@@ -986,7 +983,7 @@ impl Workspace {
     }
 }
 
-fn append_resume_fixture(sessions: &mut Vec<jcode_sdk::SessionInfo>) {
+pub(super) fn append_resume_fixture(sessions: &mut Vec<jcode_sdk::SessionInfo>) {
     if !harness::screenshot_mode()
         || std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RESUME_FIXTURE").is_none()
     {
@@ -1032,7 +1029,7 @@ fn append_resume_fixture(sessions: &mut Vec<jcode_sdk::SessionInfo>) {
     }
 }
 
-fn convert_results(results: jcode_sdk::SessionSearchResults) -> global_search::Results {
+pub(super) fn convert_results(results: jcode_sdk::SessionSearchResults) -> global_search::Results {
     global_search::Results {
         query: results.query,
         titles: results.titles.into_iter().map(convert_hit).collect(),
@@ -1042,7 +1039,7 @@ fn convert_results(results: jcode_sdk::SessionSearchResults) -> global_search::R
     }
 }
 
-fn convert_hit(hit: jcode_sdk::SessionSearchHit) -> global_search::SearchHit {
+pub(super) fn convert_hit(hit: jcode_sdk::SessionSearchHit) -> global_search::SearchHit {
     use global_search::{Highlight, Role};
     // One visual line per hit, with the highlight offsets recomputed for the
     // windowed text the row actually draws.
@@ -1071,14 +1068,14 @@ fn convert_hit(hit: jcode_sdk::SessionSearchHit) -> global_search::SearchHit {
     }
 }
 
-fn now_ms() -> i64 {
+pub(super) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or_default()
 }
 
-fn resume_activity_at_ms(session: &jcode_sdk::SessionInfo) -> Option<u64> {
+pub(super) fn resume_activity_at_ms(session: &jcode_sdk::SessionInfo) -> Option<u64> {
     let timestamp = if session.has_message_activity() {
         session.last_message_at_ms()
     } else {
@@ -1087,7 +1084,7 @@ fn resume_activity_at_ms(session: &jcode_sdk::SessionInfo) -> Option<u64> {
     (timestamp > 0).then_some(timestamp as u64)
 }
 
-fn resume_usage(
+pub(super) fn resume_usage(
     session: &jcode_sdk::SessionInfo,
     sort: sidebar_session_catalog::Sort,
     now: i64,
@@ -1101,7 +1098,7 @@ fn resume_usage(
     }
 }
 
-fn resume_row_metadata(
+pub(super) fn resume_row_metadata(
     session: &jcode_sdk::SessionInfo,
     sort: sidebar_session_catalog::Sort,
     now: i64,
@@ -1122,14 +1119,14 @@ fn resume_row_metadata(
     (runtime.join(" · "), usage.join(" · "))
 }
 
-type PreviewHistory = (
+pub(super) type PreviewHistory = (
     Vec<jcode_sdk::HistoryMessage>,
     Vec<jcode_sdk::RenderedImage>,
 );
 
 /// Build the ordinary chat panel over an inert bridge. It never sends commands
 /// or connects its composer, and renders only the transcript.
-fn preview_panel(
+pub(super) fn preview_panel(
     id: String,
     messages: Vec<jcode_sdk::HistoryMessage>,
     images: Vec<jcode_sdk::RenderedImage>,
@@ -1150,7 +1147,7 @@ fn preview_panel(
 }
 
 /// Read only: never attach/watch a runtime just to browse its conversation.
-fn load_preview_history(id: &str) -> Result<PreviewHistory, String> {
+pub(super) fn load_preview_history(id: &str) -> Result<PreviewHistory, String> {
     if harness::screenshot_mode()
         && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RESUME_FIXTURE").is_some()
         && id.starts_with("resume-fixture-")
@@ -1206,4 +1203,4 @@ fn load_preview_history(id: &str) -> Result<PreviewHistory, String> {
 
 #[cfg(test)]
 #[path = "workspace_resume_tests.rs"]
-mod tests;
+pub(super) mod tests;

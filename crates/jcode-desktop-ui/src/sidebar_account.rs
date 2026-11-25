@@ -123,7 +123,7 @@ impl Workspace {
                                         .cursor_pointer()
                                         .hover(|el| el.opacity(0.85))
                                         .tooltip(
-                                            live_tabs::tab_tooltip(format!(
+                                            sidebar_atoms::tab_tooltip(format!(
                                                 "{}\nClick to {}",
                                                 offer.label,
                                                 offer.action.to_lowercase()

@@ -68,3 +68,10 @@ pub(super) fn icon(data: &'static [u8], size: f32) -> gpui::AnyElement {
         .text_color(Theme::global().TEXT_DIM)
         .into_any_element()
 }
+
+/// Hover text for a session tab or tab-strip control.
+pub(super) fn tab_tooltip(text: impl Into<gpui::SharedString>) -> Tooltip {
+    Tooltip::text(text)
+        .max_width(px(360.0))
+        .debug_selector("live-session-tab-tooltip")
+}

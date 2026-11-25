@@ -1,5 +1,4 @@
 //! Workspace-level switches: overview, hints, showcase, theme and sidebar.
-use super::responsive::is_compact;
 use super::*;
 
 impl Workspace {

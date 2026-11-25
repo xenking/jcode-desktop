@@ -712,9 +712,8 @@ impl Workspace {
                         if configured {
                             this.remotes.cloud.refresh();
                         }
-                        let updates = this.remotes.cloud.take_updates();
-                        let changed = !updates.is_empty();
-                        for (message, failed, request_id) in updates {
+                        let cloud = this.remotes.cloud.clone();
+                        let changed = cloud.drain_updates(|message, failed, request_id| {
                             this.update_pending_remote_status(
                                 request_id.as_deref(),
                                 &message,
@@ -723,7 +722,7 @@ impl Workspace {
                             );
                             this.remotes.status = Some(message);
                             this.remotes.failed = failed;
-                        }
+                        });
                         let summary = if configured {
                             this.remotes.cloud.summary()
                         } else {

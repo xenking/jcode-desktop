@@ -13,7 +13,7 @@ impl Workspace {
         if !self.single_panel {
             self.show_sidebar = true;
             self.compact_sidebar_open =
-                responsive::is_compact(f32::from(window.viewport_size().width));
+                is_compact(f32::from(window.viewport_size().width));
         }
         // Menu actions must work even when the composer, rather than the
         // workspace, owned focus. Nothing replaces the current chat entity.

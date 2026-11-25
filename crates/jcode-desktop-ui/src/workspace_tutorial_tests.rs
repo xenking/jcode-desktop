@@ -608,7 +608,7 @@ fn showcase_repeated_press_restarts_animation_and_cancels_old_expiry(
     cx.executor().advance_clock(Duration::from_millis(670));
     cx.run_until_parked();
     workspace.update(cx, |workspace, _| assert!(workspace.showcase_cue.is_some()));
-    cx.executor().advance_clock(notifications::SHOWCASE_FADE);
+    cx.executor().advance_clock(SHOWCASE_FADE);
     cx.run_until_parked();
     workspace.update(cx, |workspace, _| assert!(workspace.showcase_cue.is_none()));
 }

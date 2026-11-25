@@ -4,7 +4,6 @@ use super::*;
 use crate::panel::expandable;
 
 const SHOWCASE_PRESS: Duration = Duration::from_millis(160);
-pub(super) const SHOWCASE_FADE: Duration = Duration::from_millis(280);
 
 /// Embedded pictograms keep showcase feedback compact and independent of font
 /// glyph coverage. Focus uses arrows, while moving includes the panel outline.

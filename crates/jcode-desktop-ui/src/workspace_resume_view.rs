@@ -1,7 +1,8 @@
 //! The resume picker and session search, painted.
 //!
-//! A child of the resume state it reads: the logic above never calls into it,
+//! It sits above the resume state it reads: the logic never calls into it,
 //! and it reaches back for rows, selection and preview.
+use super::resume::*;
 use super::*;
 use crate::components::Tooltip;
 use crate::global_search::{self, PickRow};
@@ -176,7 +177,7 @@ impl Workspace {
             let badge = resume_liveness_badge(live, open_spinners.get(&id).cloned(), index);
             let title = highlighted_text(format!("{icon} {saved_marker}{title}"), &terms, theme);
             #[cfg(test)]
-            tests::observe_title(&id, title.layout());
+            resume::tests::observe_title(&id, title.layout());
             let action_label = if is_open {
                 "Go to session"
             } else {

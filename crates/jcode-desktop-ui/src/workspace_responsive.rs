@@ -2,13 +2,6 @@
 use super::*;
 use crate::components::Tooltip;
 
-const COMPACT_BREAKPOINT: f32 = 1100.0;
-pub(super) const SINGLE_PANEL_BREAKPOINT: f32 = 1100.0;
-
-pub(super) fn is_compact(width: f32) -> bool {
-    width < COMPACT_BREAKPOINT
-}
-
 /// Compact windows reserve no sidebar column at all. Sessions get the full
 /// width, and the sidebar opens as an overlay from the tab row's menu button.
 #[allow(dead_code)]

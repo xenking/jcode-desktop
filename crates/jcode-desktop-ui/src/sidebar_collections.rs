@@ -96,8 +96,6 @@ pub(super) struct State {
     path: Option<PathBuf>,
     form: Option<Form>,
     error: Option<String>,
-    /// Session whose "Move to collection" menu is open.
-    menu: Option<String>,
     /// Background writes, in order, so a later change never lands first.
     writes: Vec<gpui::Task<()>>,
     loaded: bool,
@@ -192,9 +190,8 @@ impl State {
         })
     }
 
-    /// Open the editor, closing the row menu and forgetting an old error.
+    /// Open the editor, forgetting an old error.
     pub(super) fn open_form(&mut self, form: Form) {
-        self.menu = None;
         self.error = None;
         self.form = Some(form);
     }
@@ -210,19 +207,6 @@ impl State {
 
     pub(super) fn error_text(&self) -> Option<String> {
         self.error.clone()
-    }
-
-    /// Open the "Move to collection" menu of one session's row.
-    pub(super) fn show_menu(&mut self, session_id: &str) {
-        self.menu = Some(session_id.to_owned());
-    }
-
-    pub(super) fn close_menu(&mut self) {
-        self.menu = None;
-    }
-
-    pub(super) fn menu_is_open_for(&self, session_id: &str) -> bool {
-        self.menu.as_deref() == Some(session_id)
     }
 
     /// Claim the one-time load. Returns the file to read the first time only.
@@ -268,6 +252,24 @@ impl State {
     #[cfg(test)]
     fn take_writes(&mut self) -> Vec<gpui::Task<()>> {
         std::mem::take(&mut self.writes)
+    }
+}
+
+/// The session whose "Move to collection" menu is open, if any.
+#[derive(Default)]
+pub(super) struct RowMenu(Option<String>);
+
+impl RowMenu {
+    pub(super) fn show(&mut self, session_id: &str) {
+        self.0 = Some(session_id.to_owned());
+    }
+
+    pub(super) fn hide(&mut self) {
+        self.0 = None;
+    }
+
+    pub(super) fn is_open_for(&self, session_id: &str) -> bool {
+        self.0.as_deref() == Some(session_id)
     }
 }
 
@@ -367,7 +369,7 @@ impl Workspace {
         }
         // Visual review of the row menu without synthetic input.
         if std::env::var("JCODE_DESKTOP_SCREENSHOT_COLLECTIONS").as_deref() == Ok("menu") {
-            self.collections.show_menu("collections-fixture-lint");
+            self.collection_menu.show("collections-fixture-lint");
         }
     }
 
@@ -451,7 +453,7 @@ impl Workspace {
         collection: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        self.collections.close_menu();
+        self.collection_menu.hide();
         if let Some(id) = &collection {
             self.sidebar_projects.collapsed.insert(key(id), false);
         }
@@ -534,6 +536,7 @@ impl Workspace {
         );
         window.focus(&name.read(cx).focus_handle.clone(), cx);
         self.focus_pending = false;
+        self.collection_menu.hide();
         self.collections.open_form(Form {
             editing,
             name,
@@ -906,7 +909,7 @@ impl Workspace {
             .flex_col()
             .gap(px(1.0))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.collections.close_menu();
+                this.collection_menu.hide();
                 cx.notify();
             }))
             .child(

@@ -106,7 +106,7 @@ fn workspace_controls_share_one_row_without_fps_or_footer_metadata(cx: &mut gpui
                     vcx.run_until_parked();
                     let row = vcx.debug_bounds("workspace-tab-row").unwrap();
                     let menu = vcx.debug_bounds("compact-sidebar-toggle");
-                    assert_eq!(menu.is_some(), !sidebar || responsive::is_compact(width));
+                    assert_eq!(menu.is_some(), !sidebar || is_compact(width));
                     assert!(vcx.debug_bounds("fps-counter").is_none());
                     let tabs = vcx.debug_bounds("live-session-tabs").unwrap();
                     let plus = vcx.debug_bounds("tab-new-session").unwrap();
@@ -151,7 +151,7 @@ fn workspace_controls_share_one_row_without_fps_or_footer_metadata(cx: &mut gpui
                         "the chrome never carries a version strip"
                     );
                     assert!(vcx.debug_bounds("workspace-build").is_none());
-                    if sidebar && !responsive::is_compact(width) {
+                    if sidebar && !is_compact(width) {
                         assert_eq!(
                             vcx.debug_bounds("sidebar").unwrap().top(),
                             if cfg!(target_os = "macos") {

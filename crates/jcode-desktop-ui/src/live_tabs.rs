@@ -1,6 +1,6 @@
 //! Labeled live-session folder tabs, independent of the sidebar's navigation.
+use super::sidebar_atoms::tab_tooltip;
 use super::*;
-use crate::components::Tooltip;
 use crate::panel::folder_session_title;
 use gpui::Div;
 
@@ -545,12 +545,6 @@ impl TabMotion {
     }
 }
 
-/// Hover text for a session tab or tab-strip control.
-pub(super) fn tab_tooltip(text: impl Into<gpui::SharedString>) -> Tooltip {
-    Tooltip::text(text)
-        .max_width(px(360.0))
-        .debug_selector("live-session-tab-tooltip")
-}
 
 impl Workspace {
     /// Workspace a pointer "next" click lands on: the next occupied workspace
