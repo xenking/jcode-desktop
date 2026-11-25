@@ -23,11 +23,27 @@ pub(crate) fn read_paste(_cx: &gpui::App) -> Result<ClipboardContent, String> {
     if let Some(reader) = _cx.try_global::<TestPasteReader>() {
         return (reader.0)();
     }
+    #[cfg(target_os = "macos")]
+    if _cx.try_global::<ControlPasteImage>().is_some() {
+        return classify_paste(Vec::new(), || {
+            from_bytes(
+                "image/png".into(),
+                include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+            )
+            .map(Some)
+        });
+    }
     let files = arboard::Clipboard::new()
         .and_then(|mut clipboard| clipboard.get().file_list())
         .unwrap_or_default();
     classify_paste(files, read)
 }
+
+#[cfg(target_os = "macos")]
+pub(crate) struct ControlPasteImage;
+
+#[cfg(target_os = "macos")]
+impl gpui::Global for ControlPasteImage {}
 
 #[cfg(test)]
 pub(crate) struct TestPasteReader(pub fn() -> Result<ClipboardContent, String>);

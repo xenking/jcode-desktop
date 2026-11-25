@@ -2717,8 +2717,14 @@ impl PromptInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        let private_clipboard = cx.try_global::<crate::clipboard_image::ControlPasteImage>().is_some();
+        #[cfg(not(target_os = "macos"))]
+        let private_clipboard = false;
         if self.paste_mode != PasteMode::Attachments {
-            self.paste_clipboard_text(cx);
+            if !private_clipboard {
+                self.paste_clipboard_text(cx);
+            }
             return;
         }
         match crate::clipboard_image::read_paste(cx) {
@@ -2735,7 +2741,7 @@ impl PromptInput {
                 self.attachment_notice = Some(format!("image paste unavailable: {error}").into());
             }
         }
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        if !private_clipboard && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             self.paste_text_or_image_paths(&text, window, cx);
         }
     }

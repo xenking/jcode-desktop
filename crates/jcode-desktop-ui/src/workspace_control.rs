@@ -163,6 +163,7 @@ pub(super) fn handle_window_request(
                 | "left"
                 | "right"
                 | "ctrl-s"
+                | "ctrl-enter"
                 | "home"
                 | "backspace"
                 | "pageup"
@@ -172,12 +173,25 @@ pub(super) fn handle_window_request(
                 | "alt-shift-right"
                 | "super-shift-j"
                 | crate::panel::shortcuts::CLEAN_CHAT_CHORD
-        ) {
+        ) && !(cfg!(target_os = "macos") && key == "super-v")
+        {
             return error("unsupported_key", "unknown fixture key");
         }
         let Ok(keystroke) = gpui::Keystroke::parse(key) else {
             return error("unsupported_key", "invalid fixture key");
         };
+        // Never read or change the system pasteboard from a hidden smoke run.
+        #[cfg(target_os = "macos")]
+        if key == "super-v" {
+            let input = &workspace.read(cx).slots[index].panel.read(cx).input;
+            if !input.read(cx).focus_handle.is_focused(window) {
+                return error(
+                    "selector_not_focused",
+                    "image paste requires composer focus",
+                );
+            }
+            cx.set_global(crate::clipboard_image::ControlPasteImage);
+        }
         window.dispatch_event(
             gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
                 keystroke: keystroke.clone(),
@@ -190,6 +204,10 @@ pub(super) fn handle_window_request(
             gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
             cx,
         );
+        #[cfg(target_os = "macos")]
+        if key == "super-v" {
+            cx.remove_global::<crate::clipboard_image::ControlPasteImage>();
+        }
         window.refresh();
         window.draw(cx).clear(cx);
         return ok(json!({"key": key}));
