@@ -310,7 +310,7 @@ impl Workspace {
         };
         // The chip shows one line of the hint. Clicking it wraps the whole
         // sentence in place instead of leaving the rest to the tooltip.
-        let key = expandable::key::toast(hint.skill_id);
+        let key = expandable::Key::toast(hint.skill_id);
         let expanded = self.expanded_lines.contains(&key);
         let truncated = expandable::preview(label, expandable::NOTICE).is_some();
         let toggle_key = key;
