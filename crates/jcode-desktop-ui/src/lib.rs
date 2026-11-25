@@ -33,6 +33,7 @@ mod inline_image;
 mod input;
 mod keyboard;
 mod menu;
+mod modal_layer;
 mod live_profile;
 mod markdown;
 mod markdown_inline_code;
