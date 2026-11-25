@@ -362,7 +362,15 @@ mod tests {
             w.set_active(3, cx);
             w.focus_active(window, cx);
         });
-        for _ in 0..20 {
+        // The camera eases on wall-clock time, which the test executor's
+        // clock does not advance, so wait for the pan to finish instead of
+        // counting frames.
+        for frame in 0.. {
+            let settled = workspace.read_with(vcx, |w, _| w.camera_started[w.active_row].is_none());
+            if settled && frame > 0 {
+                break;
+            }
+            assert!(frame < 2_000, "camera pan did not settle");
             vcx.executor().advance_clock(Duration::from_millis(20));
             workspace.update(vcx, |_, cx| cx.notify());
             vcx.run_until_parked();
