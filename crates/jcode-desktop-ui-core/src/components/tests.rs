@@ -83,7 +83,7 @@ fn an_explicit_aria_label_replaces_the_visible_label() {
 
 #[test]
 fn an_icon_button_is_named_by_its_aria_label() {
-    let semantics = Pill::icon_button("p", b"<svg/>", "Search").semantics();
+    let semantics = Pill::unlabeled(PillVariant::Ghost, "p", "Search").semantics();
     assert_eq!(semantics.role, Role::Button);
     assert_eq!(semantics.label.as_ref(), "Search");
 }

@@ -137,34 +137,21 @@ impl Pill {
         pill
     }
 
-    /// A round, icon-only ghost button. It has no visible text, so the
-    /// accessible name is required.
-    pub fn icon_button(
-        id: impl Into<ElementId>,
-        icon: &'static [u8],
-        aria_label: impl Into<SharedString>,
-    ) -> Self {
-        Self::unlabeled(PillVariant::Ghost, id, aria_label)
-            .icon(icon)
-            .size(px(28.))
-            .p_0()
-    }
-
-    /// A leading SVG glyph, drawn in the pill's text color.
-    pub fn icon(mut self, icon: &'static [u8]) -> Self {
+    /// A leading SVG icon, drawn in the pill's text color.
+    pub(super) fn icon(mut self, icon: &'static [u8]) -> Self {
         self.icon = Some(icon);
         self
     }
 
     /// The icon's edge in pixels. Defaults to 12, or 14 for full-size pills.
-    pub fn icon_size(mut self, size: f32) -> Self {
+    pub(super) fn icon_size(mut self, size: f32) -> Self {
         self.icon_size = Some(size);
         self
     }
 
     /// Blocks hover and clicks from reaching whatever is behind the pill,
     /// for controls that float over a clickable row or header.
-    pub fn occlude(mut self) -> Self {
+    pub(super) fn occlude(mut self) -> Self {
         self.occlude = true;
         self
     }
@@ -172,7 +159,7 @@ impl Pill {
     /// A pointer press does not move keyboard focus to the pill. Use for
     /// toolbar buttons that must leave focus in the composer. Tab and
     /// Enter/Space still work.
-    pub fn keep_focus(mut self) -> Self {
+    pub(super) fn keep_focus(mut self) -> Self {
         self.keep_focus = true;
         self
     }

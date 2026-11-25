@@ -81,6 +81,11 @@ pub struct SoundsConfig {
     pub enabled: bool,
 }
 
+/// Id of the theme used when none is configured. Config sits below the theme
+/// layer, so it names the default instead of asking the theme for it; the
+/// theme module's tests pin the two together.
+pub const DEFAULT_THEME: &str = "pure-black";
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AppearanceConfig {
@@ -142,7 +147,7 @@ impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
             layout_mode: LayoutMode::default(),
-            theme: crate::theme::ThemePreset::default().id().into(),
+            theme: DEFAULT_THEME.into(),
             ui_font: None,
             ai_font: None,
             mono_font: None,
@@ -202,6 +207,13 @@ impl DesktopConfig {
         self.terminal.scrollback_lines = self.terminal.scrollback_lines.clamp(100, 1_000_000);
         self.models.hidden = normalized_hidden_models(&self.models.hidden);
         self
+    }
+
+    fn with_live(&self, display: DisplayConfig, theme_id: &str) -> Self {
+        let mut config = self.clone();
+        config.display = display;
+        config.appearance.theme = theme_id.into();
+        config
     }
 
     pub fn session_refresh_interval(&self) -> Duration {
@@ -391,6 +403,35 @@ pub fn set_display(key: &str, value: &str) -> Result<DisplayConfig, String> {
 
 pub fn get() -> &'static DesktopConfig {
     CONFIG.get_or_init(load)
+}
+
+/// Startup appearance settings. Owned, so callers read the section without
+/// borrowing into the config that `DesktopConfig` keeps normalized.
+pub fn appearance() -> AppearanceConfig {
+    get().appearance.clone()
+}
+
+/// Startup workspace settings, owned like [`appearance`].
+pub fn workspace() -> WorkspaceConfig {
+    get().workspace.clone()
+}
+
+/// Composer autocomplete settings, owned like [`appearance`].
+pub fn completions() -> CompletionsConfig {
+    get().completions.clone()
+}
+
+/// Whether the coach may surface hints. Read on every render, so it is a
+/// single flag and not a section clone.
+pub fn coaching_hints() -> bool {
+    get().workspace.coaching_hints
+}
+
+/// The configuration as it is in effect right now: the startup file overlaid
+/// with the live display settings and the theme in use, which can differ from
+/// what the file says after slash commands.
+pub fn in_effect(theme_id: &str) -> DesktopConfig {
+    get().with_live(display(), theme_id)
 }
 
 /// Read the latest choice, including changes made by another window.

@@ -7,12 +7,15 @@
 //! - [`Pill`]: every button-like control. Primary, secondary, danger, compact
 //!   and ghost variants, an optional icon, a focus ring, `Role::Button` and an
 //!   accessible label that defaults to the visible one.
+//! - [`IconButton`]: a round icon-only toolbar control that floats over its row.
 //! - [`Tooltip`]: the one hover view, for plain text, text with a key hint, or
 //!   a title with rows.
 
+mod icon_button;
 mod pill;
 mod tooltip;
 
+pub use icon_button::IconButton;
 pub use pill::{Pill, PillSemantics, PillVariant};
 pub use tooltip::Tooltip;
 
@@ -23,7 +26,7 @@ use gpui::{BoxShadow, StyleRefinement, Styled, px};
 /// `focus_visible`, so pointer clicks never show it.
 pub fn focus_ring(style: StyleRefinement) -> StyleRefinement {
     style.shadow(vec![
-        BoxShadow::new(px(0.), px(0.), Theme::global().TEXT.into())
+        BoxShadow::new(px(0.), px(0.), crate::theme::to_hsla(Theme::global().TEXT))
             .spread_radius(px(2.))
             .inset(),
     ])

@@ -1,8 +1,114 @@
-//! Coordinated palettes. Every semantic role is derived here so new themes do
-//! not accidentally inherit warm-neutral surfaces or unreadable light accents.
-use super::{Theme, platform_font, rgb_c, rgba_c};
+//! The built-in palettes. A preset starts from a seed of a few base colors,
+//! from which every semantic role is derived, so new themes do not
+//! accidentally inherit warm-neutral surfaces or unreadable light accents.
+//! [`builtin`] is the only way in.
+use super::{
+    ThemePreset,
+    palette::{Palette, platform_font, rgb_c, rgba_c},
+};
 
-pub(super) struct Palette {
+/// Every preset's palette before user configuration, in [`ThemePreset::ALL`]
+/// order.
+pub(super) fn builtin() -> [Palette; ThemePreset::ALL.len()] {
+    let warm = Palette::defaults();
+    let mut studio = warm.clone();
+    studio.BG = rgb_c(0x211914);
+    studio.PANEL_BG = rgb_c(0x2d231d);
+    studio.HEADER_BG = rgb_c(0x392b23);
+    studio.ACCENT = rgb_c(0xd29a6a);
+    studio.ACCENT_DIM = rgba_c(0xd29a6a24);
+    studio.USER_ACCENT = rgb_c(0xe0ad7f);
+    studio.PANEL_BORDER_FOCUS = rgb_c(0xa87550);
+    studio.LINK = rgb_c(0xe0ad7f);
+    studio.SELECTION = rgba_c(0xb66f4380);
+    let mut dark = warm.clone();
+    dark.BG = rgb_c(0x151719);
+    dark.PANEL_BG = rgb_c(0x1d2023);
+    dark.HEADER_BG = rgb_c(0x262a2e);
+    dark.PANEL_BORDER = rgb_c(0x353a40);
+    dark.PANEL_BORDER_FOCUS = rgb_c(0x76818c);
+    dark.TEXT = rgb_c(0xe2e5e9);
+    dark.TEXT_DIM = rgb_c(0x9ba3ac);
+    dark.REASONING = dark.TEXT_DIM;
+    dark.ACCENT = rgb_c(0x9aa8b6);
+    dark.ACCENT_DIM = rgba_c(0x9aa8b620);
+    dark.INPUT_BG = rgb_c(0x191c1f);
+    dark.CODE_BG = rgb_c(0x151719);
+    dark.USER_BG = rgb_c(0x262a2e);
+    let mut light = warm.clone();
+    light.BG = rgb_c(0xebe9e5);
+    light.CANVAS_DOT = rgba_c(0x27252212);
+    light.PANEL_BG = rgb_c(0xf8f7f4);
+    light.PANEL_BORDER = rgb_c(0xd2cec7);
+    light.PANEL_BORDER_FOCUS = rgb_c(0x7b746a);
+    light.HEADER_BG = rgb_c(0xe2dfda);
+    light.TEXT = rgb_c(0x292724);
+    light.TEXT_USER = rgb_c(0x201e1b);
+    // Small workspace labels also sit on the tinted, recessed header.
+    // Keep their contrast above 4.5:1 there, not just on the panel paper.
+    light.TEXT_DIM = rgb_c(0x625d56);
+    light.REASONING = light.TEXT_DIM;
+    light.TEXT_FAINT = rgb_c(0x777169);
+    light.ACCENT = rgb_c(0x665f57);
+    light.ACCENT_DIM = rgba_c(0x665f5718);
+    light.USER_ACCENT = rgb_c(0x725d4c);
+    light.AI_ACCENT = rgb_c(0x53675b);
+    light.USER_BG = rgb_c(0xe8e4de);
+    light.TOOL_BG = rgb_c(0xefede8);
+    light.TOOL_BORDER = rgb_c(0xd2cec7);
+    light.TOOL_TEXT = rgb_c(0x67625b);
+    light.CODE_BG = rgb_c(0xf0efec);
+    light.CODE_TEXT = rgb_c(0x292724);
+    light.INLINE_CODE_BG = rgb_c(0xe4e1dc);
+    light.CODE_BORDER = rgb_c(0xd2cec7);
+    light.CODE_HEADER_BG = rgb_c(0xe8e5df);
+    light.CODE_GUTTER = rgb_c(0x746e66);
+    light.CODE_KEYWORD = rgb_c(0x6f3f62);
+    light.CODE_STRING = rgb_c(0x3f6848);
+    light.CODE_COMMENT = rgb_c(0x68635c);
+    light.CODE_NUMBER = rgb_c(0x7a542b);
+    light.CODE_TYPE = rgb_c(0x4d587b);
+    light.CODE_PUNCT = rgb_c(0x4e4a45);
+    // Status colors are also small foreground text in tool token badges.
+    // The inherited dark-theme pastels wash out against this light panel.
+    light.OK = rgb_c(0x3f6848);
+    light.WARN = rgb_c(0x7a542b);
+    light.ERROR = rgb_c(0xa33b3b);
+    light.INPUT_BG = rgb_c(0xffffff);
+    light.INPUT_BORDER = rgb_c(0xbdb7ae);
+    light.CURSOR = rgb_c(0x292724);
+    light.HEADING = rgb_c(0x292724);
+    light.LINK = rgb_c(0x655346);
+    light.MINIMAP_BG = rgba_c(0xf8f7f4e6);
+    light.MINIMAP_PANEL = rgb_c(0xaaa39a);
+    [
+        warm,
+        studio,
+        dark,
+        light,
+        MIDNIGHT.palette(),
+        OCEAN.palette(),
+        FOREST.palette(),
+        PLUM.palette(),
+        ROSE_DAWN.palette(),
+        PARCHMENT.palette(),
+        GRAPHITE.palette(),
+        SLATE.palette(),
+        PAPER.palette(),
+        SILVER.palette(),
+        light_neutral(),
+        dark_neutral(),
+        pure_black(),
+        glass(),
+        monokai_pro_ristretto(),
+    ]
+    .map(|mut palette| {
+        apply_code_colors(&mut palette);
+        palette
+    })
+}
+
+struct Seed {
     bg: u32,
     panel: u32,
     raised: u32,
@@ -19,10 +125,10 @@ pub(super) struct Palette {
     warn: u32,
 }
 
-impl Palette {
-    pub(super) fn theme(&self) -> Theme {
+impl Seed {
+    fn palette(&self) -> Palette {
         let alpha = |color: u32, opacity: u32| rgba_c((color << 8) | opacity);
-        Theme {
+        Palette {
             BG: rgb_c(self.bg),
             CANVAS_DOT: alpha(self.text, 0x0a),
             PANEL_BG: rgb_c(self.panel),
@@ -90,7 +196,7 @@ impl Palette {
 }
 
 // Classic charcoal editor surfaces, with blue focus rather than a tinted UI.
-pub(super) const GRAPHITE: Palette = Palette {
+const GRAPHITE: Seed = Seed {
     bg: 0x181818,
     panel: 0x222222,
     raised: 0x2e2e2e,
@@ -108,7 +214,7 @@ pub(super) const GRAPHITE: Palette = Palette {
 };
 
 // A softer dark option: slate-gray surfaces with quiet steel-blue details.
-pub(super) const SLATE: Palette = Palette {
+const SLATE: Seed = Seed {
     bg: 0x23272c,
     panel: 0x2c3137,
     raised: 0x373e46,
@@ -126,7 +232,7 @@ pub(super) const SLATE: Palette = Palette {
 };
 
 // Clean white paper and blue links, without cream or rose surface tints.
-pub(super) const PAPER: Palette = Palette {
+const PAPER: Seed = Seed {
     bg: 0xf0f1f3,
     panel: 0xffffff,
     raised: 0xe8eaed,
@@ -144,7 +250,7 @@ pub(super) const PAPER: Palette = Palette {
 };
 
 // Low-glare cool gray, with graphite details and restrained syntax color.
-pub(super) const SILVER: Palette = Palette {
+const SILVER: Seed = Seed {
     bg: 0xdfe3e8,
     panel: 0xf0f2f5,
     raised: 0xe0e4e9,
@@ -162,7 +268,7 @@ pub(super) const SILVER: Palette = Palette {
 };
 
 // Ink-blue surfaces with periwinkle focus and cool syntax colors.
-pub(super) const MIDNIGHT: Palette = Palette {
+const MIDNIGHT: Seed = Seed {
     bg: 0x111522,
     panel: 0x1a2032,
     raised: 0x252d43,
@@ -180,7 +286,7 @@ pub(super) const MIDNIGHT: Palette = Palette {
 };
 
 // Deep teal rather than another blue-gray dark theme.
-pub(super) const OCEAN: Palette = Palette {
+const OCEAN: Seed = Seed {
     bg: 0x102126,
     panel: 0x172d34,
     raised: 0x203b43,
@@ -198,7 +304,7 @@ pub(super) const OCEAN: Palette = Palette {
 };
 
 // Evergreen surfaces, sage focus, and warm gold literals.
-pub(super) const FOREST: Palette = Palette {
+const FOREST: Seed = Seed {
     bg: 0x17201a,
     panel: 0x202e25,
     raised: 0x2c3b30,
@@ -216,7 +322,7 @@ pub(super) const FOREST: Palette = Palette {
 };
 
 // Aubergine and mauve with a restrained rose accent.
-pub(super) const PLUM: Palette = Palette {
+const PLUM: Seed = Seed {
     bg: 0x211924,
     panel: 0x2d2232,
     raised: 0x3b2e41,
@@ -234,7 +340,7 @@ pub(super) const PLUM: Palette = Palette {
 };
 
 // Blush paper with dark berry accents, including accessible status colors.
-pub(super) const ROSE_DAWN: Palette = Palette {
+const ROSE_DAWN: Seed = Seed {
     bg: 0xf0e4e4,
     panel: 0xfff7f5,
     raised: 0xf3e8e7,
@@ -252,7 +358,7 @@ pub(super) const ROSE_DAWN: Palette = Palette {
 };
 
 // Warm cream paper, sepia ink, and olive details for daytime reading.
-pub(super) const PARCHMENT: Palette = Palette {
+const PARCHMENT: Seed = Seed {
     bg: 0xece2cc,
     panel: 0xfaf3e3,
     raised: 0xefe5cf,
@@ -271,8 +377,8 @@ pub(super) const PARCHMENT: Palette = Palette {
 };
 
 /// Soft Ristretto colors matching the user's terminal palette.
-pub(super) fn monokai_pro_ristretto() -> Theme {
-    let mut theme = Theme::defaults();
+fn monokai_pro_ristretto() -> Palette {
+    let mut theme = Palette::defaults();
     theme.BG = rgb_c(0x211c1c);
     theme.CANVAS_DOT = rgba_c(0xfff1f30a);
     theme.PANEL_BG = rgb_c(0x2c2525);
@@ -322,7 +428,7 @@ pub(super) fn monokai_pro_ristretto() -> Theme {
 
 /// VS Code Dark+ / Light+ token colors, independent of the application's surfaces.
 /// Apply to raw presets before configuration so explicit user colors always win.
-pub(super) fn apply_code_colors(theme: &mut Theme) {
+pub(super) fn apply_code_colors(theme: &mut Palette) {
     let luminance = relative_luminance(theme.CODE_BG);
     let light = luminance > 0.179;
     let color = |dark, light_color| {
@@ -392,8 +498,8 @@ fn readable_code_color(color: gpui::Rgba, background: gpui::Rgba) -> gpui::Rgba 
 /// Neutral paper hierarchy inspired by the reference, not a blue-accented
 /// editor theme. Chrome and prompt cards stay gray. Blue is reserved for links
 /// and text selection, while syntax and status retain their semantic colors.
-pub(super) fn light_neutral() -> Theme {
-    let mut theme = Palette {
+fn light_neutral() -> Palette {
+    let mut theme = Seed {
         bg: 0xf6f6f6,
         panel: 0xffffff,
         raised: 0xf4f4f4,
@@ -409,7 +515,7 @@ pub(super) fn light_neutral() -> Theme {
         ok: 0x306844,
         warn: 0x805518,
     }
-    .theme();
+    .palette();
     theme.PANEL_BORDER_FOCUS = rgb_c(0x858585);
     theme.ACCENT_DIM = rgb_c(0xe9eaea);
     theme.USER_BG = rgb_c(0xf4f4f4);
@@ -430,8 +536,8 @@ pub(super) fn light_neutral() -> Theme {
 /// Dark counterpart to Light Neutral: untinted charcoal surfaces, raised gray
 /// prompt cards, and charcoal-on-gray controls. Blue stays reserved for links
 /// and selection, while syntax and status keep their semantic colors.
-pub(super) fn dark_neutral() -> Theme {
-    let mut theme = Palette {
+fn dark_neutral() -> Palette {
+    let mut theme = Seed {
         bg: 0x1a1a1a,
         panel: 0x212121,
         raised: 0x171717,
@@ -447,7 +553,7 @@ pub(super) fn dark_neutral() -> Theme {
         ok: 0x8ccf9e,
         warn: 0xe3b96f,
     }
-    .theme();
+    .palette();
     theme.PANEL_BORDER_FOCUS = rgb_c(0x8a8a8a);
     theme.ACCENT_DIM = rgb_c(0x2f2f2f);
     theme.USER_BG = rgb_c(0x303030);
@@ -468,8 +574,8 @@ pub(super) fn dark_neutral() -> Theme {
 /// OLED-friendly true black: canvas, focused panes, and composer are #000000.
 /// Inactive panes and chrome lift just enough to show focus, prompt cards use
 /// a quiet dark gray, and blue stays reserved for links and selection.
-pub(super) fn pure_black() -> Theme {
-    let mut theme = Palette {
+fn pure_black() -> Palette {
+    let mut theme = Seed {
         bg: 0x000000,
         panel: 0x000000,
         // Recessed chrome and inactive panes: the minimum lift (10/255) that
@@ -487,7 +593,7 @@ pub(super) fn pure_black() -> Theme {
         ok: 0x8ccf9e,
         warn: 0xe3b96f,
     }
-    .theme();
+    .palette();
     let alpha = |color: u32, opacity: u32| rgba_c((color << 8) | opacity);
     theme.PANEL_BORDER_FOCUS = rgb_c(0x7a7a7a);
     theme.ACCENT_DIM = rgb_c(0x141414);
@@ -518,8 +624,8 @@ pub(super) fn pure_black() -> Theme {
 /// the window for a blurred background. Surfaces stack (canvas, then pane,
 /// then controls), so each layer adds a little tint rather than repainting.
 /// Prompt cards stay solid because sticky prompts cover transcript text.
-pub(super) fn glass() -> Theme {
-    let mut theme = Palette {
+fn glass() -> Palette {
+    let mut theme = Seed {
         bg: 0x0e1014,
         panel: 0x14161b,
         raised: 0x1c1f25,
@@ -535,7 +641,7 @@ pub(super) fn glass() -> Theme {
         ok: 0x9ad8aa,
         warn: 0xf0c47e,
     }
-    .theme();
+    .palette();
     theme.BG = rgba_c(0x0e101480);
     theme.CANVAS_DOT = rgba_c(0xffffff10);
     theme.PANEL_BG = rgba_c(0x14161b99);
