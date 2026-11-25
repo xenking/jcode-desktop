@@ -35,7 +35,7 @@ fn row_handles_follow_the_tool_calls_still_in_the_transcript(cx: &mut gpui::Test
     vcx.run_until_parked();
     for call in ["first", "second", "third"] {
         panel.update(vcx, |panel, cx| {
-            expandable::flip(&mut panel.expanded_regions, call);
+            expandable::Regions::flip(&mut panel.expanded_regions, call);
             cx.notify();
         });
         vcx.run_until_parked();

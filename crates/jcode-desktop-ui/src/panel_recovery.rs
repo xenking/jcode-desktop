@@ -189,7 +189,7 @@ impl Panel {
         // The native summary above is a rewrite of the provider's text. Keep
         // the original one click away, in full, instead of only on the
         // clipboard.
-        let key = expandable::key::details(index);
+        let key = expandable::Key::details(index);
         let expanded = self.expanded_regions.contains(&key);
         let raw_truncated = expandable::preview(&details, expandable::NOTICE).is_some();
         div()
@@ -215,7 +215,7 @@ impl Panel {
                 cx,
             ))
             .when(expanded, |el| {
-                el.child(expandable::scrolled(
+                el.child(expandable::Disclosure::scrolled(
                     format!("{index}-error-raw-scroll").into(),
                     expandable::MAX_HEIGHT,
                     text_selection::plain(
@@ -234,7 +234,7 @@ impl Panel {
                     .gap_1p5()
                     .when(raw_truncated, |el| {
                         let key = key.clone();
-                        el.child(expandable::toggle(
+                        el.child(expandable::Disclosure::toggle(
                             format!("{index}-error-expand").into(),
                             expanded,
                             "▸ Show details",

@@ -2847,7 +2847,7 @@ impl Panel {
                     live.insert(call_id.as_str().into());
                 }
                 Item::AgentMessage { .. } => {
-                    live.insert(expandable::key::details(index).into());
+                    live.insert(expandable::Key::details(index).into());
                 }
                 _ => {}
             }
@@ -3588,7 +3588,7 @@ impl Panel {
                 percent,
                 done,
             } => {
-                let key = expandable::key::task(task_id);
+                let key = expandable::Key::task(task_id);
                 let expanded = self.expanded_regions.contains(&key);
                 let (row_summary, exit_code) = background_task::summary_parts(summary);
                 // One ellipsis budget, with the title ahead of progress text.
@@ -4343,9 +4343,9 @@ impl Panel {
             if tool_card_fixture && fixture.as_deref() == Some("tool-cards-details") {
                 HashSet::from(["fixture-codemode-multi".into(), "codemode-calls:fixture-codemode-multi".into()])
             } else if crate::harness::screenshot_mode()
-                && (expandable::screenshot_expanded() || fixture.as_deref() == Some("btw-clean-expanded"))
+                && (expandable::Regions::screenshot_expanded() || fixture.as_deref() == Some("btw-clean-expanded"))
             {
-                expandable::all_regions(&items)
+                expandable::Regions::all(&items)
             } else {
                 HashSet::new()
             };

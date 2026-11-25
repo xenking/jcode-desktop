@@ -88,7 +88,7 @@ impl Panel {
         };
         let body = dm_body(message);
         let first_line = body.lines().next().unwrap_or_default().trim();
-        let key = expandable::key::details(index);
+        let key = expandable::Key::details(index);
         let external = is_external(message);
         let expanded = self.expanded_regions.contains(&key) ^ external;
         let focus = self
@@ -197,7 +197,7 @@ impl Panel {
         let Some(Item::AgentMessage { message, .. }) = self.items.get(index) else {
             return;
         };
-        let key = expandable::key::details(index);
+        let key = expandable::Key::details(index);
         let changed = if is_external(message) {
             self.expanded_regions.remove(&key)
         } else {

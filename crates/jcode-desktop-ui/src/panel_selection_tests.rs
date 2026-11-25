@@ -382,7 +382,7 @@ fn background_task_selection_copies_expanded_details(cx: &mut gpui::TestAppConte
             percent: Some(100.),
             done: true,
         }];
-        panel.expanded_regions.insert(expandable::key::task("task"));
+        panel.expanded_regions.insert(expandable::Key::task("task"));
         panel
     });
     assert_eq!(

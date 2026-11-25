@@ -24,7 +24,7 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
-        let key = expandable::key::details(index);
+        let key = expandable::Key::details(index);
         let expanded = self.expanded_regions.contains(&key);
         let child_session_id = question.child_session_id.clone();
         let preview = question

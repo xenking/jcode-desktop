@@ -770,7 +770,7 @@ fn background_task_row_expands_to_its_whole_summary(cx: &mut gpui::TestAppContex
         assert!(
             panel
                 .expanded_regions
-                .contains(&expandable::key::task("task-1"))
+                .contains(&expandable::Key::task("task-1"))
         );
     });
     let expanded = vcx
@@ -855,7 +855,7 @@ fn recovery_error_reveals_the_raw_provider_message(cx: &mut gpui::TestAppContext
         assert!(
             panel
                 .expanded_regions
-                .contains(&expandable::key::details(0))
+                .contains(&expandable::Key::details(0))
         );
     });
     let expanded = vcx

@@ -514,7 +514,7 @@ impl Panel {
                         .track_focus(&focus)
                         .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                             if event.keystroke.key == "enter" && !event.is_held {
-                                expandable::flip(&mut this.expanded_regions, &key_for_enter);
+                                expandable::Regions::flip(&mut this.expanded_regions, &key_for_enter);
                                 this.transcript_measurements.invalidate();
                                 cx.stop_propagation();
                                 cx.notify();
@@ -522,7 +522,7 @@ impl Panel {
                         }))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             window.focus(&click_focus, cx);
-                            expandable::flip(&mut this.expanded_regions, &key);
+                            expandable::Regions::flip(&mut this.expanded_regions, &key);
                             this.transcript_measurements.invalidate();
                             cx.notify();
                         })),
