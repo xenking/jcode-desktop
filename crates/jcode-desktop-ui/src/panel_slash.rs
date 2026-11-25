@@ -442,4 +442,28 @@ impl Panel {
         }
         cache.1.clone()
     }
+
+    pub(super) fn saved_settled(
+        &mut self,
+        saved: bool,
+        label: Option<&str>,
+        error: Option<&str>,
+    ) -> bool {
+        if self.pending_save_requests == 0 {
+            return false;
+        }
+        self.pending_save_requests -= 1;
+        self.items.push(match (error, saved, label) {
+            (Some(error), true, _) => Item::Error(format!("Failed to save session: {error}")),
+            (Some(error), false, _) => Item::Error(format!("Failed to unsave session: {error}")),
+            (None, true, Some(label)) => Item::Assistant(format!(
+                "📌 Session saved as \"{label}\". It will appear at the top of /resume."
+            )),
+            (None, true, None) => {
+                Item::Assistant("📌 Session saved. It will appear at the top of /resume.".into())
+            }
+            (None, false, _) => Item::Assistant("Session removed from saved.".into()),
+        });
+        true
+    }
 }

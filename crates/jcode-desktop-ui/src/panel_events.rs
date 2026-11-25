@@ -896,4 +896,74 @@ impl Panel {
         self.transcript_list.scroll_to_end();
         cx.notify();
     }
+
+    pub(super) fn insert_rendered(&mut self, image: jcode_sdk::RenderedImage) {
+        // Side-pane events have no user-message boundary. Pasted images arrive
+        // with the local echo or as part of history, never as tool side effects.
+        if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) {
+            return;
+        }
+        if self.items.iter().any(|item| {
+            matches!(item, Item::Image(existing)
+                if existing.anchor == image.anchor && existing.source == image.source
+                    && match (&existing.session_image, &image.session_image) {
+                        (Some(existing), Some(incoming)) => existing.image_id == incoming.image_id,
+                        _ => existing.media_type == image.media_type && existing.data == image.data,
+                    }
+                    && (!matches!(&image.source, jcode_sdk::RenderedImageSource::ToolResult { tool_name } if tool_name == "ask") || existing.label == image.label))
+        }) {
+            return;
+        }
+        let insertion = match image.anchor.as_ref() {
+            Some(jcode_sdk::RenderedImageAnchor::ToolCall { id }) => self
+                .items
+                .iter()
+                .rposition(|item| matches!(item, Item::Tool { call_id, .. } if call_id == id))
+                .map(|index| {
+                    // A batch may return several images. Preserve their order
+                    // instead of inserting each one directly after the tool.
+                    index + 1
+                        + self.items[index + 1..]
+                            .iter()
+                            .take_while(|item| {
+                                matches!(item, Item::Image(existing) if existing.anchor == image.anchor)
+                            })
+                            .count()
+                }),
+            _ => None,
+        };
+        let insertion = insertion.unwrap_or_else(|| {
+            // Unanchored images still belong after already-streamed text,
+            // not before it when the stream is eventually flushed.
+            self.flush_reasoning();
+            self.flush_streaming();
+            self.items.len()
+        });
+        self.insert_transcript_image(insertion, TranscriptImage::from_rendered(image));
+    }
+
+    pub(super) fn insert_transcript(&mut self, insertion: usize, image: TranscriptImage) {
+        for index in &mut self.pending_users {
+            if *index >= insertion {
+                *index += 1;
+            }
+        }
+        self.accepted_users = std::mem::take(&mut self.accepted_users)
+            .into_iter()
+            .map(|(index, at)| (index + usize::from(index >= insertion), at))
+            .collect();
+        self.user_times = std::mem::take(&mut self.user_times)
+            .into_iter()
+            .map(|(index, at)| (index + usize::from(index >= insertion), at))
+            .collect();
+        let shift = |index| index + usize::from(index >= insertion);
+        self.offscreen_prompt = self.offscreen_prompt.map(shift);
+        self.expanded_pinned_prompt = self.expanded_pinned_prompt.map(shift);
+        if let Some(selected) = &mut self.image_pane_selected
+            && *selected >= insertion
+        {
+            *selected += 1;
+        }
+        self.items.insert(insertion, Item::Image(image));
+    }
 }
