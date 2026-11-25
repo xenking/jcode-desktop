@@ -135,8 +135,7 @@ impl Workspace {
         );
         let panel = self.slots[self.active].panel.clone();
         panel.update_chat(cx, |panel, cx| {
-            panel.status = format!("Preparing connection to {}…", machines::machine_label(&host));
-            cx.notify();
+            panel.set_status(format!("Preparing connection to {}…", machines::machine_label(&host)), cx);
         });
         self.create_remote_draft_session(host, request_id, cx);
     }
@@ -218,10 +217,8 @@ impl Workspace {
                     .read_chat(cx)
                     .is_some_and(Panel::is_startup_draft)
             {
-                slot.panel.update_chat(cx, |panel, cx| {
-                    panel.status = message.to_owned();
-                    cx.notify();
-                });
+                slot.panel
+                    .update_chat(cx, |panel, cx| panel.set_status(message, cx));
             }
         }
     }
@@ -276,19 +273,9 @@ impl Workspace {
                         .read_chat(cx)
                         .is_some_and(Panel::is_pending_session)
                 {
+                    // Helper phases and SSH results use separate channels.
                     slot.panel.update_chat(cx, |panel, cx| {
-                        // Helper phases and SSH results use separate channels.
-                        // A buffered wake-success phase must not erase an SSH
-                        // failure. Retry gets a fresh ID and resets the status.
-                        if !failed && panel.status.starts_with("Session creation failed:") {
-                            return;
-                        }
-                        panel.status = if failed {
-                            format!("Session creation failed: {message}")
-                        } else {
-                            message.to_owned()
-                        };
-                        cx.notify();
+                        panel.note_connection_phase(message, failed, cx)
                     });
                 }
             }
@@ -314,9 +301,11 @@ impl Workspace {
             let host = new_session_host(host).to_owned();
             let request_id = pending::next_remote_draft_id(&host);
             panel.update(cx, |panel, cx| {
-                panel.session_id = request_id.clone();
-                panel.status = format!("Retrying connection to {host}…");
-                cx.notify();
+                panel.restart_session_request(
+                    request_id.clone(),
+                    format!("Retrying connection to {host}…"),
+                    cx,
+                );
             });
             self.create_remote_draft_session(host.clone(), request_id, cx);
         } else if panel.read(cx).is_startup_draft() && !local {
@@ -338,22 +327,14 @@ impl Workspace {
                 panel.read(cx).working_dir.clone()
             };
             let mut request_id = pending::next_draft_id();
-            if panel
-                .read(cx)
-                .session_id
-                .starts_with("startup://draft/help/")
-            {
+            if panel.read(cx).is_help_draft() {
                 request_id = request_id.replacen("startup://draft/", "startup://draft/help/", 1);
             } else if crate::publish::is_publish_draft(&panel.read(cx).session_id) {
                 request_id =
                     request_id.replacen("startup://draft/", crate::publish::DRAFT_PREFIX, 1);
             }
             panel.update(cx, |panel, cx| {
-                panel.session_id = request_id.clone();
-                panel.working_dir = directory.clone();
-                panel.title = "New local session".into();
-                panel.status = "Connecting to this computer…".into();
-                cx.notify();
+                panel.reconnect_locally(request_id.clone(), directory.clone(), cx);
             });
             self.bridge.send(Command::CreateSession {
                 working_dir: directory,
@@ -385,7 +366,7 @@ impl Workspace {
         let failed = if startup {
             self.remotes.startup_failed
         } else {
-            panel.read(cx).status.starts_with("Session creation failed")
+            panel.read(cx).creation_failed()
         };
         let theme = Theme::global();
         let owner = cx.weak_entity();
@@ -588,10 +569,8 @@ impl Workspace {
                             .read_chat(cx)
                             .is_some_and(Panel::is_pending_session)
                     {
-                        slot.panel.update_chat(cx, |panel, cx| {
-                            panel.session_id = managed_id.clone();
-                            cx.notify();
-                        });
+                        slot.panel
+                            .update_chat(cx, |panel, cx| panel.adopt_request(managed_id.clone(), cx));
                     }
                 }
                 managed_id
@@ -647,8 +626,7 @@ impl Workspace {
                         .is_some_and(Panel::is_pending_session)
                 {
                     slot.panel.update_chat(cx, |panel, cx| {
-                        panel.title = machine_label(&host).to_owned().into();
-                        cx.notify();
+                        panel.set_title(machine_label(&host).to_owned(), cx)
                     });
                 }
             }
