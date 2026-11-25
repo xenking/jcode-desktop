@@ -1,6 +1,11 @@
 use serde::Deserialize;
 
-use crate::{encode, get_target, host::HostRegistry, inbox};
+use crate::{
+    attention::{ClearEvidence, Kind, SeatReasonClass},
+    encode, get_target,
+    host::HostRegistry,
+    util::timestamp,
+};
 
 pub use crate::HostTarget;
 
@@ -82,12 +87,12 @@ pub struct Seat {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SeatAttention {
-    pub kind: inbox::Kind,
+    pub kind: Kind,
     pub reason: Option<String>,
     pub evidence: Option<String>,
     pub observed_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub clear: Option<inbox::ClearEvidence>,
-    pub class: inbox::SeatReasonClass,
+    pub clear: Option<ClearEvidence>,
+    pub class: SeatReasonClass,
 }
 
 #[derive(Deserialize)]
@@ -193,33 +198,33 @@ impl Node {
                     || self.runtime.as_deref() == Some("codex")
                         && a.reason.as_deref() == Some("permission_request_pending"))
         });
-        use inbox::SeatReasonClass as Class;
+        use SeatReasonClass as Class;
         let (kind, reason, clear, class) = if startup {
             (
-                inbox::Kind::Startup,
+                Kind::Startup,
                 self.latest_error
                     .as_deref()
                     .or(self.latest_error_stage.as_deref()),
-                Some(inbox::ClearEvidence::Reconcile),
+                Some(ClearEvidence::Reconcile),
                 Class::Startup,
             )
         } else if let Some(identity) = identity {
             (
-                inbox::Kind::SeatAttention,
+                Kind::SeatAttention,
                 identity.reason.as_deref().or(identity.verdict.as_deref()),
-                Some(inbox::ClearEvidence::Reconcile),
+                Some(ClearEvidence::Reconcile),
                 Class::Identity,
             )
         } else if restore {
             (
-                inbox::Kind::SeatAttention,
+                Kind::SeatAttention,
                 self.latest_error
                     .as_deref()
                     .or(self.restore_outcome.as_deref()),
                 (self.restore_outcome.as_deref() == Some("attention_required")
                     || self.restore_outcome.as_deref() == Some("failed")
                         && self.session_status.as_deref() == Some("running"))
-                .then_some(inbox::ClearEvidence::Reconcile),
+                .then_some(ClearEvidence::Reconcile),
                 Class::Restore,
             )
         } else if needs_input || hook_wait {
@@ -228,17 +233,17 @@ impl Node {
                     input_reason,
                     Some("permission_prompt" | "permission_request_pending")
                 ) {
-                    inbox::Kind::Permission
+                    Kind::Permission
                 } else {
-                    inbox::Kind::SeatAttention
+                    Kind::SeatAttention
                 },
                 input_reason,
-                hook_wait.then_some(inbox::ClearEvidence::AttestPromptEnded),
+                hook_wait.then_some(ClearEvidence::AttestPromptEnded),
                 Class::Input,
             )
         } else if let Some(reason) = held.filter(|_| self.needs_attention != Some(false)) {
             (
-                inbox::Kind::SeatAttention,
+                Kind::SeatAttention,
                 Some(reason.as_str()),
                 None,
                 Class::LaunchHold,
@@ -247,7 +252,7 @@ impl Node {
             || self.lifecycle_state.as_deref() == Some("attention_required")
         {
             (
-                inbox::Kind::SeatAttention,
+                Kind::SeatAttention,
                 self.latest_error.as_deref(),
                 None,
                 Class::Reported,
@@ -265,7 +270,7 @@ impl Node {
             evidence: observed
                 .and_then(|a| a.evidence.clone())
                 .filter(|text| !text.trim().is_empty()),
-            observed_at: inbox::timestamp(match class {
+            observed_at: timestamp(match class {
                 Class::Input => observed.and_then(|a| a.event_at.as_deref()),
                 Class::Identity => identity.and_then(|value| value.observed_at.as_deref()),
                 _ => None,
@@ -283,17 +288,17 @@ struct ContextUsage {
     used_percentage: Option<f64>,
 }
 
-impl From<Node> for Seat {
-    fn from(node: Node) -> Self {
-        let attention = node.attention();
-        let runtime = node.runtime.filter(|value| !value.is_empty()).map(|value| {
+impl Node {
+    fn into_seat(self) -> Seat {
+        let attention = self.attention();
+        let runtime = self.runtime.filter(|value| !value.is_empty()).map(|value| {
             if value == "jcode" {
                 Runtime::Jcode
             } else {
                 Runtime::Other(value)
             }
         });
-        let jcode_session_id = node.native_ref.filter(|id| {
+        let jcode_session_id = self.native_ref.filter(|id| {
             runtime == Some(Runtime::Jcode)
                 && !id.is_empty()
                 && id.len() <= 200
@@ -301,34 +306,34 @@ impl From<Node> for Seat {
                     .bytes()
                     .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
         });
-        Self {
-            id: node.node_id,
-            logical_id: node.logical_id,
+        Seat {
+            id: self.node_id,
+            logical_id: self.logical_id,
             runtime,
-            status: node.lifecycle_state.or_else(|| node.session_status.clone()),
-            session_status: node.session_status,
-            activity: node
+            status: self.lifecycle_state.or_else(|| self.session_status.clone()),
+            session_status: self.session_status,
+            activity: self
                 .agent_activity
                 .as_ref()
                 .filter(|activity| activity.stale != Some(true))
                 .and_then(|activity| activity.state.clone()),
             last_activity_at: [
-                node.last_activity_at.as_deref(),
-                node.agent_activity
+                self.last_activity_at.as_deref(),
+                self.agent_activity
                     .as_ref()
                     .and_then(|activity| activity.event_at.as_deref()),
             ]
             .into_iter()
-            .filter_map(inbox::timestamp)
+            .filter_map(timestamp)
             .max(),
             jcode_session_id,
-            context_percent: node
+            context_percent: self
                 .context_usage
                 .filter(|context| context.availability.as_deref() != Some("unknown"))
                 .and_then(|context| context.used_percentage)
                 .filter(|percent| (0.0..=100.0).contains(percent)),
-            current_work_count: node.in_progress_work_count,
-            canonical_session_name: node
+            current_work_count: self.in_progress_work_count,
+            canonical_session_name: self
                 .canonical_session_name
                 .filter(|id| !id.trim().is_empty()),
             attention,
@@ -342,12 +347,12 @@ fn group_pods(nodes: Vec<Node>) -> Vec<Pod> {
         if let Some(pod) = pods.iter_mut().find(|pod| {
             pod.id == node.pod_id && (pod.id.is_some() || pod.name == node.pod_namespace)
         }) {
-            pod.seats.push(node.into());
+            pod.seats.push(node.into_seat());
         } else {
             pods.push(Pod {
                 id: node.pod_id.clone(),
                 name: node.pod_namespace.clone(),
-                seats: vec![node.into()],
+                seats: vec![node.into_seat()],
             });
         }
     }
@@ -641,7 +646,7 @@ mod tests {
             "state":"needs_input", "reason":"permission_prompt", "eventAt":"2026-11-21T01:00:00Z"
         }});
         let signal = attention(observed.clone()).unwrap();
-        assert_eq!(signal.kind, inbox::Kind::Permission);
+        assert_eq!(signal.kind, Kind::Permission);
         assert!(signal.observed_at.is_some());
         let mut vetoed = observed.clone();
         vetoed["arbitratedNeedsInput"] = json!(false);
@@ -653,7 +658,7 @@ mod tests {
             json!({"nodeId":"n1", "logicalId":"dev.one", "heldReason":"waiting for owner"}),
         )
         .unwrap();
-        assert_eq!(held.kind, inbox::Kind::SeatAttention);
+        assert_eq!(held.kind, Kind::SeatAttention);
         assert_eq!(held.observed_at, None);
     }
 
@@ -700,13 +705,12 @@ mod tests {
     #[test]
     fn only_jcode_native_refs_are_routes_and_only_measured_zero_is_zero() {
         let seat = |runtime: &str, ref_id: &str, availability: &str| {
-            Seat::from(
-                serde_json::from_value::<Node>(json!({
-                    "nodeId": "n1", "logicalId": "dev.one", "runtime": runtime,
-                    "nativeRef": ref_id, "contextUsage": { "availability": availability, "usedPercentage": 0 },
-                }))
-                .unwrap(),
-            )
+            serde_json::from_value::<Node>(json!({
+                "nodeId": "n1", "logicalId": "dev.one", "runtime": runtime,
+                "nativeRef": ref_id, "contextUsage": { "availability": availability, "usedPercentage": 0 },
+            }))
+            .unwrap()
+            .into_seat()
         };
         let linked = seat("jcode", "session_one", "known");
         assert_eq!(linked.jcode_session_id.as_deref(), Some("session_one"));

@@ -60,15 +60,15 @@ impl Apart {
     fn count(&self) -> f64 {
         self.count.num().unwrap_or(0.)
     }
+    /// The cost in parentheses, led by a space, or nothing when none was reported.
+    fn cost_note(&self) -> String {
+        self.cost_usd
+            .num()
+            .map(|c| format!(" ({})", format_usd(c)))
+            .unwrap_or_default()
+    }
     fn with_cost(&self) -> String {
-        format!(
-            "{}{}",
-            js_number(self.count()),
-            self.cost_usd
-                .num()
-                .map(|c| format!(" ({})", format_usd(c)))
-                .unwrap_or_default()
-        )
+        format!("{}{}", js_number(self.count()), self.cost_note())
     }
 }
 
@@ -286,20 +286,14 @@ fn pi_head(seat: &Seat) -> String {
         extras.push(format!(
             "{} inherited from the fork, not counted{}",
             js_number(i.count()),
-            i.cost_usd
-                .num()
-                .map(|c| format!(" ({})", format_usd(c)))
-                .unwrap_or_default()
+            i.cost_note()
         ));
     }
     if let Some(u) = e.unknown_origin.get().filter(|u| u.count() > 0.) {
         extras.push(format!(
             "{} of unknown origin, not counted{}",
             js_number(u.count()),
-            u.cost_usd
-                .num()
-                .map(|c| format!(" ({})", format_usd(c)))
-                .unwrap_or_default()
+            u.cost_note()
         ));
     }
     let head = if seat.status.is("reported") {

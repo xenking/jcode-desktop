@@ -629,7 +629,7 @@ fn inbound_delivery_words() {
 #[test]
 fn seats_derive_status_context_and_work() {
     let nodes: Items<Node> = serde_json::from_value(fixture("nodes")).unwrap();
-    let pods = sections::group_pods(nodes.as_slice());
+    let pods = Node::by_pod(nodes.as_slice());
     // Infrastructure nodes are not listed; a seat with no pod sits under "(no pod)".
     assert_eq!(
         pods.iter()
@@ -637,10 +637,7 @@ fn seats_derive_status_context_and_work() {
             .collect::<Vec<_>>(),
         vec![("(no pod)", 1), ("eng", 2)]
     );
-    let seats: Vec<Row> = nodes
-        .iter()
-        .map(|n| sections::seat_row(n, 3, "x"))
-        .collect();
+    let seats: Vec<Row> = nodes.iter().map(|n| n.row(3, "x")).collect();
     let builder = &seats[0];
     assert_eq!(builder.status.as_deref(), Some("active"));
     assert_eq!(detail(builder, "effort"), Some("high (authored)"));

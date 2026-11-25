@@ -323,132 +323,136 @@ fn tokens_short(input: Option<f64>, output: Option<f64>) -> Option<String> {
     })
 }
 
-/// A seat: status, runtime, model, effort, context, work and activity.
-pub fn seat_row(node: &Node, depth: u8, id: &str) -> Row {
-    let status = node.display_status();
-    let ctx = node
-        .context_usage
-        .get()
-        .filter(|c| c.availability.is("known"));
-    let used = ctx.and_then(|c| c.used_percentage.num()).map(f64::round);
-    let mut row = Row::new(id, depth, node.logical_id.or("agent"))
-        .status(status.clone(), status_tone(&status));
-    row.default_open = false;
-    row = row
-        .with("status", status)
-        .with("runtime", node.runtime.or("unknown"))
-        .with_opt("model", node.model.get())
-        .with_opt(
-            "effort",
-            node.effort.get().map(|e| match node.effort_source.get() {
-                Some(src) => format!("{e} ({src})"),
-                None => e.to_owned(),
-            }),
-        )
-        .with_opt("spec", node.resolved_spec_name.get())
-        .with_opt("profile", node.profile.get())
-        .with_opt("spec version", node.resolved_spec_version.get())
-        .with_opt("spec hash", node.resolved_spec_hash.get())
-        .with_opt("session", node.canonical_session_name.get())
-        .with_opt("attach", node.tmux_attach_command.get())
-        .with_opt("cwd", node.cwd.get())
-        .with_opt("lifecycle", node.lifecycle_state.get())
-        .with_opt("last activity", node.last_activity_at.get());
-    match ctx {
-        Some(c) => {
+impl Node {
+    /// A seat: status, runtime, model, effort, context, work and activity.
+    pub fn row(&self, depth: u8, id: &str) -> Row {
+        let status = self.display_status();
+        let ctx = self
+            .context_usage
+            .get()
+            .filter(|c| c.availability.is("known"));
+        let used = ctx.and_then(|c| c.used_percentage.num()).map(f64::round);
+        let mut row = Row::new(id, depth, self.logical_id.or("agent"))
+            .status(status.clone(), status_tone(&status));
+        row.default_open = false;
+        row = row
+            .with("status", status)
+            .with("runtime", self.runtime.or("unknown"))
+            .with_opt("model", self.model.get())
+            .with_opt(
+                "effort",
+                self.effort.get().map(|e| match self.effort_source.get() {
+                    Some(src) => format!("{e} ({src})"),
+                    None => e.to_owned(),
+                }),
+            )
+            .with_opt("spec", self.resolved_spec_name.get())
+            .with_opt("profile", self.profile.get())
+            .with_opt("spec version", self.resolved_spec_version.get())
+            .with_opt("spec hash", self.resolved_spec_hash.get())
+            .with_opt("session", self.canonical_session_name.get())
+            .with_opt("attach", self.tmux_attach_command.get())
+            .with_opt("cwd", self.cwd.get())
+            .with_opt("lifecycle", self.lifecycle_state.get())
+            .with_opt("last activity", self.last_activity_at.get());
+        match ctx {
+            Some(c) => {
+                row.put(
+                    "context",
+                    used.map_or("—".into(), |u| format!("{}%", js_number(u))),
+                );
+                if let Some(size) = c.context_window_size.num() {
+                    row.put("context window", js_number(size));
+                }
+                if let Some(t) =
+                    tokens_short(c.total_input_tokens.num(), c.total_output_tokens.num())
+                {
+                    row.put("tokens", t);
+                }
+            }
+            None => row.put("context", "—"),
+        }
+        if let Some(used) = used {
+            let tone = if used >= 90. {
+                Tone::Error
+            } else if used >= 75. {
+                Tone::Warn
+            } else {
+                Tone::Neutral
+            };
+            row = row.meter(format!("context {}%", js_number(used)), Some(used), tone);
+        }
+        let work: Vec<String> = [
+            count_text("assigned", &self.assigned_work_count),
+            count_text("pending", &self.pending_work_count),
+            count_text("in progress", &self.in_progress_work_count),
+            count_text("blocked", &self.blocked_work_count),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !work.is_empty() {
+            row.put("work", work.join(" · "));
+        }
+        if let Some(a) = self.activity_state.get() {
+            row.put("activity", a.activity.or(&a.display.unknown()));
+            if let Some(by) = a.decided_by.get() {
+                row.put("decided by", by);
+            }
+            if let Some(n) = a.needs_input.get() {
+                row.put(
+                    "needs input",
+                    format!(
+                        "{}{}",
+                        n.count.num().map_or("0".into(), js_number),
+                        n.reason
+                            .get()
+                            .map(|r| format!(" · {r}"))
+                            .unwrap_or_default()
+                    ),
+                );
+            }
+        }
+        if let Some(a) = self.agent_activity.get() {
             row.put(
-                "context",
-                used.map_or("—".into(), |u| format!("{}%", js_number(u))),
+                "signal",
+                join(
+                    [
+                        a.state.get().map(str::to_owned),
+                        a.reason.get().map(str::to_owned),
+                        a.evidence_source.get().map(|s| format!("via {s}")),
+                        a.event_at.get().map(|s| format!("at {s}")),
+                    ]
+                    .into_iter()
+                    .flatten(),
+                    " · ",
+                ),
             );
-            if let Some(size) = c.context_window_size.num() {
-                row.put("context window", js_number(size));
-            }
-            if let Some(t) = tokens_short(c.total_input_tokens.num(), c.total_output_tokens.num()) {
-                row.put("tokens", t);
-            }
         }
-        None => row.put("context", "—"),
-    }
-    if let Some(used) = used {
-        let tone = if used >= 90. {
-            Tone::Error
-        } else if used >= 75. {
-            Tone::Warn
-        } else {
-            Tone::Neutral
-        };
-        row = row.meter(format!("context {}%", js_number(used)), Some(used), tone);
-    }
-    let work: Vec<String> = [
-        count_text("assigned", &node.assigned_work_count),
-        count_text("pending", &node.pending_work_count),
-        count_text("in progress", &node.in_progress_work_count),
-        count_text("blocked", &node.blocked_work_count),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    if !work.is_empty() {
-        row.put("work", work.join(" · "));
-    }
-    if let Some(a) = node.activity_state.get() {
-        row.put("activity", a.activity.or(&a.display.unknown()));
-        if let Some(by) = a.decided_by.get() {
-            row.put("decided by", by);
-        }
-        if let Some(n) = a.needs_input.get() {
+        if let Some(e) = self.needs_input_evidence.get() {
             row.put(
-                "needs input",
+                "needs-input evidence",
+                format!("{} at {}", e.rung.unknown(), e.observed_at.unknown()),
+            );
+        }
+        if let Some(v) = self.identity_verdict.get() {
+            row.put(
+                "identity",
                 format!(
                     "{}{}",
-                    n.count.num().map_or("0".into(), js_number),
-                    n.reason
+                    v.verdict.unknown(),
+                    v.reason
                         .get()
-                        .map(|r| format!(" · {r}"))
+                        .map(|r| format!(" ({r})"))
                         .unwrap_or_default()
                 ),
             );
         }
+        if let Some(active) = self.terminal_active.get() {
+            row.put("pane output", if *active { "active" } else { "quiet" });
+        }
+        row
     }
-    if let Some(a) = node.agent_activity.get() {
-        row.put(
-            "signal",
-            join(
-                [
-                    a.state.get().map(str::to_owned),
-                    a.reason.get().map(str::to_owned),
-                    a.evidence_source.get().map(|s| format!("via {s}")),
-                    a.event_at.get().map(|s| format!("at {s}")),
-                ]
-                .into_iter()
-                .flatten(),
-                " · ",
-            ),
-        );
-    }
-    if let Some(e) = node.needs_input_evidence.get() {
-        row.put(
-            "needs-input evidence",
-            format!("{} at {}", e.rung.unknown(), e.observed_at.unknown()),
-        );
-    }
-    if let Some(v) = node.identity_verdict.get() {
-        row.put(
-            "identity",
-            format!(
-                "{}{}",
-                v.verdict.unknown(),
-                v.reason
-                    .get()
-                    .map(|r| format!(" ({r})"))
-                    .unwrap_or_default()
-            ),
-        );
-    }
-    if let Some(active) = node.terminal_active.get() {
-        row.put("pane output", if *active { "active" } else { "quiet" });
-    }
-    row
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -481,19 +485,21 @@ pub fn rig_row(rig: &RigSummary, depth: u8, id: &str) -> Row {
     row
 }
 
-/// A pod's seats grouped as the TUI groups them: infrastructure nodes are not listed,
-/// and a node without a pod namespace sits under "(no pod)".
-pub fn group_pods(nodes: &[Node]) -> Vec<(String, Vec<&Node>)> {
-    let mut pods: Vec<(String, Vec<&Node>)> = Vec::new();
-    for node in nodes.iter().filter(|n| n.node_kind.is("agent")) {
-        let pod = node.pod_namespace.or("(no pod)");
-        match pods.iter_mut().find(|(p, _)| *p == pod) {
-            Some((_, list)) => list.push(node),
-            None => pods.push((pod, vec![node])),
+impl Node {
+    /// A pod's seats grouped as the TUI groups them: infrastructure nodes are not listed,
+    /// and a node without a pod namespace sits under "(no pod)".
+    pub fn by_pod(nodes: &[Node]) -> Vec<(String, Vec<&Node>)> {
+        let mut pods: Vec<(String, Vec<&Node>)> = Vec::new();
+        for seat in nodes.iter().filter(|n| n.node_kind.is("agent")) {
+            let pod = seat.pod_namespace.or("(no pod)");
+            match pods.iter_mut().find(|(p, _)| *p == pod) {
+                Some((_, list)) => list.push(seat),
+                None => pods.push((pod, vec![seat])),
+            }
         }
+        pods.sort_by(|a, b| a.0.cmp(&b.0));
+        pods
     }
-    pods.sort_by(|a, b| a.0.cmp(&b.0));
-    pods
 }
 
 /// A Needs-You item (`NeedsYouItemRead`): the daemon's ordered union, carried verbatim.
@@ -824,6 +830,9 @@ pub struct Scope {
     pub slice_id: Text,
 }
 impl Scope {
+    fn label(&self) -> String {
+        format!("{} {}", self.kind.unknown(), self.name())
+    }
     fn name(&self) -> String {
         match self.kind.get() {
             Some("instance") => self.instance_id.unknown(),
@@ -1018,10 +1027,7 @@ pub fn health_rows(v: &Value) -> Vec<Row> {
         .status(state, h.tone())
         .with("detector", h.detector.unknown())
         .with("finding id", h.id.unknown())
-        .with(
-            "scope",
-            format!("{} {}", scope.kind.unknown(), scope.name()),
-        )
+        .with("scope", scope.label())
         .with("category", h.category.unknown())
         .with("severity", h.severity.unknown())
         .with("status", h.status.unknown())

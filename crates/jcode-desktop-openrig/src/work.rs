@@ -6,7 +6,7 @@ use crate::sections::{ReadWindow, SECTION_LIST_LIMIT, read_hosts, section_get};
 fn timestamp<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<DateTime<Utc>>, D::Error> {
-    Ok(crate::inbox::timestamp(
+    Ok(crate::util::timestamp(
         Option::<String>::deserialize(deserializer)?.as_deref(),
     ))
 }

@@ -1,7 +1,10 @@
 use super::{Panel, Palette, State, Theme, detail_lines};
 use chrono::Utc;
 use gpui::{Context, FontWeight, MouseButton, ScrollHandle, div, prelude::*, px};
-use jcode_desktop_openrig::inbox::{Inbox, Item, ItemId, Kind};
+use jcode_desktop_openrig::{
+    attention::Kind,
+    inbox::{Inbox, Item, ItemId},
+};
 
 const UNKNOWN: &str = "–";
 const FILTERS: [Option<Kind>; 8] = [

@@ -2,14 +2,14 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::{
-    attention::{Action, HeldMessage, HumanVerb, ParkedSeat, Question},
+    attention::{Action, HumanVerb, Kind, Question, SeatReasonClass},
     encode,
     fleet::{Fleet, Host, HostTarget, Rig, Seat},
     get_target,
     sections::section_get,
+    util::timestamp,
+    waits::{HeldMessage, ParkedSeat, Wait, Waits},
 };
-
-pub(crate) use crate::attention::ClearEvidence;
 
 const ROUTE: &str = "/api/queue/list?attention=1";
 
@@ -44,54 +44,6 @@ impl ItemId {
             | Self::Seat { host, .. }
             | Self::Parked { host, .. }
             | Self::HeldMessage { host, .. } => host,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Kind {
-    HumanTask,
-    Approval,
-    Held,
-    Permission,
-    SeatAttention,
-    Parked,
-    Startup,
-}
-
-impl Kind {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::HumanTask => "Action required",
-            Self::Approval => "Approval",
-            Self::Held => "Held",
-            Self::Permission => "Permission",
-            Self::SeatAttention => "Seat attention",
-            Self::Parked => "Parked work",
-            Self::Startup => "Startup attention",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SeatReasonClass {
-    Startup,
-    Identity,
-    Restore,
-    Input,
-    LaunchHold,
-    Reported,
-}
-
-impl SeatReasonClass {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Startup => "Startup",
-            Self::Identity => "Seat identity",
-            Self::Restore => "Restore outcome",
-            Self::Input => "Waiting for input",
-            Self::LaunchHold => "Launch held",
-            Self::Reported => "Unclassified seat attention",
         }
     }
 }
@@ -202,6 +154,118 @@ impl QueueItem {
         };
         Some((value("permission-node:")?, value("permission-generation:")?))
     }
+
+    /// The same row, read from `host_id`'s queue.
+    fn on_host(mut self, host_id: &str) -> Self {
+        self.host_id = host_id.into();
+        self
+    }
+
+    fn has_identity(&self) -> bool {
+        !self.qitem_id.trim().is_empty()
+    }
+
+    /// Whether one of the aggregate's reachable hosts served this row.
+    fn is_served_by(&self, hosts: &[HostRead]) -> bool {
+        hosts
+            .iter()
+            .any(|host| host.host_id == self.host_id && host.status == "ok")
+    }
+
+    /// A fetched row that is the open request `id`.
+    fn is_open_request(&self, id: &str) -> bool {
+        self.qitem_id == id
+            && matches!(
+                self.state.as_deref(),
+                Some("pending" | "blocked" | "in-progress")
+            )
+    }
+
+    fn has_questions(&self) -> bool {
+        self.human_questions
+            .as_ref()
+            .is_some_and(|questions| !questions.is_empty())
+    }
+
+    /// The request this one was handed off from, if any.
+    fn predecessor(&self) -> Option<String> {
+        self.handed_off_from.clone()
+    }
+
+    /// Whether `self` is the earlier request `id` of the permission `origin`.
+    fn precedes(&self, id: &str, origin: &(String, String)) -> bool {
+        self.qitem_id == id && self.permission_origin() == Some((&origin.0, &origin.1))
+    }
+
+    /// Take the questions and asker from the request this one was handed off from.
+    /// Returns that request's own predecessor.
+    fn adopt_questions_of(&mut self, earlier: QueueItem) -> Option<String> {
+        self.human_questions = earlier.human_questions;
+        self.source_session = earlier.source_session;
+        earlier.handed_off_from
+    }
+
+    fn into_item(self) -> Item {
+        let is_permission = self.permission_origin().is_some();
+        let questions: Vec<Question> = self
+            .human_questions
+            .iter()
+            .flatten()
+            .filter_map(|question| serde_json::from_value(question.clone()).ok())
+            .collect();
+        let mut actions = Vec::new();
+        if matches!(
+            self.state.as_deref(),
+            Some("pending" | "in-progress" | "blocked")
+        ) && self.human_intent.as_deref() != Some("update")
+            && is_permission
+            && let Some(question) = questions
+                .iter()
+                .find(|question| question.id == "permission")
+        {
+            actions.extend(
+                question
+                    .options
+                    .iter()
+                    .filter(|option| !option.id.is_empty() && !option.label.is_empty())
+                    .cloned()
+                    .map(|option| Action::decide(&self.qitem_id, option)),
+            );
+        }
+        let seat = present(self.source_session.clone());
+        let reason = present(self.blocked_on.clone());
+        Item {
+            id: ItemId::Queue {
+                host: self.host_id.clone(),
+                item: self.qitem_id,
+            },
+            kind: match (self.tier.as_deref(), self.state.as_deref()) {
+                _ if is_permission => Kind::Permission,
+                (Some("human-gate"), _) => Kind::Approval,
+                (_, Some("blocked")) => Kind::Held,
+                _ => Kind::HumanTask,
+            },
+            host: self.host_id,
+            source: present(self.source_session),
+            destination: present(self.destination_session),
+            title: present(self.summary),
+            body: present(self.body),
+            created_at: timestamp(self.ts_created.as_deref()),
+            updated_at: timestamp(self.ts_updated.as_deref()),
+            state: present(self.state),
+            blocked_on: present(self.blocked_on),
+            evidence: present(self.evidence_ref),
+            questions: self
+                .human_questions
+                .filter(|questions| !questions.is_empty()),
+            rig: None,
+            seat,
+            reason,
+            reason_class: None,
+            session: None,
+            actions,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -243,74 +307,6 @@ fn present(value: Option<String>) -> Option<String> {
     value.filter(|s| !s.trim().is_empty())
 }
 
-pub(crate) fn timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value?).ok().map(Into::into)
-}
-
-impl From<QueueItem> for Item {
-    fn from(item: QueueItem) -> Self {
-        let is_permission = item.permission_origin().is_some();
-        let questions: Vec<Question> = item
-            .human_questions
-            .iter()
-            .flatten()
-            .filter_map(|question| serde_json::from_value(question.clone()).ok())
-            .collect();
-        let mut actions = Vec::new();
-        if matches!(
-            item.state.as_deref(),
-            Some("pending" | "in-progress" | "blocked")
-        ) && item.human_intent.as_deref() != Some("update")
-            && is_permission
-            && let Some(question) = questions
-                .iter()
-                .find(|question| question.id == "permission")
-        {
-            actions.extend(
-                question
-                    .options
-                    .iter()
-                    .filter(|option| !option.id.is_empty() && !option.label.is_empty())
-                    .cloned()
-                    .map(|option| Action::decide(&item.qitem_id, option)),
-            );
-        }
-        let seat = present(item.source_session.clone());
-        let reason = present(item.blocked_on.clone());
-        Self {
-            id: ItemId::Queue {
-                host: item.host_id.clone(),
-                item: item.qitem_id,
-            },
-            kind: match (item.tier.as_deref(), item.state.as_deref()) {
-                _ if is_permission => Kind::Permission,
-                (Some("human-gate"), _) => Kind::Approval,
-                (_, Some("blocked")) => Kind::Held,
-                _ => Kind::HumanTask,
-            },
-            host: item.host_id,
-            source: present(item.source_session),
-            destination: present(item.destination_session),
-            title: present(item.summary),
-            body: present(item.body),
-            created_at: timestamp(item.ts_created.as_deref()),
-            updated_at: timestamp(item.ts_updated.as_deref()),
-            state: present(item.state),
-            blocked_on: present(item.blocked_on),
-            evidence: present(item.evidence_ref),
-            questions: item
-                .human_questions
-                .filter(|questions| !questions.is_empty()),
-            rig: None,
-            seat,
-            reason,
-            reason_class: None,
-            session: None,
-            actions,
-        }
-    }
-}
-
 impl Inbox {
     fn parse(value: serde_json::Value) -> Result<Self, String> {
         let Aggregate { hosts, items } =
@@ -319,12 +315,9 @@ impl Inbox {
             || hosts
                 .iter()
                 .any(|host| host.host_id.trim().is_empty() || host.status.trim().is_empty())
-            || items.iter().any(|item| {
-                item.qitem_id.trim().is_empty()
-                    || !hosts
-                        .iter()
-                        .any(|host| host.host_id == item.host_id && host.status == "ok")
-            })
+            || items
+                .iter()
+                .any(|item| !item.has_identity() || !item.is_served_by(&hosts))
         {
             return Err(format!("{ROUTE}: invalid item or host identity"));
         }
@@ -340,7 +333,7 @@ impl Inbox {
             .collect();
         let mut inbox = Self {
             hosts,
-            items: items.into_iter().map(Item::from).collect(),
+            items: items.into_iter().map(QueueItem::into_item).collect(),
             issues,
             waits_loaded: false,
         };
@@ -456,7 +449,26 @@ impl Inbox {
         self.waits_loaded
     }
 
-    pub(crate) fn include_parked(&mut self, host: &Host, rig: &Rig, parked: ParkedSeat) {
+    /// Add what the daemon reports as waiting, then put the whole queue back in order.
+    pub(crate) fn include_waits(&mut self, found: Waits<'_>) {
+        for wait in found.waits {
+            match wait {
+                Wait::Parked { host, rig, seat } => self.include_parked(host, rig, seat),
+                Wait::Held {
+                    host,
+                    rig,
+                    seat,
+                    session,
+                    message,
+                } => self.include_held(host, rig, seat, session, message),
+            }
+        }
+        self.issues.extend(found.issues);
+        self.sort();
+    }
+
+    fn include_parked(&mut self, host: &Host, rig: &Rig, parked: ParkedSeat) {
+        let updated_at = parked.since();
         let mut item = Item {
             id: ItemId::Parked {
                 host: host.queue_host_id().to_owned(),
@@ -472,7 +484,7 @@ impl Inbox {
             reason: Some(parked.reason),
             reason_class: None,
             created_at: None,
-            updated_at: timestamp(parked.activity.since.as_deref()),
+            updated_at,
             state: Some("parked".into()),
             blocked_on: None,
             evidence: None,
@@ -494,7 +506,7 @@ impl Inbox {
         self.items.push(item);
     }
 
-    pub(crate) fn include_held(
+    fn include_held(
         &mut self,
         host: &Host,
         rig: &Rig,
@@ -618,15 +630,8 @@ impl Inbox {
                         serde_json::from_value::<QueueItem>(value)
                             .map_err(|error| format!("{route}: {error}"))
                     }) {
-                        Ok(mut row)
-                            if row.qitem_id == id
-                                && matches!(
-                                    row.state.as_deref(),
-                                    Some("pending" | "blocked" | "in-progress")
-                                ) =>
-                        {
-                            row.host_id = host_id.into();
-                            self.items.push(row.into());
+                        Ok(row) if row.is_open_request(id) => {
+                            self.items.push(row.on_host(host_id).into_item());
                         }
                         Ok(_) => {}
                         Err(error) => self.issues.push(error),
@@ -666,13 +671,9 @@ impl Inbox {
                 continue;
             };
             let origin = (node.to_owned(), generation.to_owned());
-            let mut previous = row.handed_off_from.clone();
+            let mut previous = row.predecessor();
             for _ in 0..10 {
-                if row
-                    .human_questions
-                    .as_ref()
-                    .is_some_and(|questions| !questions.is_empty())
-                {
+                if row.has_questions() {
                     break;
                 }
                 let Some(id) = previous else { break };
@@ -682,13 +683,8 @@ impl Inbox {
                         .map_err(|error| format!("{route}: {error}"))
                 });
                 match parent {
-                    Ok(parent)
-                        if parent.qitem_id == id
-                            && parent.permission_origin() == Some((&origin.0, &origin.1)) =>
-                    {
-                        row.human_questions = parent.human_questions;
-                        row.source_session = parent.source_session;
-                        previous = parent.handed_off_from;
+                    Ok(parent) if parent.precedes(&id, &origin) => {
+                        previous = row.adopt_questions_of(parent);
                     }
                     Ok(_) => break,
                     Err(error) => {
@@ -698,8 +694,7 @@ impl Inbox {
                     }
                 }
             }
-            row.host_id = host_id.into();
-            let item = Item::from(row);
+            let item = row.on_host(host_id).into_item();
             if let Some(index) = self.items.iter().position(|current| current.id == item.id) {
                 self.items[index] = item;
             } else {
@@ -740,7 +735,7 @@ pub(crate) fn fetch_inbox(fleet: &Fleet) -> Inbox {
     let mut inbox = Inbox::default();
     for (id, read) in reads {
         let rows = read.and_then(|rows| {
-            if rows.iter().any(|row| row.qitem_id.trim().is_empty()) {
+            if rows.iter().any(|row| !row.has_identity()) {
                 return Err("Invalid queue item identity".into());
             }
             Ok(rows)
@@ -757,10 +752,9 @@ pub(crate) fn fetch_inbox(fleet: &Fleet) -> Inbox {
             error,
         });
         if let Ok(rows) = rows {
-            inbox.items.extend(rows.into_iter().map(|mut row| {
-                row.host_id = id.into();
-                row.into()
-            }));
+            inbox
+                .items
+                .extend(rows.into_iter().map(|row| row.on_host(id).into_item()));
         }
     }
     inbox

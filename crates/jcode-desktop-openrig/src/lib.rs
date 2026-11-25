@@ -9,6 +9,7 @@ pub use host::HostTarget;
 pub mod sections;
 pub mod usage;
 pub mod util;
+mod waits;
 pub mod work;
 
 use serde_json::{Value, json};
@@ -706,7 +707,7 @@ impl Snapshot {
                 inbox.load_human_actions(host);
             }
             inbox.locate_queue_items(&self.fleet);
-            attention::load_waits(&self.fleet, inbox);
+            inbox.include_waits(waits::load(&self.fleet));
             inbox.waits_loaded = true;
         }
     }

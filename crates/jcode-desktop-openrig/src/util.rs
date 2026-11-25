@@ -170,3 +170,10 @@ pub fn clip(value: &str, max: usize) -> String {
         )
     }
 }
+
+/// An RFC 3339 instant, or nothing when the value is absent or malformed.
+pub(crate) fn timestamp(value: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value?)
+        .ok()
+        .map(Into::into)
+}
