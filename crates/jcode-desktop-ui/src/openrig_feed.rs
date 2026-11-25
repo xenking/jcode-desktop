@@ -188,6 +188,11 @@ impl Feed {
             .or_else(|| self.snapshot.as_ref().map(|snapshot| &snapshot.fleet))
     }
 
+    /// Ask the poller to re-read what it should poll, now.
+    fn wake(&self) {
+        let _ = self.changed.try_send(());
+    }
+
     pub fn demand(&self, host: Option<String>) -> Demand {
         let mut interest = self.interest.borrow_mut();
         let first = if let Some(host) = &host {
@@ -199,7 +204,7 @@ impl Feed {
             interest.browser == 1
         };
         if first {
-            let _ = self.changed.try_send(());
+            self.wake();
         }
         Demand {
             interest: self.interest.clone(),
@@ -214,7 +219,7 @@ impl Global for Shared {}
 
 pub(crate) fn window_activation_changed(cx: &App) {
     if let Some(shared) = cx.try_global::<Shared>() {
-        let _ = shared.0.read(cx).changed.try_send(());
+        shared.0.read(cx).wake();
     }
 }
 

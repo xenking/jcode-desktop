@@ -162,6 +162,8 @@ mod navigation_map_tests;
 mod navigation_state;
 #[path = "workspace_openrig.rs"]
 mod openrig;
+#[path = "workspace_fleet_session.rs"]
+mod fleet_session;
 #[cfg(test)]
 #[path = "panel_cache_tests.rs"]
 pub(crate) mod panel_cache_tests;
