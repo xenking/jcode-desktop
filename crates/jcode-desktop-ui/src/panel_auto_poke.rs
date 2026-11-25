@@ -38,16 +38,64 @@ pub(in crate::panel) enum PokeCommand {
     Status,
 }
 
-pub(in crate::panel) fn parse_poke_command(trimmed: &str) -> Option<Result<PokeCommand, String>> {
-    match trimmed {
-        "/poke" => Some(Ok(PokeCommand::Trigger)),
-        "/poke on" => Some(Ok(PokeCommand::On)),
-        "/poke off" => Some(Ok(PokeCommand::Off)),
-        "/poke status" => Some(Ok(PokeCommand::Status)),
-        _ if trimmed.starts_with("/poke ") => Some(Err("Usage: `/poke [on|off|status]`".into())),
-        _ => None,
+impl PokeCommand {
+    pub(in crate::panel) fn parse(trimmed: &str) -> Option<Result<PokeCommand, String>> {
+        match trimmed {
+            "/poke" => Some(Ok(PokeCommand::Trigger)),
+            "/poke on" => Some(Ok(PokeCommand::On)),
+            "/poke off" => Some(Ok(PokeCommand::Off)),
+            "/poke status" => Some(Ok(PokeCommand::Status)),
+            _ if trimmed.starts_with("/poke ") => Some(Err("Usage: `/poke [on|off|status]`".into())),
+            _ => None,
+        }
     }
 }
+
+/// The words auto-poke shows and the todo state it decides from.
+pub(in crate::panel) struct PokeText;
+
+impl PokeText {
+    /// Snapshot from the latest todo card, for runtimes without `todo_state`.
+    /// Lacks deferred gate observations and the review clock, so only the poke,
+    /// ownership, confidence, and final-response gates can run.
+    pub(super) fn snapshot(payload: TodoCardPayload) -> TodoSnapshot {
+        TodoSnapshot {
+            todos: payload
+                .todos
+                .into_iter()
+                .map(|todo| jcode_sdk::todo::TodoItem {
+                    id: todo.content.clone(),
+                    content: todo.content,
+                    status: todo.status,
+                    priority: "medium".into(),
+                    group: todo.group,
+                    stage: todo.stage,
+                    assigned_to: todo.assigned_to,
+                    confidence: todo.confidence,
+                    completion_confidence: todo.completion_confidence,
+                    blocked_by: todo.blocked_by,
+                    ..Default::default()
+                })
+                .collect(),
+            plan: jcode_sdk::todo::TodoPlan {
+                user_intention: payload.plan.user_intention,
+                understands_user_intent: payload.plan.understands_user_intent,
+                ..Default::default()
+            },
+            goals: payload.goals,
+            ..Default::default()
+        }
+    }
+
+    /// User-facing one-liner for a synthetic continuation message.
+    pub(in crate::panel) fn notice(message: &str) -> String {
+        jcode_sdk::todo::auto_poke_display_summary(message)
+            .map(str::to_string)
+            // The incomplete-todo poke is already short and its count is useful.
+            .unwrap_or_else(|| format!("👉 {}", message.trim()))
+    }
+}
+
 
 impl AutoPoke {
     fn policy(&mut self) -> &mut FollowUpPolicy {
@@ -157,45 +205,7 @@ impl AutoPoke {
     }
 }
 
-/// Snapshot from the latest todo card, for runtimes without `todo_state`.
-/// Lacks deferred gate observations and the review clock, so only the poke,
-/// ownership, confidence, and final-response gates can run.
-fn snapshot_from_card(payload: TodoCardPayload) -> TodoSnapshot {
-    TodoSnapshot {
-        todos: payload
-            .todos
-            .into_iter()
-            .map(|todo| jcode_sdk::todo::TodoItem {
-                id: todo.content.clone(),
-                content: todo.content,
-                status: todo.status,
-                priority: "medium".into(),
-                group: todo.group,
-                stage: todo.stage,
-                assigned_to: todo.assigned_to,
-                confidence: todo.confidence,
-                completion_confidence: todo.completion_confidence,
-                blocked_by: todo.blocked_by,
-                ..Default::default()
-            })
-            .collect(),
-        plan: jcode_sdk::todo::TodoPlan {
-            user_intention: payload.plan.user_intention,
-            understands_user_intent: payload.plan.understands_user_intent,
-            ..Default::default()
-        },
-        goals: payload.goals,
-        ..Default::default()
-    }
-}
 
-/// User-facing one-liner for a synthetic continuation message.
-pub(in crate::panel) fn auto_poke_notice_text(message: &str) -> String {
-    jcode_sdk::todo::auto_poke_display_summary(message)
-        .map(str::to_string)
-        // The incomplete-todo poke is already short and its count is useful.
-        .unwrap_or_else(|| format!("👉 {}", message.trim()))
-}
 
 impl Panel {
     fn auto_poke_blocked(&self) -> bool {
@@ -235,7 +245,7 @@ impl Panel {
             .prompt_queue
             .auto_poke
             .answer(state, blocked, |start| {
-                snapshot_from_card(
+                PokeText::snapshot(
                     items
                         .get(start..)
                         .unwrap_or_default()
@@ -297,7 +307,7 @@ impl Panel {
             .child(text_selection::plain(
                 self.transcript_selection.clone(),
                 format!("{index}-auto-poke"),
-                auto_poke_notice_text(text),
+                PokeText::notice(text),
                 window,
                 cx,
             ))

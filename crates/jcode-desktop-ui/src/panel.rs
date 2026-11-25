@@ -5119,7 +5119,7 @@ impl Panel {
         if self.login_command(trimmed, cx) {
             return true;
         }
-        if let Some(command) = queue::parse_poke_command(trimmed) {
+        if let Some(command) = queue::PokeCommand::parse(trimmed) {
             match command {
                 Ok(command) => self.handle_poke_command(command, cx),
                 Err(usage) => self.items.push(Item::Error(usage)),

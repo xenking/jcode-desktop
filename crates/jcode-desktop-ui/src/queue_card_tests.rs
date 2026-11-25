@@ -307,7 +307,7 @@ fn queue_card_matches_composer_and_never_blocks_the_transcript(cx: &mut gpui::Te
     assert_eq!(card.right(), composer.right(), "card right edge");
     assert_eq!(card.size.width, composer.size.width, "card width");
     assert!(card.bottom() <= composer.top(), "card sits above the composer");
-    let surface = super::card::queue_card_surface(Theme::global());
+    let surface = super::card::Kit::surface(Theme::global());
     assert!(
         surface.a <= 0.06,
         "the queue card must stay translucent, got alpha {}",

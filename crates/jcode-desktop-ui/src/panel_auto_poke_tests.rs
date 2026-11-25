@@ -358,9 +358,9 @@ fn older_runtimes_fall_back_to_the_latest_todo_card(cx: &mut gpui::TestAppContex
 #[test]
 fn poke_messages_render_as_short_notices_not_prompts() {
     let poke = jcode_sdk::todo::build_auto_poke_message(2);
-    assert_eq!(auto_poke_notice_text(&poke), format!("👉 {poke}"));
+    assert_eq!(PokeText::notice(&poke), format!("👉 {poke}"));
     assert_eq!(
-        auto_poke_notice_text(jcode_sdk::todo::TODO_FINAL_RESPONSE_CONTINUATION_MESSAGE),
+        PokeText::notice(jcode_sdk::todo::TODO_FINAL_RESPONSE_CONTINUATION_MESSAGE),
         "✅ Preparing the final response..."
     );
     assert!(!super::super::classify::is_pinnable_prompt(&Item::User(poke)));

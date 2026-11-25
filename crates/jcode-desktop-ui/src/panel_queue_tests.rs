@@ -433,7 +433,7 @@ fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) 
 #[test]
 fn queue_edit_rejects_unrestorable_attachments() {
     let attachment = jcode_sdk::api::Attachment::PastedText { text: "must not disappear".into() };
-    assert!(restorable_files(&[attachment]).is_none());
+    assert!(Files::restorable(&[attachment]).is_none());
 }
 
 #[gpui::test]

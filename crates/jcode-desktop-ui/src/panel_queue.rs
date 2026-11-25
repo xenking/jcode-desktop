@@ -5,7 +5,44 @@ use super::*;
 mod auto_poke;
 #[path = "queue_card.rs"]
 mod card;
-pub(in crate::panel) use auto_poke::{auto_poke_notice_text, parse_poke_command};
+pub(in crate::panel) use auto_poke::{PokeCommand, PokeText};
+
+/// Prompt attachments on the wire and back as submitted files.
+pub(super) struct Files;
+
+impl Files {
+    pub(super) fn wire(files: &[crate::input::SubmittedFile]) -> Vec<jcode_sdk::api::Attachment> {
+        files.iter().map(|file| jcode_sdk::api::Attachment::File {
+            name: file.name.clone(),
+            mime: file.mime.clone(),
+            size: file.size,
+            data: Some(file.data.clone()),
+            path: None,
+        }).collect()
+    }
+
+    pub(super) fn restorable(attachments: &[jcode_sdk::api::Attachment]) -> Option<Vec<crate::input::SubmittedFile>> {
+        attachments.iter().map(|attachment| match attachment {
+            jcode_sdk::api::Attachment::File { name, mime, size, data: Some(data), path: None } => Some(crate::input::SubmittedFile {
+                name: name.clone(), mime: mime.clone(), size: *size, data: data.clone(),
+            }),
+            _ => None,
+        }).collect()
+    }
+
+    /// Files a local queue entry can hold: every attachment with inline bytes.
+    pub(super) fn captured(attachments: &[jcode_sdk::api::Attachment]) -> Vec<crate::input::SubmittedFile> {
+        attachments
+            .iter()
+            .filter_map(|attachment| match attachment {
+                jcode_sdk::api::Attachment::File { name, mime, size, data: Some(data), .. } => {
+                    Some(crate::input::SubmittedFile { name: name.clone(), mime: mime.clone(), size: *size, data: data.clone() })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PromptQueue {
@@ -85,24 +122,7 @@ struct QueuedPrompt {
     send_now: bool,
 }
 
-fn wire_attachments(files: &[crate::input::SubmittedFile]) -> Vec<jcode_sdk::api::Attachment> {
-    files.iter().map(|file| jcode_sdk::api::Attachment::File {
-        name: file.name.clone(),
-        mime: file.mime.clone(),
-        size: file.size,
-        data: Some(file.data.clone()),
-        path: None,
-    }).collect()
-}
 
-fn restorable_files(attachments: &[jcode_sdk::api::Attachment]) -> Option<Vec<crate::input::SubmittedFile>> {
-    attachments.iter().map(|attachment| match attachment {
-        jcode_sdk::api::Attachment::File { name, mime, size, data: Some(data), path: None } => Some(crate::input::SubmittedFile {
-            name: name.clone(), mime: mime.clone(), size: *size, data: data.clone(),
-        }),
-        _ => None,
-    }).collect()
-}
 
 fn default_follow_up() -> bool {
     true
@@ -133,18 +153,6 @@ struct QueuedPromptEditState {
     after_yield: bool,
 }
 
-/// Files a local queue entry can hold: every attachment with inline bytes.
-fn captured_files(attachments: &[jcode_sdk::api::Attachment]) -> Vec<crate::input::SubmittedFile> {
-    attachments
-        .iter()
-        .filter_map(|attachment| match attachment {
-            jcode_sdk::api::Attachment::File { name, mime, size, data: Some(data), .. } => {
-                Some(crate::input::SubmittedFile { name: name.clone(), mime: mime.clone(), size: *size, data: data.clone() })
-            }
-            _ => None,
-        })
-        .collect()
-}
 
 impl Panel {
     pub(crate) fn set_queue_mutations_supported(
@@ -216,7 +224,7 @@ impl Panel {
         let Some(prompt) = self.prompt_queue.prompts.get(index).cloned() else { return };
         self.open_queue_editor(
             QueueEditTarget::Local(index),
-            (prompt.content, prompt.images, wire_attachments(&prompt.files)),
+            (prompt.content, prompt.images, Files::wire(&prompt.files)),
             (prompt.active_skill, prompt.after_yield),
             Some(window),
             cx,
@@ -308,7 +316,7 @@ impl Panel {
                     prompt.after_yield = after_yield;
                     // Local entries carry their bytes, as do files pasted into
                     // the editor, so every attachment converts.
-                    prompt.files = captured_files(&attachments);
+                    prompt.files = Files::captured(&attachments);
                 }
                 self.resume_local_queue_after_edit(cx);
             }
@@ -484,7 +492,7 @@ impl Panel {
     ) {
         self.prompt_queue.remote_removing.remove(&prompt.client_id);
         let files = if edit {
-            match restorable_files(&prompt.attachments) {
+            match Files::restorable(&prompt.attachments) {
                 Some(files) => files,
                 None => {
                     self.items.push(Item::Error("The queued message contains unsupported attachments and could not be restored. Check the conversation before retrying.".into()));
@@ -535,7 +543,7 @@ impl Panel {
         edit: bool,
         cx: &mut Context<Self>,
     ) {
-        if edit && restorable_files(&prompt.attachments).is_none() {
+        if edit && Files::restorable(&prompt.attachments).is_none() {
             self.items.push(Item::Error("This queued message has attachments that cannot be edited here; it remains queued.".into()));
             cx.notify();
             return;
@@ -1112,7 +1120,7 @@ impl Panel {
         active_skill: Option<String>,
         cx: &mut Context<Self>,
     ) -> String {
-        self.send_remote_prompt_with_attachments(content, images, wire_attachments(&files), after_yield, active_skill, cx)
+        self.send_remote_prompt_with_attachments(content, images, Files::wire(&files), after_yield, active_skill, cx)
     }
 
     /// Hand a prompt to the daemon queue and return its client id.
@@ -1220,7 +1228,7 @@ impl Panel {
                 session_id: self.session_id.clone(),
                 content: content.clone(),
                 images: images.clone(),
-                attachments: wire_attachments(&files),
+                attachments: Files::wire(&files),
                 skill,
             });
         } else {
@@ -1228,7 +1236,7 @@ impl Panel {
                 session_id: self.session_id.clone(),
                 content: content.clone(),
                 images: images.clone(),
-                attachments: wire_attachments(&files),
+                attachments: Files::wire(&files),
             });
         }
         self.prepare_prompt(&content);

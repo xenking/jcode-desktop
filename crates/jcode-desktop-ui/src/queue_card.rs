@@ -6,14 +6,6 @@ const SEND: &[u8] = include_bytes!("../../../assets/icons/arrow-up.svg");
 const PENCIL: &[u8] = include_bytes!("../../../assets/icons/pencil.svg");
 const TRASH: &[u8] = include_bytes!("../../../assets/icons/trash.svg");
 
-/// The queue card reads as part of the chat column, not as a panel of its own.
-/// It tints the dock veil barely enough to group the rows; the transcript
-/// behind it stays visible. Tests pin the surface as non-opaque.
-pub(super) fn queue_card_surface(theme: &Palette) -> gpui::Rgba {
-    let mut surface = theme.QUOTE_BG;
-    surface.a = surface.a.min(0.06);
-    surface
-}
 
 /// The prompt row whose action menu is open.
 enum CardRow {
@@ -172,7 +164,7 @@ impl Panel {
                 .flex()
                 .flex_col()
                 .rounded_lg()
-                .bg(queue_card_surface(theme))
+                .bg(Kit::surface(theme))
                 .pb(px(2.))
                 .text_size(px(12.))
                 .text_color(theme.TEXT)
@@ -288,7 +280,7 @@ impl Panel {
                                 .child(title),
                         )
                         .when(paused, |el| {
-                            el.child(queue_pill(
+                            el.child(Kit::pill(
                                 "queue-resume",
                                 "Queue paused · Resume",
                                 cx.listener(|this, _, _, cx| {
@@ -311,7 +303,7 @@ impl Panel {
                         })
                         .when(can_send, |el| {
                             el.child(
-                                queue_pill(
+                                Kit::pill(
                                     button_id,
                                     "Send all now",
                                     cx.listener(move |this, _, _, cx| {
@@ -325,7 +317,7 @@ impl Panel {
                                 .border_1()
                                 .border_color(theme.INPUT_BORDER)
                                 .text_color(theme.TEXT)
-                                .child(queue_icon(SEND, 12.).text_color(theme.TEXT)),
+                                .child(Kit::icon(SEND, 12.).text_color(theme.TEXT)),
                             )
                         }),
                 )
@@ -388,7 +380,7 @@ impl Panel {
         let selected = self.prompt_queue.card_menu.as_deref() == Some(&key);
         let preview = self.render_queued_content(&prompt.content, &prompt.images, cx);
         let key_text = key.clone();
-        let send_label = queue_row_send_label(prompt.after_yield);
+        let send_label = Kit::send_label(prompt.after_yield);
         let theme = Theme::global();
         let group: SharedString = format!("queue-row-local-{index}").into();
         div()
@@ -533,7 +525,7 @@ impl Panel {
                     .child(self.render_queued_content(&prompt.content, &prompt.images, cx)),
             )
             .when(!self.activity_active(), |row| {
-                row.child(menu_action(
+                row.child(Kit::action(
                     "resend-steered",
                     index,
                     "Send again",
@@ -685,7 +677,7 @@ impl Panel {
                         el.child(queue_row_action(
                             SharedString::from(format!("queue-row-send-now-{row_index}")),
                             SEND,
-                            queue_row_send_label(mode == QueuedPromptMode::AfterYield),
+                            Kit::send_label(mode == QueuedPromptMode::AfterYield),
                             group.clone(),
                             selected,
                             cx.listener(move |this, _, _, cx| {
@@ -817,7 +809,7 @@ impl Panel {
                             (true, "queue-edit-mode-after-yield", "After yield"),
                         ]
                         .map(|(after_yield, selector, label)| {
-                            queue_pill(
+                            Kit::pill(
                                 selector,
                                 label,
                                 cx.listener(move |this, _, _, cx| {
@@ -841,7 +833,7 @@ impl Panel {
                             .when(saving, |el| el.opacity(0.6))
                         }),
                     )
-                    .child(queue_pill(
+                    .child(Kit::pill(
                         "queue-edit-cancel",
                         "Cancel",
                         cx.listener(|this, _, window, cx| {
@@ -875,17 +867,7 @@ impl Panel {
     }
 }
 
-fn queue_row_send_label(after_yield: bool) -> &'static str {
-    if after_yield {
-        "Move to Steered messages"
-    } else {
-        "Interrupt now"
-    }
-}
 
-fn queue_icon(icon: &'static [u8], size: f32) -> gpui::Svg {
-    gpui::svg().data(icon).size(px(size))
-}
 
 struct QueueActionTooltip(&'static str);
 
@@ -900,6 +882,76 @@ impl gpui::Render for QueueActionTooltip {
             .text_size(px(11.))
             .text_color(theme.TEXT)
             .child(self.0)
+    }
+}
+
+/// The small widgets of the queue card.
+pub(super) struct Kit;
+
+impl Kit {
+    /// The queue card reads as part of the chat column, not as a panel of its own.
+    /// It tints the dock veil barely enough to group the rows; the transcript
+    /// behind it stays visible. Tests pin the surface as non-opaque.
+    pub(super) fn surface(theme: &Palette) -> gpui::Rgba {
+        let mut surface = theme.QUOTE_BG;
+        surface.a = surface.a.min(0.06);
+        surface
+    }
+
+    pub(super) fn send_label(after_yield: bool) -> &'static str {
+        if after_yield {
+            "Move to Steered messages"
+        } else {
+            "Interrupt now"
+        }
+    }
+
+    pub(super) fn icon(icon: &'static [u8], size: f32) -> gpui::Svg {
+        gpui::svg().data(icon).size(px(size))
+    }
+
+    /// Header pill: a fully rounded button in the card's own ink.
+    pub(super) fn pill(
+        id: &'static str,
+        label: &'static str,
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> gpui::Stateful<gpui::Div> {
+        let theme = Theme::global();
+        div()
+            .id(id)
+            .debug_selector(move || id.to_string())
+            .flex_none()
+            .h(px(20.))
+            .px_2()
+            .flex()
+            .items_center()
+            .rounded_full()
+            .text_size(px(11.))
+            .text_color(theme.TEXT_DIM)
+            .cursor_pointer()
+            .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
+            .child(label)
+            .on_click(on_click)
+    }
+
+    pub(super) fn action(
+        id: &'static str,
+        index: usize,
+        label: &'static str,
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        let theme = Theme::global();
+        div()
+            .id((id, index))
+            .debug_selector(move || format!("{id}-{index}"))
+            .rounded_full()
+            .px_2()
+            .py_1()
+            .cursor_pointer()
+            .text_color(theme.TEXT_DIM)
+            .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
+            .child(label)
+            .on_click(on_click)
     }
 }
 
@@ -927,50 +979,8 @@ fn queue_row_action(
         .group_hover(group, |el| el.opacity(1.0))
         .hover(|el| el.bg(theme.TOOL_BG))
         .tooltip(move |_, cx| cx.new(|_| QueueActionTooltip(label)).into())
-        .child(queue_icon(icon, 13.).text_color(theme.TEXT_DIM))
+        .child(Kit::icon(icon, 13.).text_color(theme.TEXT_DIM))
         .on_click(on_click)
 }
 
-/// Header pill: a fully rounded button in the card's own ink.
-fn queue_pill(
-    id: &'static str,
-    label: &'static str,
-    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-) -> gpui::Stateful<gpui::Div> {
-    let theme = Theme::global();
-    div()
-        .id(id)
-        .debug_selector(move || id.to_string())
-        .flex_none()
-        .h(px(20.))
-        .px_2()
-        .flex()
-        .items_center()
-        .rounded_full()
-        .text_size(px(11.))
-        .text_color(theme.TEXT_DIM)
-        .cursor_pointer()
-        .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
-        .child(label)
-        .on_click(on_click)
-}
 
-fn menu_action(
-    id: &'static str,
-    index: usize,
-    label: &'static str,
-    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    let theme = Theme::global();
-    div()
-        .id((id, index))
-        .debug_selector(move || format!("{id}-{index}"))
-        .rounded_full()
-        .px_2()
-        .py_1()
-        .cursor_pointer()
-        .text_color(theme.TEXT_DIM)
-        .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
-        .child(label)
-        .on_click(on_click)
-}

@@ -209,7 +209,7 @@ fn segments_with_regions(
         Item::User(text) if jcode_sdk::todo::is_auto_poke_message(text) => {
             push(
                 format!("{index}-auto-poke"),
-                super::queue::auto_poke_notice_text(text),
+                super::queue::PokeText::notice(text),
             );
         }
         Item::User(text) => {
