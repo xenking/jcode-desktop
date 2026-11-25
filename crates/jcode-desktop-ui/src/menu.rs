@@ -3,9 +3,8 @@
 //!
 //! An element that owns a dismissible surface adds [`CONTEXT`] to its key
 //! context and listens for these actions with `.on_action(cx.listener(..))`.
-//! The keys live in one place ([`bind_keys`]) instead of being matched as
-//! `event.keystroke.key == "escape"` in every view, so they can be rebound
-//! and appear in key hints.
+//! The keys live in one place ([`bind_keys`]) instead of being matched as raw
+//! key strings in every view, so they can be rebound and appear in key hints.
 //!
 //! Actions that nobody handles fall through to the raw key listeners and to
 //! text input, so a context added to an element never swallows a key by

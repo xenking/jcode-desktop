@@ -990,7 +990,23 @@ pub struct Workspace {
     _live_profile_task: gpui::Task<()>,
 }
 
+/// Key context of every workspace root. Chords only the workspace handles bind
+/// here, so a terminal, composer or other child can claim a key before the
+/// workspace does. See `bind_workspace_keys`.
+pub(crate) const KEY_CONTEXT: &str = "Workspace";
+
 impl Workspace {
+    /// `Workspace`, plus `menu` while the rename dialog or the compact sidebar
+    /// is open so `menu::Cancel` dismisses it wherever focus is.
+    pub(super) fn key_context(&self) -> gpui::KeyContext {
+        let mut context = gpui::KeyContext::default();
+        context.add(KEY_CONTEXT);
+        if self.rename_editor.is_some() || self.compact_sidebar_open {
+            context.add(crate::menu::CONTEXT);
+        }
+        context
+    }
+
     pub fn new(
         window: &mut Window,
         cx: &mut Context<Self>,

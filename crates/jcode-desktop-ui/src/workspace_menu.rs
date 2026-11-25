@@ -46,7 +46,11 @@ impl Workspace {
             .on_action(cx.listener(|this, _: &ClosePanel, window, cx| {
                 this.close_single_panel_settings(window, cx);
             }))
-            .key_context(crate::menu::CONTEXT)
+            .key_context({
+                let mut context = self.key_context();
+                context.add(crate::menu::CONTEXT);
+                context
+            })
             .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
                 this.close_single_panel_settings(window, cx);
             }))

@@ -131,6 +131,13 @@ use workspace::{
     WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
 };
 
+/// Key context for chords only the workspace handles. Bindings that stay
+/// context-free are the ones that must also work, or win over a deeper
+/// binding, outside it: navigation (which recovers focus after a reload and
+/// beats the code editor's Cmd+arrows), Ctrl+B (which beats the composer's word
+/// motion), panel-window close and quit.
+const WORKSPACE: Option<&str> = Some(workspace::KEY_CONTEXT);
+
 /// Replace the UI keymap without changing the host's reload and rollback shortcuts.
 pub fn bind_workspace_keys(cx: &mut App) {
     let host_bindings: Vec<_> = cx
@@ -175,34 +182,34 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-end", FocusLast, None),
         KeyBinding::new("super-u", FocusFirst, None),
         KeyBinding::new("super-p", FocusLast, None),
-        KeyBinding::new("super-shift-h", MovePanelLeft, None),
-        KeyBinding::new("super-shift-l", MovePanelRight, None),
-        KeyBinding::new("super-shift-k", MovePanelUp, None),
-        KeyBinding::new("super-shift-j", MovePanelDown, None),
-        KeyBinding::new("super-shift-home", MovePanelToFirst, None),
-        KeyBinding::new("super-shift-end", MovePanelToLast, None),
-        KeyBinding::new("super-n", NewPanel, None),
-        KeyBinding::new("super-space", ForkPanel, None),
-        KeyBinding::new("super-t", NewTerminal, None),
-        KeyBinding::new("super-shift-g", OpenGmail, None),
-        KeyBinding::new("super-shift-d", OpenTodoist, None),
-        KeyBinding::new("super-shift-r", OpenOpenrig, None),
-        KeyBinding::new("super-shift-a", OpenOrchestration, None),
+        KeyBinding::new("super-shift-h", MovePanelLeft, WORKSPACE),
+        KeyBinding::new("super-shift-l", MovePanelRight, WORKSPACE),
+        KeyBinding::new("super-shift-k", MovePanelUp, WORKSPACE),
+        KeyBinding::new("super-shift-j", MovePanelDown, WORKSPACE),
+        KeyBinding::new("super-shift-home", MovePanelToFirst, WORKSPACE),
+        KeyBinding::new("super-shift-end", MovePanelToLast, WORKSPACE),
+        KeyBinding::new("super-n", NewPanel, WORKSPACE),
+        KeyBinding::new("super-space", ForkPanel, WORKSPACE),
+        KeyBinding::new("super-t", NewTerminal, WORKSPACE),
+        KeyBinding::new("super-shift-g", OpenGmail, WORKSPACE),
+        KeyBinding::new("super-shift-d", OpenTodoist, WORKSPACE),
+        KeyBinding::new("super-shift-r", OpenOpenrig, WORKSPACE),
+        KeyBinding::new("super-shift-a", OpenOrchestration, WORKSPACE),
         // Global search: Cmd+Shift+F on macOS, Ctrl+Shift+F elsewhere. Both are
         // bound unconditionally so a Linux build matches the platform habit
         // without a second keymap.
-        KeyBinding::new("super-shift-f", GlobalSearch, None),
-        KeyBinding::new("ctrl-shift-f", GlobalSearch, None),
+        KeyBinding::new("super-shift-f", GlobalSearch, WORKSPACE),
+        KeyBinding::new("ctrl-shift-f", GlobalSearch, WORKSPACE),
         // Enter and ; use the configured fixed favorite. ' explicitly uses
         // home. Super+T remains the terminal shortcut.
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("super-enter", NewPanelInPinnedDirectory, None),
+        KeyBinding::new("super-enter", NewPanelInPinnedDirectory, WORKSPACE),
         // Non-Super alias for global-shortcut helpers that intercept Enter.
-        KeyBinding::new("ctrl-alt-enter", NewPanelInPinnedDirectory, None),
+        KeyBinding::new("ctrl-alt-enter", NewPanelInPinnedDirectory, WORKSPACE),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("super-;", NewPanelInPinnedDirectory, None),
+        KeyBinding::new("super-;", NewPanelInPinnedDirectory, WORKSPACE),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("super-'", NewPanel, None),
+        KeyBinding::new("super-'", NewPanel, WORKSPACE),
         // Cmd/Super+Q closes the focused panel on every platform. Quitting the
         // app lives on Cmd+Shift+Q so the common chord does the common thing.
         KeyBinding::new("super-q", ClosePanel, None),
@@ -223,31 +230,31 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("ctrl-alt-right", FocusRight, None),
         KeyBinding::new("ctrl-alt-up", FocusUp, None),
         KeyBinding::new("ctrl-alt-down", FocusDown, None),
-        KeyBinding::new("super-shift-tab", ToggleOverview, None),
-        KeyBinding::new("super-o", ToggleOverview, None),
-        KeyBinding::new("super-/", ToggleHints, None),
-        KeyBinding::new("f1", ToggleHints, None),
-        KeyBinding::new("f2", workspace::RenameSession, None),
-        KeyBinding::new("alt-9", workspace::ToggleOnboardingSimulator, None),
-        KeyBinding::new("super-shift-s", ToggleShowcase, None),
-        KeyBinding::new("super-shift-t", CycleTheme, None),
-        KeyBinding::new("alt-r", workspace::OpenResume, None),
-        KeyBinding::new("ctrl-shift-e", ToggleSidebar, None),
-        KeyBinding::new("super-shift-e", workspace::files::ToggleFiles, None),
+        KeyBinding::new("super-shift-tab", ToggleOverview, WORKSPACE),
+        KeyBinding::new("super-o", ToggleOverview, WORKSPACE),
+        KeyBinding::new("super-/", ToggleHints, WORKSPACE),
+        KeyBinding::new("f1", ToggleHints, WORKSPACE),
+        KeyBinding::new("f2", workspace::RenameSession, WORKSPACE),
+        KeyBinding::new("alt-9", workspace::ToggleOnboardingSimulator, WORKSPACE),
+        KeyBinding::new("super-shift-s", ToggleShowcase, WORKSPACE),
+        KeyBinding::new("super-shift-t", CycleTheme, WORKSPACE),
+        KeyBinding::new("alt-r", workspace::OpenResume, WORKSPACE),
+        KeyBinding::new("ctrl-shift-e", ToggleSidebar, WORKSPACE),
+        KeyBinding::new("super-shift-e", workspace::files::ToggleFiles, WORKSPACE),
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
-        KeyBinding::new("super-b", ToggleSidebar, None),
-        KeyBinding::new("super-shift-/", NewHelpSession, None),
+        KeyBinding::new("super-b", ToggleSidebar, WORKSPACE),
+        KeyBinding::new("super-shift-/", NewHelpSession, WORKSPACE),
         // niri switch-preset-column-width / maximize-column.
-        KeyBinding::new("super-r", CycleWidth, None),
-        KeyBinding::new("super-f", MaximizeWidth, None),
-        KeyBinding::new("super-1", WidthPreset1, None),
-        KeyBinding::new("super-2", WidthPreset2, None),
-        KeyBinding::new("super-3", WidthPreset3, None),
-        KeyBinding::new("super-4", WidthPreset4, None),
+        KeyBinding::new("super-r", CycleWidth, WORKSPACE),
+        KeyBinding::new("super-f", MaximizeWidth, WORKSPACE),
+        KeyBinding::new("super-1", WidthPreset1, WORKSPACE),
+        KeyBinding::new("super-2", WidthPreset2, WORKSPACE),
+        KeyBinding::new("super-3", WidthPreset3, WORKSPACE),
+        KeyBinding::new("super-4", WidthPreset4, WORKSPACE),
         KeyBinding::new("super-shift-q", Quit, None),
-        KeyBinding::new("ctrl-shift-n", NewPanel, None),
-        KeyBinding::new("ctrl-t", NewPanel, None),
-        KeyBinding::new("ctrl-o", OpenFolder, None),
+        KeyBinding::new("ctrl-shift-n", NewPanel, WORKSPACE),
+        KeyBinding::new("ctrl-t", NewPanel, WORKSPACE),
+        KeyBinding::new("ctrl-o", OpenFolder, WORKSPACE),
     ]);
 
     // GPUI names the native macOS Command modifier `cmd`. Keep these explicit
@@ -263,27 +270,27 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-right", MovePanelRight, None),
         KeyBinding::new("cmd-shift-up", MovePanelUp, None),
         KeyBinding::new("cmd-shift-down", MovePanelDown, None),
-        KeyBinding::new("cmd-n", NewPanel, None),
-        KeyBinding::new("cmd-space", ForkPanel, None),
+        KeyBinding::new("cmd-n", NewPanel, WORKSPACE),
+        KeyBinding::new("cmd-space", ForkPanel, WORKSPACE),
         // Cmd+T is the terminal shortcut, matching the cross-platform
         // `super-t` binding above. Binding it to NewPanel here shadowed that
         // binding, so macOS opened a session panel instead of a terminal.
-        KeyBinding::new("cmd-t", NewTerminal, None),
-        KeyBinding::new("cmd-shift-g", OpenGmail, None),
-        KeyBinding::new("cmd-shift-t", CycleTheme, None),
-        KeyBinding::new("cmd-shift-d", OpenTodoist, None),
-        KeyBinding::new("cmd-shift-r", OpenOpenrig, None),
-        KeyBinding::new("cmd-shift-a", OpenOrchestration, None),
-        KeyBinding::new("cmd-enter", NewPanelInPinnedDirectory, None),
-        KeyBinding::new("cmd-;", NewPanelInPinnedDirectory, None),
-        KeyBinding::new("cmd-'", NewPanel, None),
+        KeyBinding::new("cmd-t", NewTerminal, WORKSPACE),
+        KeyBinding::new("cmd-shift-g", OpenGmail, WORKSPACE),
+        KeyBinding::new("cmd-shift-t", CycleTheme, WORKSPACE),
+        KeyBinding::new("cmd-shift-d", OpenTodoist, WORKSPACE),
+        KeyBinding::new("cmd-shift-r", OpenOpenrig, WORKSPACE),
+        KeyBinding::new("cmd-shift-a", OpenOrchestration, WORKSPACE),
+        KeyBinding::new("cmd-enter", NewPanelInPinnedDirectory, WORKSPACE),
+        KeyBinding::new("cmd-;", NewPanelInPinnedDirectory, WORKSPACE),
+        KeyBinding::new("cmd-'", NewPanel, WORKSPACE),
         KeyBinding::new("cmd-w", ClosePanel, None),
         KeyBinding::new("cmd-q", ClosePanel, None),
-        KeyBinding::new("cmd-o", ToggleOverview, None),
-        KeyBinding::new("cmd-shift-o", OpenFolder, None),
-        KeyBinding::new("cmd-b", ToggleSidebar, None),
-        KeyBinding::new("cmd-shift-e", workspace::files::ToggleFiles, None),
-        KeyBinding::new("cmd-/", ToggleHints, None),
+        KeyBinding::new("cmd-o", ToggleOverview, WORKSPACE),
+        KeyBinding::new("cmd-shift-o", OpenFolder, WORKSPACE),
+        KeyBinding::new("cmd-b", ToggleSidebar, WORKSPACE),
+        KeyBinding::new("cmd-shift-e", workspace::files::ToggleFiles, WORKSPACE),
+        KeyBinding::new("cmd-/", ToggleHints, WORKSPACE),
         KeyBinding::new("cmd-shift-q", Quit, None),
     ]);
 

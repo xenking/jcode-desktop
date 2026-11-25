@@ -63,6 +63,52 @@ fn repeated_keymap_installation_preserves_binding_count(cx: &mut gpui::TestAppCo
     assert_eq!(counts, [counts[0]; 3]);
 }
 
+/// A `Workspace`-context binding sits above the composer, terminal and code
+/// editor, so any of them can claim the same chord first. Chords that must win
+/// everywhere stay context-free, and none of the workspace's may collide.
+#[gpui::test]
+fn workspace_bindings_never_share_a_chord_with_a_deeper_context(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
+    cx.update(|cx| {
+        let keymap = cx.key_bindings();
+        let keymap = keymap.borrow();
+        let context = |binding: &gpui::KeyBinding| {
+            binding.predicate().map(|predicate| predicate.to_string())
+        };
+        let workspace_chords: Vec<_> = keymap
+            .bindings()
+            .filter(|binding| context(binding).as_deref() == Some(crate::workspace::KEY_CONTEXT))
+            .map(|binding| binding.keystrokes().to_vec())
+            .collect();
+        assert!(workspace_chords.len() > 40, "workspace bindings moved");
+        for binding in keymap.bindings() {
+            let predicate = context(binding);
+            if matches!(
+                predicate.as_deref(),
+                None | Some(crate::workspace::KEY_CONTEXT)
+            ) || binding.action().name().starts_with("jcode_desktop_host::")
+            {
+                continue;
+            }
+            assert!(
+                !workspace_chords.iter().any(|chords| chords == binding.keystrokes()),
+                "{:?} is bound in {predicate:?} and in Workspace",
+                binding.keystrokes()
+            );
+        }
+        for binding in keymap.bindings() {
+            let name = binding.action().name();
+            if name.starts_with("workspace::Focus") || name == "workspace::ClosePanel" {
+                assert_eq!(
+                    context(binding),
+                    None,
+                    "{name} must work outside the workspace"
+                );
+            }
+        }
+    });
+}
+
 #[gpui::test]
 fn new_workspace_windows_preserve_binding_count(cx: &mut gpui::TestAppContext) {
     cx.update(crate::bind_workspace_keys);

@@ -105,6 +105,7 @@ impl Workspace {
     ) -> gpui::Div {
         div()
             .size_full()
+            .key_context(super::KEY_CONTEXT)
             .capture_action(cx.listener(Self::toggle_onboarding_simulator))
             .capture_action(cx.listener(Self::toggle_voice))
             .capture_action(cx.listener(Self::toggle_panel_voice))
