@@ -20,7 +20,7 @@ impl Workspace {
         let keyboard_panel = self
             .slots
             .iter()
-            .position(|slot| slot.panel.input_focus_handle(cx).is_focused(window));
+            .position(|slot| slot.panel.surface().input_focus_handle(cx).is_focused(window));
         let rows: Vec<_> = (0..STRIP_COUNT)
             .map(|row| {
                 let panels: Vec<_> = self
@@ -36,7 +36,7 @@ impl Workspace {
                             "history_items": chat.map_or(0, Panel::history_len),
                             // Length only: the dump must never contain draft text.
                             "draft_chars": chat.map_or(0, |panel| panel.draft_chars(cx)),
-                            "terminal": slot.panel.terminal_debug_snapshot(cx),
+                            "terminal": slot.panel.profile().terminal_debug(cx),
                             "width": slot.width_fraction,
                             "focused": focused == Some(index),
                             "closing": slot.closing,
