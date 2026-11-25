@@ -15,10 +15,15 @@ use gpui::{
     StyledImage, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, img, point,
     prelude::*, px, relative, size,
 };
+use jcode_desktop_model::text_field::{
+    FieldSelection, byte_to_utf16, clamp_range, clicked_word_range, next_grapheme_boundary,
+    next_word_boundary, previous_grapheme_boundary, previous_word_boundary, range_from_utf16,
+    range_to_utf16,
+};
 use jcode_desktop_ui_core::ime_geometry::ImeGeometry;
 use jcode_provider_core::SpeedMode;
 use serde::{Deserialize, Serialize};
-use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
+use unicode_segmentation::GraphemeCursor;
 
 #[path = "input_popup.rs"]
 pub(crate) mod popup;
@@ -217,9 +222,8 @@ pub struct PromptInput {
     pub content: SharedString,
     placeholder: SharedString,
     pub(crate) external_picker_open: bool,
-    selected_range: Range<usize>,
-    selection_reversed: bool,
-    marked_range: Option<Range<usize>>,
+    /// Byte-offset selection and IME composition in `content`.
+    sel: FieldSelection,
     last_layout: Option<PromptLayout>,
     ime_geometry: Option<ImeGeometry>,
     last_layout_revision: u64,
@@ -1005,7 +1009,7 @@ impl PromptInput {
             content: content.to_string(),
             selection_start: selection.start,
             selection_end: selection.end,
-            selection_reversed: self.selection_reversed,
+            selection_reversed: self.sel.reversed,
             history: self.history.clone(),
             history_index: self.history_index,
             live_draft: String::new(),
@@ -1048,11 +1052,11 @@ impl PromptInput {
         let len = content.len();
         self.control_revision = self.control_revision.wrapping_add(1);
         self.content = content.into();
-        self.selected_range = snapshot.selection_start.min(len)..snapshot.selection_end.min(len);
-        if self.selected_range.end < self.selected_range.start {
-            self.selected_range = self.selected_range.end..self.selected_range.start;
+        self.sel.range = snapshot.selection_start.min(len)..snapshot.selection_end.min(len);
+        if self.sel.range.end < self.sel.range.start {
+            self.sel.range = self.sel.range.end..self.sel.range.start;
         }
-        self.selection_reversed = snapshot.selection_reversed;
+        self.sel.reversed = snapshot.selection_reversed;
         self.history = snapshot.history;
         self.history_index = snapshot
             .history_index
@@ -1089,7 +1093,7 @@ impl PromptInput {
         }
         self.attachment_preview = None;
         self.attachment_notice = None;
-        self.marked_range = None;
+        self.sel.marked = None;
         self.undo.clear();
         self.redo.clear();
         cx.notify();
@@ -1108,7 +1112,7 @@ impl PromptInput {
             self.rebase_live_dictation_after_edit(&range, 0);
             self.control_revision = self.control_revision.wrapping_add(1);
             self.content = content.into();
-            self.selected_range = range.start..range.start;
+            self.sel.range = range.start..range.start;
         }
         self.attachment_preview = None;
         self.attachment_notice = None;
@@ -1248,9 +1252,7 @@ impl PromptInput {
             content: "".into(),
             placeholder: placeholder.into(),
             external_picker_open: false,
-            selected_range: 0..0,
-            selection_reversed: false,
-            marked_range: None,
+            sel: FieldSelection::default(),
             last_layout: None,
             ime_geometry: None,
             last_layout_revision: 0,
@@ -1521,7 +1523,7 @@ impl PromptInput {
     }
 
     fn cursor_at_end(&self) -> bool {
-        self.selected_range.is_empty() && self.cursor_offset() == self.content.len()
+        self.sel.range.is_empty() && self.sel.cursor() == self.content.len()
     }
 
     /// Put the caret at a byte offset for dictation fixtures.
@@ -1532,12 +1534,12 @@ impl PromptInput {
     /// Test hook: current caret byte offset.
     #[cfg(test)]
     pub(crate) fn caret_offset(&self) -> usize {
-        self.cursor_offset()
+        self.sel.cursor()
     }
 
     /// Suggested remainder to paint after the caret.
     pub(crate) fn ghost_text(&self) -> Option<&str> {
-        if self.marked_range.is_some() || self.content.trim_start().starts_with('/') {
+        if self.sel.marked.is_some() || self.content.trim_start().starts_with('/') {
             return None;
         }
         self.ghost
@@ -1674,7 +1676,7 @@ impl PromptInput {
         if self.complete_slash_command(cx) {
             return;
         }
-        let at_end = self.cursor_at_end() && self.marked_range.is_none();
+        let at_end = self.cursor_at_end() && self.sel.marked.is_none();
         let accepted = self
             .ghost
             .as_mut()
@@ -1716,7 +1718,7 @@ impl PromptInput {
             let mut draft = self.content.to_string();
             draft.replace_range(range, &value);
             self.set_content(draft, cx);
-            self.selected_range = caret..caret;
+            self.sel.range = caret..caret;
             self.close_command_menu(CommandMenuClose::Literal);
         } else {
             self.set_content(value, cx);
@@ -2218,7 +2220,7 @@ impl PromptInput {
             return None;
         }
         let (start, cursor) =
-            jcode_slash_command::active_token_before_cursor(&self.content, self.cursor_offset())?;
+            jcode_slash_command::active_token_before_cursor(&self.content, self.sel.cursor())?;
         if self.content[..start].trim().is_empty() {
             return None;
         }
@@ -2267,9 +2269,9 @@ impl PromptInput {
         let previous = std::mem::replace(&mut self.stashed_prompt, current);
         let (text, selection, attachments) = previous.unwrap_or_default();
         self.set_content(text, cx);
-        self.selected_range = selection;
+        self.sel.range = selection;
         self.attachments = attachments;
-        self.marked_range = None;
+        self.sel.marked = None;
         self.attachment_notice = None;
         self.attachment_preview = None;
         self.undo.clear();
@@ -2576,8 +2578,8 @@ impl PromptInput {
         // The cleared editor is one line immediately. Waiting for its next
         // paint leaves a tall, empty composer after a wrapped prompt submits.
         self.visual_line_count = 1;
-        self.selected_range = 0..0;
-        self.marked_range = None;
+        self.sel.range = 0..0;
+        self.sel.marked = None;
         if !history_content.trim().is_empty() {
             self.history.push(history_content);
         }
@@ -2588,12 +2590,12 @@ impl PromptInput {
         (self.on_submit)(kind, content, images, files, queued, window, cx);
         if let Some((text, caret)) = remaining_draft {
             self.set_content(text, cx);
-            self.selected_range = caret..caret;
+            self.sel.range = caret..caret;
         } else if let Some(draft) = self.live_draft.take() {
             self.restore_history_draft(draft, cx);
         } else if let Some((text, selection, attachments)) = self.stashed_prompt.take() {
             self.set_content(text, cx);
-            self.selected_range = selection;
+            self.sel.range = selection;
             self.attachments = attachments;
         }
         cx.notify();
@@ -2604,10 +2606,10 @@ impl PromptInput {
         if self.step_picker_effort(-1, cx) {
             return;
         }
-        if self.selected_range.is_empty() {
-            self.move_to(self.previous_boundary(self.cursor_offset()), cx);
+        if self.sel.range.is_empty() {
+            self.move_to(self.previous_boundary(self.sel.cursor()), cx);
         } else {
-            self.move_to(self.selected_range.start, cx)
+            self.move_to(self.sel.range.start, cx)
         }
     }
 
@@ -2615,19 +2617,19 @@ impl PromptInput {
         if self.step_picker_effort(1, cx) {
             return;
         }
-        if self.selected_range.is_empty() {
-            self.move_to(self.next_boundary(self.selected_range.end), cx);
+        if self.sel.range.is_empty() {
+            self.move_to(self.next_boundary(self.sel.range.end), cx);
         } else {
-            self.move_to(self.selected_range.end, cx)
+            self.move_to(self.sel.range.end, cx)
         }
     }
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(self.previous_boundary(self.cursor_offset()), cx);
+        self.select_to(self.previous_boundary(self.sel.cursor()), cx);
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(self.next_boundary(self.cursor_offset()), cx);
+        self.select_to(self.next_boundary(self.sel.cursor()), cx);
     }
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
@@ -2644,9 +2646,9 @@ impl PromptInput {
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            let prev = self.previous_boundary(self.cursor_offset());
-            if self.cursor_offset() == prev {
+        if self.sel.range.is_empty() {
+            let prev = self.previous_boundary(self.sel.cursor());
+            if self.sel.cursor() == prev {
                 return;
             }
             self.select_to(prev, cx)
@@ -2655,9 +2657,9 @@ impl PromptInput {
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            let next = self.next_boundary(self.cursor_offset());
-            if self.cursor_offset() == next {
+        if self.sel.range.is_empty() {
+            let next = self.next_boundary(self.sel.cursor());
+            if self.sel.cursor() == next {
                 return;
             }
             self.select_to(next, cx)
@@ -2687,7 +2689,7 @@ impl PromptInput {
         };
         self.undo.push(self.edit_snapshot());
         self.redo.clear();
-        let range = self.expanded_chip_range(self.clamp_byte_range(self.selected_range.clone()));
+        let range = self.expanded_chip_range(clamp_range(&self.content, self.sel.range.clone()));
         self.remove_chips_in_range(&range);
         let mut content = self.content.to_string();
         content.replace_range(range.clone(), &marker);
@@ -2695,7 +2697,7 @@ impl PromptInput {
         self.control_revision = self.control_revision.wrapping_add(1);
         self.content = content.into();
         let cursor = range.start + marker.len();
-        self.selected_range = cursor..cursor;
+        self.sel.range = cursor..cursor;
         self.attachments.push(Attachment {
             label: marker.into(),
             payload: AttachmentPayload::Image {
@@ -2708,7 +2710,7 @@ impl PromptInput {
         });
         self.attachment_preview = None;
         self.attachment_notice = None;
-        self.marked_range = None;
+        self.sel.marked = None;
         self.ghost_on_edit(cx);
         if let Some(on_change) = &self.on_change {
             on_change(&self.content, cx);
@@ -2893,7 +2895,7 @@ impl PromptInput {
             self.undo.push(self.edit_snapshot());
             self.redo.clear();
             let range =
-                self.expanded_chip_range(self.clamp_byte_range(self.selected_range.clone()));
+                self.expanded_chip_range(clamp_range(&self.content, self.sel.range.clone()));
             self.remove_chips_in_range(&range);
             let mut content = self.content.to_string();
             let mut inserted = String::new();
@@ -2911,7 +2913,7 @@ impl PromptInput {
             self.content = content.into();
             self.control_revision = self.control_revision.wrapping_add(1);
             let cursor = range.start + inserted.len();
-            self.selected_range = cursor..cursor;
+            self.sel.range = cursor..cursor;
             self.attachments.push(Attachment {
                 label: marker.into(),
                 payload: AttachmentPayload::File {
@@ -2922,7 +2924,7 @@ impl PromptInput {
             });
         }
         self.attachment_preview = None;
-        self.marked_range = None;
+        self.sel.marked = None;
         self.ghost_on_edit(cx);
         if let Some(on_change) = &self.on_change {
             on_change(&self.content, cx);
@@ -2964,36 +2966,36 @@ impl PromptInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.sel.range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
-                self.content[self.selected_range.clone()].to_string(),
+                self.content[self.sel.range.clone()].to_string(),
             ));
         }
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.sel.range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
-                self.content[self.selected_range.clone()].to_string(),
+                self.content[self.sel.range.clone()].to_string(),
             ));
             self.replace_text_in_range(None, "", window, cx)
         }
     }
 
     fn word_left(&mut self, _: &MoveWordLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.previous_word_boundary(self.cursor_offset()), cx);
+        self.move_to(previous_word_boundary(&self.content, self.sel.cursor()), cx);
     }
 
     fn word_right(&mut self, _: &MoveWordRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.next_word_boundary(self.cursor_offset()), cx);
+        self.move_to(next_word_boundary(&self.content, self.sel.cursor()), cx);
     }
 
     fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+        self.select_to(previous_word_boundary(&self.content, self.sel.cursor()), cx);
     }
 
     fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
+        self.select_to(next_word_boundary(&self.content, self.sel.cursor()), cx);
     }
 
     fn delete_word_back(
@@ -3002,8 +3004,8 @@ impl PromptInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+        if self.sel.range.is_empty() {
+            self.select_to(previous_word_boundary(&self.content, self.sel.cursor()), cx);
         }
         self.replace_text_in_range(None, "", window, cx);
     }
@@ -3014,8 +3016,8 @@ impl PromptInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
+        if self.sel.range.is_empty() {
+            self.select_to(next_word_boundary(&self.content, self.sel.cursor()), cx);
         }
         self.replace_text_in_range(None, "", window, cx);
     }
@@ -3073,7 +3075,7 @@ impl PromptInput {
                 self.live_draft = Some(HistoryDraft {
                     content: content.into_owned(),
                     selection,
-                    selection_reversed: self.selection_reversed,
+                    selection_reversed: self.sel.reversed,
                     attachments: std::mem::take(&mut self.attachments),
                 });
                 self.attachment_preview = None;
@@ -3116,7 +3118,7 @@ impl PromptInput {
 
     fn show_history_entry(&mut self, index: usize, cx: &mut Context<Self>) {
         self.history_index = Some(index);
-        self.marked_range = None;
+        self.sel.marked = None;
         self.set_content(self.history[index].clone(), cx);
         self.close_command_menu(CommandMenuClose::Literal);
     }
@@ -3124,8 +3126,8 @@ impl PromptInput {
     fn restore_history_draft(&mut self, draft: HistoryDraft, cx: &mut Context<Self>) {
         self.attachments = draft.attachments;
         self.set_content(draft.content, cx);
-        self.selected_range = draft.selection;
-        self.selection_reversed = draft.selection_reversed;
+        self.sel.range = draft.selection;
+        self.sel.reversed = draft.selection_reversed;
     }
 
     fn clear(&mut self, _: &Clear, window: &mut Window, cx: &mut Context<Self>) {
@@ -3227,7 +3229,7 @@ impl PromptInput {
         if text.is_empty() {
             return;
         }
-        let range = self.expanded_chip_range(self.clamp_byte_range(self.selected_range.clone()));
+        let range = self.expanded_chip_range(clamp_range(&self.content, self.sel.range.clone()));
         let mut insert = String::with_capacity(text.len() + 2);
         if self.content[..range.start]
             .chars()
@@ -3252,12 +3254,12 @@ impl PromptInput {
         self.control_revision = self.control_revision.wrapping_add(1);
         self.rebase_live_dictation_after_edit(&range, insert.len());
         self.content = edited.into();
-        self.marked_range = None;
+        self.sel.marked = None;
         if self.live_draft.is_none() {
             self.history_index = None;
         }
-        self.selected_range = caret..caret;
-        self.selection_reversed = false;
+        self.sel.range = caret..caret;
+        self.sel.reversed = false;
         self.reset_model_groups_after_exit();
         self.command_selection = 0;
         self.reveal_command(0);
@@ -3289,7 +3291,7 @@ impl PromptInput {
             draft.push('\n');
         }
         draft.push_str(text);
-        self.marked_range = None;
+        self.sel.marked = None;
         if self.live_draft.is_none() {
             self.history_index = None;
         }
@@ -3317,7 +3319,7 @@ impl PromptInput {
         }
         self.undo.push(self.edit_snapshot());
         self.redo.clear();
-        self.marked_range = None;
+        self.sel.marked = None;
         if self.live_draft.is_none() {
             self.history_index = None;
         }
@@ -3607,8 +3609,8 @@ impl PromptInput {
         self.reset_model_groups_after_exit();
         self.command_selection = 0;
         self.reveal_command(0);
-        self.selected_range = self.content.len()..self.content.len();
-        self.selection_reversed = false;
+        self.sel.range = self.content.len()..self.content.len();
+        self.sel.reversed = false;
         cx.notify();
     }
 
@@ -3741,8 +3743,8 @@ impl PromptInput {
         if event.modifiers.shift {
             self.select_to(offset, cx);
         } else if event.click_count == 2 {
-            self.selected_range = clicked_word_range(&self.content, offset);
-            self.selection_reversed = false;
+            self.sel.range = clicked_word_range(&self.content, offset);
+            self.sel.reversed = false;
             cx.notify();
         } else {
             self.move_to(offset, cx)
@@ -3758,8 +3760,8 @@ impl PromptInput {
                 if let Some(range) = self.chip_range(attachment) {
                     let text = text.clone();
                     window.focus(&self.focus_handle, cx);
-                    self.selected_range = range;
-                    self.marked_range = None;
+                    self.sel.range = range;
+                    self.sel.marked = None;
                     self.replace_editor_text(self.replacement_range(None), &text, None, cx);
                 }
             }
@@ -3793,23 +3795,21 @@ impl PromptInput {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.vertical_caret = None;
-        let offset = offset.min(self.content.len());
-        self.selected_range = offset..offset;
-        self.selection_reversed = false;
+        self.sel.collapse_to(offset.min(self.content.len()));
         cx.notify()
     }
 
     fn vertical_caret(&self) -> Option<&VerticalCaret> {
         self.vertical_caret.as_ref().filter(|caret| {
             caret.revision == self.control_revision
-                && self.selected_range.is_empty()
-                && caret.offset == self.cursor_offset()
+                && self.sel.range.is_empty()
+                && caret.offset == self.sel.cursor()
         })
     }
 
     fn caret_position(&self, layout: &PromptLayout, line_height: Pixels) -> Option<Point<Pixels>> {
         layout.position_for_caret(
-            self.cursor_offset(),
+            self.sel.cursor(),
             line_height,
             self.vertical_caret().is_some_and(|caret| caret.downstream),
         )
@@ -3886,14 +3886,6 @@ impl PromptInput {
         false
     }
 
-    fn cursor_offset(&self) -> usize {
-        if self.selection_reversed {
-            self.selected_range.start
-        } else {
-            self.selected_range.end
-        }
-    }
-
     fn painted_line_height(&self, window: &Window) -> Pixels {
         self.last_line_height
             .unwrap_or_else(|| window.line_height())
@@ -3922,69 +3914,8 @@ impl PromptInput {
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.vertical_caret = None;
-        if self.selection_reversed {
-            self.selected_range.start = offset
-        } else {
-            self.selected_range.end = offset
-        };
-        if self.selected_range.end < self.selected_range.start {
-            self.selection_reversed = !self.selection_reversed;
-            self.selected_range = self.selected_range.end..self.selected_range.start;
-        }
+        self.sel.extend_to(offset);
         cx.notify()
-    }
-
-    fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
-        for ch in self.content.chars() {
-            if utf16_count >= offset {
-                break;
-            }
-            utf16_count += ch.len_utf16();
-            utf8_offset += ch.len_utf8();
-        }
-        utf8_offset
-    }
-
-    fn offset_to_utf16(&self, offset: usize) -> usize {
-        let mut utf16_offset = 0;
-        let mut utf8_count = 0;
-        for ch in self.content.chars() {
-            if utf8_count >= offset {
-                break;
-            }
-            utf8_count += ch.len_utf8();
-            utf16_offset += ch.len_utf16();
-        }
-        utf16_offset
-    }
-
-    fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
-        self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end)
-    }
-
-    /// `range` ordered, inside `content`, and on character boundaries. Marked
-    /// and selected ranges can go stale when content changes outside the IME
-    /// (history recall, dictation, a session switch), so IME edits clamp them
-    /// rather than slicing with them blindly.
-    fn clamp_byte_range(&self, range: Range<usize>) -> Range<usize> {
-        let floor = |mut offset: usize| {
-            offset = offset.min(self.content.len());
-            while !self.content.is_char_boundary(offset) {
-                offset -= 1;
-            }
-            offset
-        };
-        let start = floor(range.start.min(range.end));
-        start..floor(range.start.max(range.end)).max(start)
-    }
-
-    /// Byte range for a platform UTF-16 range, always ordered and on character
-    /// boundaries so slicing `content` with it cannot panic.
-    fn range_from_utf16(&self, range_utf16: &Range<usize>) -> Range<usize> {
-        let start = self.offset_from_utf16(range_utf16.start);
-        start..self.offset_from_utf16(range_utf16.end).max(start)
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
@@ -3995,11 +3926,7 @@ impl PromptInput {
         {
             return range.start;
         }
-        self.content
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(idx, _)| (idx < offset).then_some(idx))
-            .unwrap_or(0)
+        previous_grapheme_boundary(&self.content, offset)
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
@@ -4010,79 +3937,16 @@ impl PromptInput {
         {
             return range.end;
         }
-        self.content
-            .grapheme_indices(true)
-            .find_map(|(idx, _)| (idx > offset).then_some(idx))
-            .unwrap_or(self.content.len())
+        next_grapheme_boundary(&self.content, offset)
     }
-
-    fn previous_word_boundary(&self, offset: usize) -> usize {
-        previous_word_boundary(&self.content, offset)
-    }
-
-    fn next_word_boundary(&self, offset: usize) -> usize {
-        next_word_boundary(&self.content, offset)
-    }
-}
-
-fn clicked_word_range(text: &str, offset: usize) -> Range<usize> {
-    // Hit testing returns UTF-8 boundaries. At the end of a line/document,
-    // select the final segment rather than an empty word after the text.
-    let probe = offset.min(text.len().saturating_sub(1));
-    text.split_word_bound_indices()
-        .find_map(|(start, word)| {
-            let end = start + word.len();
-            (start <= probe && probe < end).then_some(start..end)
-        })
-        .unwrap_or(0..0)
-}
-
-fn previous_word_boundary(text: &str, offset: usize) -> usize {
-    let prefix = &text[..offset];
-    let trimmed = prefix.trim_end_matches(char::is_whitespace);
-    trimmed
-        .char_indices()
-        .rev()
-        .find_map(|(index, ch)| ch.is_whitespace().then_some(index + ch.len_utf8()))
-        .unwrap_or(0)
-}
-
-/// Byte offset of a UTF-16 offset within `text`, clamped to `text.len()`. An
-/// offset that splits a surrogate pair rounds down to the character start.
-fn utf16_to_byte_offset(text: &str, offset: usize) -> usize {
-    let mut utf16 = 0;
-    for (index, ch) in text.char_indices() {
-        if utf16 + ch.len_utf16() > offset {
-            return index;
-        }
-        utf16 += ch.len_utf16();
-    }
-    text.len()
-}
-
-fn next_word_boundary(text: &str, offset: usize) -> usize {
-    let suffix = &text[offset..];
-    let word_end = suffix
-        .char_indices()
-        .find_map(|(index, ch)| ch.is_whitespace().then_some(index))
-        .unwrap_or(suffix.len());
-    let rest = &suffix[word_end..];
-    offset
-        + word_end
-        + rest
-            .char_indices()
-            .find_map(|(index, ch)| (!ch.is_whitespace()).then_some(index))
-            .unwrap_or(rest.len())
 }
 
 impl PromptInput {
     fn replacement_range(&self, range_utf16: Option<Range<usize>>) -> Range<usize> {
-        let range = range_utf16
-            .as_ref()
-            .map(|range| self.range_from_utf16(range))
-            .or(self.marked_range.clone())
-            .unwrap_or_else(|| self.selected_range.clone());
-        self.expanded_chip_range(self.clamp_byte_range(range))
+        self.expanded_chip_range(
+            self.sel
+                .replacement_range(&self.content, range_utf16.as_ref()),
+        )
     }
 
     fn replace_editor_text(
@@ -4104,9 +3968,7 @@ impl PromptInput {
         self.content = content.into();
         self.attachments.extend(attachment);
         self.reset_model_groups_after_exit();
-        let cursor = range.start + new_text.len();
-        self.selected_range = cursor..cursor;
-        self.marked_range.take();
+        self.sel.commit(range.start, new_text.len());
         self.command_selection = 0;
         self.reveal_command(0);
         self.ghost_on_edit(cx);
@@ -4125,8 +3987,8 @@ impl EntityInputHandler for PromptInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        let range = self.range_from_utf16(&range_utf16);
-        actual_range.replace(self.range_to_utf16(&range));
+        let range = range_from_utf16(&self.content, &range_utf16);
+        actual_range.replace(range_to_utf16(&self.content, &range));
         Some(self.content[range].to_string())
     }
 
@@ -4137,8 +3999,8 @@ impl EntityInputHandler for PromptInput {
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
         Some(UTF16Selection {
-            range: self.range_to_utf16(&self.selected_range),
-            reversed: self.selection_reversed,
+            range: range_to_utf16(&self.content, &self.sel.range),
+            reversed: self.sel.reversed,
         })
     }
 
@@ -4147,13 +4009,14 @@ impl EntityInputHandler for PromptInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        self.marked_range
+        self.sel
+            .marked
             .as_ref()
-            .map(|range| self.range_to_utf16(range))
+            .map(|range| range_to_utf16(&self.content, range))
     }
 
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.marked_range = None;
+        self.sel.marked = None;
     }
 
     fn replace_text_in_range(
@@ -4166,7 +4029,7 @@ impl EntityInputHandler for PromptInput {
         let range = self.replacement_range(range_utf16);
         // The platform also sends unmarked bulk insertions through insertText.
         // A marked IME candidate remains editable text even when it is long.
-        if self.marked_range.is_none() && self.try_attach_pasted_text(&range, new_text, cx) {
+        if self.sel.marked.is_none() && self.try_attach_pasted_text(&range, new_text, cx) {
             self.finish_paste();
         } else {
             self.replace_editor_text(range, new_text, None, cx);
@@ -4191,25 +4054,12 @@ impl EntityInputHandler for PromptInput {
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
         self.reset_model_groups_after_exit();
-        if !new_text.is_empty() {
-            self.marked_range = Some(range.start..range.start + new_text.len());
-        } else {
-            self.marked_range = None;
-        }
         // The IME's selection is UTF-16 offsets into `new_text`, not into the
-        // whole document. Converting it against the document (as this once
-        // did) lands past the end or inside a multi-byte character as soon as
-        // CJK text precedes the composition, and the next slice panics. On
-        // macOS that panic aborts the app from inside `setMarkedText:` (#6).
-        self.selected_range = new_selected_range_utf16
-            .as_ref()
-            .map(|selected| {
-                let start = utf16_to_byte_offset(new_text, selected.start);
-                let end = utf16_to_byte_offset(new_text, selected.end).max(start);
-                range.start + start..range.start + end
-            })
-            .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
-        self.selection_reversed = false;
+        // whole document (#6: converting it against the document sliced inside
+        // a multi-byte character after CJK text and aborted the app from
+        // `setMarkedText:`). `mark` converts it against `new_text`.
+        self.sel
+            .mark(range.start, new_text, new_selected_range_utf16.as_ref());
         self.dismiss_ghost();
 
         self.command_selection = 0;
@@ -4241,7 +4091,7 @@ impl EntityInputHandler for PromptInput {
         };
         geometry.bounds_for_range(
             display_text,
-            self.range_from_utf16(&range_utf16),
+            range_from_utf16(&self.content, &range_utf16),
             bounds.origin,
             window,
         )
@@ -4259,7 +4109,7 @@ impl EntityInputHandler for PromptInput {
             .closest_index_for_position(local, self.painted_line_height(_window))
             .unwrap_or_else(|index| index)
             .min(self.content.len());
-        Some(self.offset_to_utf16(utf8_index))
+        Some(byte_to_utf16(&self.content, utf8_index))
     }
 }
 
@@ -4374,8 +4224,8 @@ impl Element for TextElement {
         let now = cx.background_executor().now();
         let input = self.input.read(cx);
         let content = input.content.clone();
-        let selected_range = input.selected_range.clone();
-        let cursor = input.cursor_offset();
+        let selected_range = input.sel.range.clone();
+        let cursor = input.sel.cursor();
         let style = window.text_style();
 
         let mut placeholder_full = None;
@@ -4422,7 +4272,7 @@ impl Element for TextElement {
         };
         // Only underline a composition that actually lies in the shown text.
         // A placeholder or stale range would otherwise underflow the run math.
-        let marked_range = input.marked_range.as_ref().filter(|marked| {
+        let marked_range = input.sel.marked.as_ref().filter(|marked| {
             !input.content.is_empty()
                 && marked.start <= marked.end
                 && marked.end <= display_text.len()
@@ -4709,7 +4559,7 @@ impl Element for TextElement {
             // on every paint. Include viewport size so resizing reveals the caret.
             let viewport = input.editor_scroll.bounds();
             let caret_key = (
-                input.cursor_offset(),
+                input.sel.cursor(),
                 input.content.clone(),
                 viewport.size,
                 input.vertical_caret().is_some_and(|caret| caret.downstream),
@@ -5582,7 +5432,7 @@ mod tests {
         let (input, vcx) = cx.add_window_view(|window, cx| {
             let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
             input.set_content("before after".into(), cx);
-            input.selected_range = 7..7;
+            input.sel.range = 7..7;
             input.focus_handle.focus(window, cx);
             input
         });
@@ -5627,7 +5477,7 @@ mod tests {
         let (input, vcx) = cx.add_window_view(|window, cx| {
             let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
             input.set_content("before ".into(), cx);
-            input.selected_range = 7..7;
+            input.sel.range = 7..7;
             input.attach_image(
                 crate::clipboard_image::ClipboardImage {
                     media_type: "image/png".into(),
@@ -5909,9 +5759,9 @@ mod tests {
             };
             input.set_session_image_base(9, cx);
             input.set_content("AB".into(), cx);
-            input.selected_range = 2..2;
+            input.sel.range = 2..2;
             input.attach_image(image(1), cx);
-            input.selected_range = 0..0;
+            input.sel.range = 0..0;
             input.attach_image(image(2), cx);
             assert_eq!(input.image_chip_numbers(), [Some(11), Some(10)]);
             let draft = input.content.clone();
@@ -5945,7 +5795,7 @@ mod tests {
         assert!(vcx.debug_bounds("paste-image-preview-content").is_none());
         input.update(vcx, |input, cx| {
             let end = input.chip_ranges()[1].1.end;
-            input.selected_range = end..end;
+            input.sel.range = end..end;
             cx.notify();
         });
         vcx.simulate_keystrokes("backspace");
@@ -5962,23 +5812,6 @@ mod tests {
                 ("image/png".into(), "AQ==".into())
             ]
         );
-    }
-
-    #[test]
-    fn double_click_word_ranges_are_unicode_safe_and_exclude_adjacent_space() {
-        for (text, offset, selected) in [
-            ("hello world", 1, "hello"),
-            ("hello world", 5, " "),
-            ("hello world", 7, "world"),
-            ("hello world", 11, "world"),
-            ("hello, world", 5, ","),
-            ("héllo 猫 🚀", 2, "héllo"),
-            ("héllo 猫 🚀", 7, "猫"),
-            ("héllo 猫 🚀", usize::MAX, "🚀"),
-            ("", 0, ""),
-        ] {
-            assert_eq!(&text[clicked_word_range(text, offset)], selected);
-        }
     }
 
     #[test]
@@ -6074,14 +5907,14 @@ mod tests {
         window
             .update(cx, |input, _, _| {
                 assert_eq!(input.content.as_ref(), draft.as_str());
-                assert!(input.cursor_offset() < draft.len());
+                assert!(input.sel.cursor() < draft.len());
             })
             .unwrap();
         cx.simulate_keystrokes(*window, "down");
         window
             .update(cx, |input, _, _| {
                 assert_eq!(input.content.as_ref(), draft.as_str());
-                assert_eq!(input.cursor_offset(), draft.len());
+                assert_eq!(input.sel.cursor(), draft.len());
             })
             .unwrap();
 
@@ -6120,7 +5953,7 @@ mod tests {
             cx.simulate_keystrokes(*window, key);
             window
                 .update(cx, |input, _, _| {
-                    assert_eq!(input.cursor_offset(), expected, "{key}")
+                    assert_eq!(input.sel.cursor(), expected, "{key}")
                 })
                 .unwrap();
         }
@@ -6142,10 +5975,10 @@ mod tests {
         vcx.simulate_keystrokes("home down");
         input.read_with(vcx, |input, _| {
             assert_eq!(input.content.as_ref(), draft.as_str());
-            assert!((1..draft.len()).contains(&input.cursor_offset()));
+            assert!((1..draft.len()).contains(&input.sel.cursor()));
         });
         vcx.simulate_keystrokes("up");
-        input.read_with(vcx, |input, _| assert_eq!(input.cursor_offset(), 0));
+        input.read_with(vcx, |input, _| assert_eq!(input.sel.cursor(), 0));
 
         vcx.simulate_resize(size(px(1600.), px(500.)));
         vcx.run_until_parked();
@@ -6189,7 +6022,7 @@ mod tests {
                     .into_iter()
                     .find(|(_, range)| input.content[range.clone()].contains(label))
                     .unwrap();
-                assert!([chip.start, chip.end].contains(&input.cursor_offset()));
+                assert!([chip.start, chip.end].contains(&input.sel.cursor()));
             });
         }
         vcx.simulate_keystrokes("down down");
@@ -6223,12 +6056,12 @@ mod tests {
                     first_mouse: false,
                 };
                 input.on_mouse_down(&event, window, cx);
-                assert_eq!(input.selected_range, 0..5);
+                assert_eq!(input.sel.range, 0..5);
                 assert!(input.focus_handle.is_focused(window));
                 let mut shift_event = event;
                 shift_event.modifiers.shift = true;
                 input.on_mouse_down(&shift_event, window, cx);
-                assert_eq!(input.selected_range, 0..2);
+                assert_eq!(input.sel.range, 0..2);
             })
             .unwrap();
     }
@@ -6263,7 +6096,7 @@ mod tests {
                     };
                     input.on_mouse_down(&event, window, cx);
                     assert_eq!(
-                        input.selected_range,
+                        input.sel.range,
                         line_start..line_start,
                         "click at the top of row {row}"
                     );
@@ -6346,9 +6179,9 @@ mod tests {
                     );
                     assert_eq!(input.content.as_ref(), format!("你好，{marked}"));
                     let start = "你好，".len();
-                    assert_eq!(input.marked_range, Some(start..start + marked.len()));
+                    assert_eq!(input.sel.marked, Some(start..start + marked.len()));
                     assert_eq!(
-                        input.selected_range,
+                        input.sel.range,
                         start + marked.len()..start + marked.len()
                     );
                     assert_eq!(
@@ -6360,18 +6193,18 @@ mod tests {
                 input.replace_and_mark_text_in_range(None, "你好", Some(1..9), window, cx);
                 assert_eq!(input.content.as_ref(), "你好，你好");
                 let start = "你好，".len();
-                assert_eq!(input.selected_range, start + 3..start + 6);
+                assert_eq!(input.sel.range, start + 3..start + 6);
                 input.replace_text_in_range(None, "你好🚀", window, cx);
                 assert_eq!(input.content.as_ref(), "你好，你好🚀");
-                assert!(input.marked_range.is_none());
+                assert!(input.sel.marked.is_none());
                 assert_eq!(
-                    input.selected_range,
+                    input.sel.range,
                     input.content.len()..input.content.len()
                 );
 
                 // Stale marked text and ranges that split characters or run
                 // past the end are clamped, never sliced blindly.
-                input.marked_range = Some(1..400);
+                input.sel.marked = Some(1..400);
                 input.replace_and_mark_text_in_range(None, "zh", Some(2..2), window, cx);
                 assert_eq!(input.content.as_ref(), "zh");
                 input.replace_text_in_range(Some(1..1000), "中", window, cx);
@@ -6407,7 +6240,7 @@ mod tests {
         ] {
             input.update(cx, |input, cx| {
                 input.set_content(draft.into(), cx);
-                input.selected_range = caret..caret;
+                input.sel.range = caret..caret;
                 input.undo.clear();
                 input.redo = vec![EditSnapshot {
                     content: "old redo".into(),
@@ -6415,7 +6248,7 @@ mod tests {
                 }];
                 input.insert_dictation(spoken, cx);
                 assert_eq!(input.content.as_ref(), expected);
-                assert_eq!(input.selected_range, caret_after..caret_after);
+                assert_eq!(input.sel.range, caret_after..caret_after);
                 assert_eq!(
                     input
                         .undo
@@ -6426,7 +6259,7 @@ mod tests {
                     "one undo step"
                 );
                 assert!(input.redo.is_empty());
-                assert!(input.marked_range.is_none());
+                assert!(input.sel.marked.is_none());
                 assert!(input.history_index.is_none());
             });
         }
@@ -6439,10 +6272,10 @@ mod tests {
         let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
         input.update(cx, |input, cx| {
             input.set_content("keep drop tail".into(), cx);
-            input.selected_range = 5..9;
+            input.sel.range = 5..9;
             input.insert_dictation("spare", cx);
             assert_eq!(input.content.as_ref(), "keep spare tail");
-            assert_eq!(input.selected_range, 10..10);
+            assert_eq!(input.sel.range, 10..10);
         });
     }
 
@@ -6465,8 +6298,8 @@ mod tests {
                     content: "old redo".into(),
                     attachments: vec![],
                 }];
-                input.selected_range = 0..input.content.len();
-                input.marked_range = Some(0..input.content.len());
+                input.sel.range = 0..input.content.len();
+                input.sel.marked = Some(0..input.content.len());
                 input.history_index = Some(0);
                 input.append_dictation("  spoken words\n", cx);
                 assert_eq!(input.content.as_ref(), expected);
@@ -6479,8 +6312,8 @@ mod tests {
                     vec![before.to_owned()]
                 );
                 assert!(input.redo.is_empty());
-                assert_eq!(input.selected_range, expected.len()..expected.len());
-                assert!(input.marked_range.is_none());
+                assert_eq!(input.sel.range, expected.len()..expected.len());
+                assert!(input.sel.marked.is_none());
                 assert!(input.history_index.is_none());
             });
         }
@@ -6495,8 +6328,8 @@ mod tests {
         for draft in ["", "half typed", "多行\n草稿", "  keep spacing  "] {
             input.update(cx, |input, cx| {
                 input.set_content(draft.into(), cx);
-                input.selected_range = 0..input.content.len();
-                input.marked_range = Some(0..2);
+                input.sel.range = 0..input.content.len();
+                input.sel.marked = Some(0..2);
                 input.history_index = Some(0);
                 input.undo.clear();
                 input.redo = vec![EditSnapshot {
@@ -6515,8 +6348,8 @@ mod tests {
                     "one undo step"
                 );
                 assert!(input.redo.is_empty(), "a replacement clears redo");
-                assert_eq!(input.selected_range, 12..12);
-                assert!(input.marked_range.is_none());
+                assert_eq!(input.sel.range, 12..12);
+                assert!(input.sel.marked.is_none());
                 assert!(input.history_index.is_none());
             });
         }
@@ -6536,10 +6369,10 @@ mod tests {
                 content: "next".into(),
                 attachments: vec![],
             }];
-            input.selected_range = 0..3;
+            input.sel.range = 0..3;
             input.replace_dictation("   ", cx);
             assert_eq!(input.content.as_ref(), "keep me");
-            assert_eq!(input.selected_range, 0..3);
+            assert_eq!(input.sel.range, 0..3);
             assert_eq!(
                 input
                     .undo
@@ -7012,7 +6845,7 @@ mod tests {
         let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
         input.update(cx, |input, cx| {
             input.set_content("keep this ".into(), cx);
-            input.selected_range = 0..4;
+            input.sel.range = 0..4;
             input.undo = vec![EditSnapshot {
                 content: "previous".into(),
                 attachments: vec![],
@@ -7026,7 +6859,7 @@ mod tests {
                 input.set_voice_preview(preview.clone(), cx);
                 assert_eq!(input.voice_preview, preview);
                 assert_eq!(input.content.as_ref(), "keep this ");
-                assert_eq!(input.selected_range, 0..4);
+                assert_eq!(input.sel.range, 0..4);
                 assert_eq!(
                     input
                         .undo
@@ -7414,7 +7247,7 @@ mod tests {
         window
             .update(&mut cx, |input, _, _| {
                 assert_eq!(
-                    &input.content[input.selected_range.start..],
+                    &input.content[input.sel.range.start..],
                     "three",
                     "Ctrl+B should move the caret one word left inside the prompt"
                 );
@@ -7422,54 +7255,13 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn word_motion_crosses_words_and_whitespace() {
-        let text = "one   two three";
-        assert_eq!(next_word_boundary(text, 0), 6);
-        assert_eq!(next_word_boundary(text, 6), 10);
-        assert_eq!(next_word_boundary(text, text.len()), text.len());
-        assert_eq!(previous_word_boundary(text, text.len()), 10);
-        assert_eq!(previous_word_boundary(text, 10), 6);
-        assert_eq!(previous_word_boundary(text, 0), 0);
-    }
-
-    #[test]
-    fn word_motion_never_splits_multibyte_text() {
-        let text = "你好  world 🚀";
-        let second_word = next_word_boundary(text, 0);
-        assert_eq!(&text[second_word..], "world 🚀");
-        let emoji = next_word_boundary(text, second_word);
-        assert_eq!(&text[emoji..], "🚀");
-        assert_eq!(previous_word_boundary(text, text.len()), emoji);
-        for offset in [second_word, emoji, previous_word_boundary(text, emoji)] {
-            assert!(text.is_char_boundary(offset));
-        }
-    }
-
     // ---- Characterization pins -------------------------------------------
     //
-    // Pinned before the caret, selection and IME rules moved into
-    // jcode-desktop-model::text_field. They go through the input handler and
-    // the editing actions so they survive the move. The composer steps by
-    // grapheme cluster and treats whitespace as the only word break, unlike
-    // the code editor (scalars, character classes) and the login field
-    // (scalars, no word motion).
-
-    #[test]
-    fn word_motion_breaks_on_whitespace_only() {
-        let text = "foo.bar(baz)  qux\nnext";
-        assert_eq!(next_word_boundary(text, 0), 14, "punctuation does not stop");
-        assert_eq!(next_word_boundary(text, 14), 18, "a newline is whitespace");
-        assert_eq!(next_word_boundary(text, 18), text.len());
-        assert_eq!(previous_word_boundary(text, text.len()), 18);
-        assert_eq!(previous_word_boundary(text, 18), 14);
-        assert_eq!(previous_word_boundary(text, 14), 0);
-        // Mid-word offsets move to the word's edges.
-        assert_eq!(next_word_boundary(text, 4), 14);
-        assert_eq!(previous_word_boundary(text, 4), 0);
-        assert_eq!(next_word_boundary("   ", 0), 3);
-        assert_eq!(previous_word_boundary("   ", 3), 0);
-    }
+    // They go through the input handler and the editing actions. The composer
+    // steps by grapheme cluster and treats whitespace as the only word break,
+    // unlike the code editor (scalars, character classes) and the login field
+    // (scalars, no word motion). Boundary math is tested in
+    // jcode-desktop-model::text_field.
 
     #[gpui::test]
     fn arrows_and_deletion_step_by_grapheme_cluster(cx: &mut TestAppContext) {
@@ -7480,10 +7272,10 @@ mod tests {
                 input.replace_text_in_range(None, &format!("ae\u{301}{family}b"), window, cx);
                 input.left(&Left, window, cx);
                 input.left(&Left, window, cx);
-                assert_eq!(&input.content[input.selected_range.start..], format!("{family}b"));
+                assert_eq!(&input.content[input.sel.range.start..], format!("{family}b"));
                 input.left(&Left, window, cx);
                 assert_eq!(
-                    &input.content[input.selected_range.start..],
+                    &input.content[input.sel.range.start..],
                     format!("e\u{301}{family}b")
                 );
                 // Backspace after the family removes the whole cluster.
@@ -7500,15 +7292,17 @@ mod tests {
     }
 
     #[gpui::test]
-    fn ranges_from_the_platform_round_up_inside_a_surrogate_pair(cx: &mut TestAppContext) {
+    fn ranges_from_the_platform_floor_inside_a_surrogate_pair(cx: &mut TestAppContext) {
         let window = input_window(cx);
         window
             .update(cx, |input, window, cx| {
                 input.replace_text_in_range(None, "a😀b", window, cx);
                 let mut actual = None;
                 let text = input.text_for_range(0..2, &mut actual, window, cx);
-                assert_eq!(text.as_deref(), Some("a😀"), "offset 2 splits the emoji");
-                assert_eq!(actual, Some(0..3));
+                // The composer used to round up to include the emoji. It now
+                // floors like the code editor and the login field do.
+                assert_eq!(text.as_deref(), Some("a"), "offset 2 splits the emoji");
+                assert_eq!(actual, Some(0..1));
                 let text = input.text_for_range(1..99, &mut actual, window, cx);
                 assert_eq!(text.as_deref(), Some("😀b"));
                 assert_eq!(actual, Some(1..4));
@@ -7527,7 +7321,7 @@ mod tests {
                 assert_eq!(selection.range, 6..11);
                 assert!(selection.reversed);
                 input.select_right(&SelectRight, window, cx);
-                assert_eq!(input.selected_range, 8..13, "reversed selection shrinks");
+                assert_eq!(input.sel.range, 8..13, "reversed selection shrinks");
                 // Marking over a selection replaces it and drops the reversal.
                 input.replace_and_mark_text_in_range(None, "ü", Some(0..1), window, cx);
                 assert_eq!(input.content.as_ref(), "héllo wü");
@@ -7551,20 +7345,20 @@ mod tests {
                 input.replace_text_in_range(None, "one two three", window, cx);
                 input.move_to(4, cx);
                 input.select_word_right(&SelectWordRight, window, cx);
-                assert_eq!(input.selected_range, 4..8);
+                assert_eq!(input.sel.range, 4..8);
                 input.select_word_left(&SelectWordLeft, window, cx);
                 input.select_word_left(&SelectWordLeft, window, cx);
-                assert_eq!(input.selected_range, 0..4);
-                assert!(input.selection_reversed);
+                assert_eq!(input.sel.range, 0..4);
+                assert!(input.sel.reversed);
                 input.right(&Right, window, cx);
-                assert_eq!(input.selected_range, 4..4, "right collapses to the end");
+                assert_eq!(input.sel.range, 4..4, "right collapses to the end");
                 input.select_all(&SelectAll, window, cx);
-                assert_eq!(input.selected_range, 0..13);
-                assert!(!input.selection_reversed);
+                assert_eq!(input.sel.range, 0..13);
+                assert!(!input.sel.reversed);
                 input.left(&Left, window, cx);
-                assert_eq!(input.selected_range, 0..0, "left collapses to the start");
+                assert_eq!(input.sel.range, 0..0, "left collapses to the start");
                 input.move_to(99, cx);
-                assert_eq!(input.selected_range, 13..13, "offsets clamp to the text");
+                assert_eq!(input.sel.range, 13..13, "offsets clamp to the text");
                 input.delete_word_back(&DeleteWordBack, window, cx);
                 assert_eq!(input.content.as_ref(), "one two ");
                 input.kill_to_start(&KillToStart, window, cx);
@@ -7988,7 +7782,7 @@ mod pending_session_tests {
         for command in ["/clear", "/login", "/changelog", "/onboarding-sim"] {
             input.update(vcx, |input, cx| {
                 input.content = command.into();
-                input.selected_range = command.len()..command.len();
+                input.sel.range = command.len()..command.len();
                 cx.notify();
             });
             vcx.simulate_keystrokes("enter");

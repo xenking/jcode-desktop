@@ -72,7 +72,7 @@ impl PromptInput {
             return;
         }
         let mut text = path_text(paths);
-        let before = self.content[..self.cursor_offset()].chars().next_back();
+        let before = self.content[..self.sel.cursor()].chars().next_back();
         if before.is_some_and(|c| !c.is_whitespace()) {
             text.insert(0, ' ');
         }

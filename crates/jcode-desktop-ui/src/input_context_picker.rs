@@ -124,14 +124,14 @@ impl PromptInput {
         let picker = self.context_picker.as_ref()?;
         if picker.target.is_some()
             || self.picker_prefix.is_some()
-            || !self.selected_range.is_empty()
-            || self.marked_range.is_some()
+            || !self.sel.range.is_empty()
+            || self.sel.marked.is_some()
             || self.queue_editor
             || !self.submission_enabled
         {
             return None;
         }
-        mention(&self.content, self.cursor_offset())
+        mention(&self.content, self.sel.cursor())
     }
 
     pub(super) fn update_context_index(&mut self, cx: &mut Context<Self>) {
@@ -387,14 +387,14 @@ impl PromptInput {
         };
         let range = range
             .or(replacing_skill)
-            .unwrap_or_else(|| self.selected_range.clone());
+            .unwrap_or_else(|| self.sel.range.clone());
         let prefix = if self.content[..range.start].ends_with(|c: char| !c.is_whitespace()) {
             " "
         } else {
             ""
         };
         self.replace_text_in_range(
-            Some(self.range_to_utf16(&range)),
+            Some(range_to_utf16(&self.content, &range)),
             &format!("{prefix}{marker} "),
             window,
             cx,

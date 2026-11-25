@@ -118,7 +118,7 @@ fn long_drafts_scroll_and_reveal_keyboard_caret_in_short_windows(cx: &mut gpui::
                 // Use the actual shaped line height, including theme scaling.
                 let caret = line
                     .position_for_index(
-                        input.cursor_offset(),
+                        input.sel.cursor(),
                         bounds.size.height / input.visual_line_count as f32,
                     )
                     .unwrap();

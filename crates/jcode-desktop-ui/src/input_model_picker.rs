@@ -369,7 +369,7 @@ impl PromptInput {
         let mut cache = self.suggestions_cache.borrow_mut();
         if let Some(cached) = cache.as_ref()
             && cached.content == self.content
-            && cached.cursor == self.cursor_offset()
+            && cached.cursor == self.sel.cursor()
             && cached.revision == self.suggestions_revision
             && cached.minute == minute
             && cached.completion == self.command_completion
@@ -393,7 +393,7 @@ impl PromptInput {
         }
         *cache = Some(SuggestionsCache {
             content: self.content.clone(),
-            cursor: self.cursor_offset(),
+            cursor: self.sel.cursor(),
             revision: self.suggestions_revision,
             minute,
             completion: self.command_completion,

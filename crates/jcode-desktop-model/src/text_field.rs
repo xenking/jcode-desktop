@@ -323,10 +323,21 @@ mod tests {
         assert_eq!(next_word_boundary(text, 0), 14, "punctuation does not stop");
         assert_eq!(next_word_boundary(text, 14), 18, "a newline is whitespace");
         assert_eq!(previous_word_boundary(text, 18), 14);
+        assert_eq!(previous_word_boundary(text, 14), 0);
+        // Mid-word offsets move to the word's edges.
+        assert_eq!(next_word_boundary(text, 4), 14);
+        assert_eq!(previous_word_boundary(text, 4), 0);
+        assert_eq!(next_word_boundary("   ", 0), 3);
+        assert_eq!(previous_word_boundary("   ", 3), 0);
         let text = "你好  world 🚀";
         let second = next_word_boundary(text, 0);
         assert_eq!(&text[second..], "world 🚀");
-        assert_eq!(previous_word_boundary(text, text.len()), next_word_boundary(text, second));
+        let emoji = next_word_boundary(text, second);
+        assert_eq!(&text[emoji..], "🚀");
+        assert_eq!(previous_word_boundary(text, text.len()), emoji);
+        for offset in [second, emoji, previous_word_boundary(text, emoji)] {
+            assert!(text.is_char_boundary(offset));
+        }
     }
 
     #[test]
@@ -334,8 +345,10 @@ mod tests {
         for (text, offset, selected) in [
             ("hello world", 1, "hello"),
             ("hello world", 5, " "),
+            ("hello world", 7, "world"),
             ("hello world", 11, "world"),
             ("hello, world", 5, ","),
+            ("héllo 猫 🚀", 2, "héllo"),
             ("héllo 猫 🚀", 7, "猫"),
             ("héllo 猫 🚀", usize::MAX, "🚀"),
             ("", 0, ""),

@@ -5,15 +5,13 @@ impl PromptInput {
     pub(crate) fn dictation_proof_state(&self) -> serde_json::Value {
         serde_json::json!({
             "text": self.content.as_ref(),
-            "caret_byte": self.cursor_offset(),
+            "caret_byte": self.sel.cursor(),
             "provisional": self.live_dictation.is_some(),
         })
     }
 
     pub(crate) fn begin_live_dictation(&mut self, cx: &mut Context<Self>) {
-        let caret = self
-            .clamp_byte_range(self.cursor_offset()..self.cursor_offset())
-            .start;
+        let caret = clamp_range(&self.content, self.sel.cursor()..self.sel.cursor()).start;
         let anchor = self.expanded_chip_range(caret..caret).end;
         self.live_dictation = Some(anchor..anchor);
         self.dismiss_ghost();
@@ -58,13 +56,14 @@ impl PromptInput {
         let changed = (span.start + prefix_len)..span.end;
         let next_end = span.start + replacement.len();
         let follows_voice =
-            self.selected_range == (span.end..span.end) && self.marked_range.is_none();
-        self.selected_range = rebase_range(&self.selected_range, &changed, next_end);
+            self.sel.range == (span.end..span.end) && self.sel.marked.is_none();
+        self.sel.range = rebase_range(&self.sel.range, &changed, next_end);
         if follows_voice {
-            self.selected_range = next_end..next_end;
+            self.sel.range = next_end..next_end;
         }
-        self.marked_range = self
-            .marked_range
+        self.sel.marked = self
+            .sel
+            .marked
             .as_ref()
             .map(|marked| rebase_range(marked, &changed, next_end));
         self.control_revision = self.control_revision.wrapping_add(1);
@@ -109,10 +108,10 @@ impl PromptInput {
                 draft.replace_range(span.clone(), "");
                 (
                     Cow::Owned(draft),
-                    rebase_range(&self.selected_range, span, span.start),
+                    rebase_range(&self.sel.range, span, span.start),
                 )
             }
-            _ => (Cow::Borrowed(&self.content), self.selected_range.clone()),
+            _ => (Cow::Borrowed(&self.content), self.sel.range.clone()),
         }
     }
 
