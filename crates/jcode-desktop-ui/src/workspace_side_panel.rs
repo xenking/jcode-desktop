@@ -305,7 +305,9 @@ impl Workspace {
             let Ok(root) = handle.read(cx) else {
                 continue;
             };
-            let panel = root.panel.clone();
+            let Some(panel) = root.chat().cloned() else {
+                continue;
+            };
             if panel.read(cx).side_document_owner() != Some(owner) {
                 continue;
             }
@@ -336,7 +338,9 @@ impl Workspace {
             let panel = if let Some((handle, panel)) = existing {
                 panel.update(cx, |panel, cx| panel.update_side_document(page, cx));
                 let _ = handle.update(cx, |root, window, cx| {
-                    window.set_window_title(&format!("{} · Jcode", root.panel.read(cx).title));
+                    if let Some(chat) = root.chat() {
+                        window.set_window_title(&format!("{} · Jcode", chat.read(cx).title));
+                    }
                 });
                 if !activate {
                     continue;
@@ -760,7 +764,7 @@ mod tests {
                 .into_iter()
                 .filter_map(|handle| {
                     let handle = handle.downcast::<panel_window::PanelWindow>()?;
-                    let panel = handle.read(cx).ok()?.panel.clone();
+                    let panel = handle.read(cx).ok()?.chat()?.clone();
                     panel.read(cx).is_side_document().then_some((handle, panel))
                 })
                 .collect()

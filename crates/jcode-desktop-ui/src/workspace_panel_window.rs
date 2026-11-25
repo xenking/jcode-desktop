@@ -1,6 +1,6 @@
 //! Native utility windows for standalone mode. The originating workspace is never rearranged.
 use super::*;
-use gpui::{AnyWindowHandle, Focusable, WeakEntity, WindowOptions};
+use gpui::{AnyWindowHandle, WeakEntity, WindowOptions};
 
 /// Open a terminal in its own native window, or activate the open one.
 pub(crate) fn open_terminal_window(
@@ -8,13 +8,15 @@ pub(crate) fn open_terminal_window(
     host: HostHandle,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    if let Some(handle) = cx
-        .windows()
-        .into_iter()
-        .find_map(|handle| handle.downcast::<TerminalPanel>())
-    {
-        return handle.update(cx, |terminal, window, cx| {
-            terminal.focus(window, cx);
+    if let Some(handle) = cx.windows().into_iter().find_map(|handle| {
+        let handle = handle.downcast::<PanelWindow>()?;
+        handle
+            .read(cx)
+            .is_ok_and(|root| root.item.terminal().is_some())
+            .then_some(handle)
+    }) {
+        return handle.update(cx, |root, window, cx| {
+            root.item.focus_input(window, cx);
             window.activate_window();
         });
     }
@@ -28,16 +30,17 @@ pub(crate) fn open_terminal_window(
             window.set_window_title("terminal · Jcode");
             window.activate_window();
             let terminal = cx.new(|cx| TerminalPanel::new(working_dir, None, None, host, cx));
-            let focus = terminal.read(cx).focus_handle(cx);
-            window.focus(&focus, cx);
-            terminal
+            let item = PanelItem::Terminal(terminal);
+            item.focus_input(window, cx);
+            let origin = window.window_handle();
+            cx.new(|_| PanelWindow::new(item, None, None, origin))
         },
     )?;
     Ok(())
 }
 
 pub(crate) struct PanelWindow {
-    pub(crate) panel: Entity<Panel>,
+    pub(crate) item: PanelItem,
     source: Option<WeakEntity<Panel>>,
     source_session: Option<String>,
     source_window: AnyWindowHandle,
@@ -72,22 +75,22 @@ pub(crate) fn open_panel_window_at(
         let Some(handle) = handle.downcast::<PanelWindow>() else {
             continue;
         };
-        if handle
-            .read(cx)
-            .is_ok_and(|root| !root.finished && root.panel.read(cx).session_id == session_id)
-        {
-            return handle.update(cx, |root, window, cx| {
-                root.source = source.as_ref().map(Entity::downgrade);
-                root.source_session = source_session;
-                root.source_window = origin;
-                if activate {
-                    root.panel
-                        .update(cx, |panel, cx| panel.focus_input(window, cx));
-                    window.activate_window();
-                }
-                root.panel.clone()
-            });
-        }
+        let Some(existing) = handle.read(cx).ok().and_then(|root| {
+            let chat = root.chat()?;
+            (!root.finished && chat.read(cx).session_id == session_id).then(|| chat.clone())
+        }) else {
+            continue;
+        };
+        return handle.update(cx, |root, window, cx| {
+            root.source = source.as_ref().map(Entity::downgrade);
+            root.source_session = source_session;
+            root.source_window = origin;
+            if activate {
+                root.item.focus_input(window, cx);
+                window.activate_window();
+            }
+            existing
+        });
     }
     let hosted = panel.clone();
     cx.open_window(
@@ -129,10 +132,7 @@ pub(crate) fn open_panel_window_at(
                 let weak = cx.entity().downgrade();
                 window.on_window_should_close(cx, move |_, cx| {
                     weak.update(cx, |this, cx| {
-                        if !this
-                            .panel
-                            .update(cx, |panel, cx| panel.confirm_file_close(cx))
-                        {
+                        if !this.confirm_close(cx) {
                             return false;
                         }
                         this.finish(false, cx);
@@ -141,14 +141,12 @@ pub(crate) fn open_panel_window_at(
                     .unwrap_or(true)
                 });
                 panel.update(cx, |panel, cx| panel.focus_input(window, cx));
-                PanelWindow {
-                    panel,
-                    source: source.as_ref().map(Entity::downgrade),
+                PanelWindow::new(
+                    PanelItem::Chat(panel),
+                    source.as_ref().map(Entity::downgrade),
                     source_session,
-                    source_window: origin,
-                    finished: false,
-                    window_background: None,
-                }
+                    origin,
+                )
             })
         },
     )?;
@@ -156,6 +154,34 @@ pub(crate) fn open_panel_window_at(
 }
 
 impl PanelWindow {
+    fn new(
+        item: PanelItem,
+        source: Option<WeakEntity<Panel>>,
+        source_session: Option<String>,
+        source_window: AnyWindowHandle,
+    ) -> Self {
+        Self {
+            item,
+            source,
+            source_session,
+            source_window,
+            finished: false,
+            window_background: None,
+        }
+    }
+
+    /// The conversation-shaped panel this window hosts, when it hosts one.
+    pub(crate) fn chat(&self) -> Option<&Entity<Panel>> {
+        self.item.chat()
+    }
+
+    /// Unsaved edits may veto the close. Other kinds never do.
+    fn confirm_close(&self, cx: &mut App) -> bool {
+        self.item
+            .update_chat(cx, |panel, cx| panel.confirm_file_close(cx))
+            .unwrap_or(true)
+    }
+
     /// An agent deletion must not activate the source of a background document.
     pub(super) fn remove_document(&mut self, window: &mut Window) {
         self.finished = true;
@@ -169,7 +195,10 @@ impl PanelWindow {
         let source = self.source.clone();
         let source_session = self.source_session.clone();
         let origin = self.source_window;
-        let accounts = self.panel.read(cx).is_accounts_panel();
+        let accounts = self
+            .item
+            .read_chat(cx)
+            .is_some_and(Panel::is_accounts_panel);
         // Release the child window update before focusing its originating window.
         cx.defer(move |cx| {
             let _ = origin.update(cx, |root, window, cx| {
@@ -214,10 +243,7 @@ impl PanelWindow {
     }
 
     fn close(&mut self, choose_model: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !self
-            .panel
-            .update(cx, |panel, cx| panel.confirm_file_close(cx))
-        {
+        if !self.confirm_close(cx) {
             return;
         }
         self.finish(choose_model, cx);
@@ -231,10 +257,13 @@ impl Render for PanelWindow {
         Theme::sync_window_background(window, &mut self.window_background);
         let theme = Theme::global();
         let width = window.viewport_size().width;
-        if self.panel.read(cx).openrig_width_changed(width) {
-            self.panel
-                .update(cx, |panel, cx| panel.set_openrig_width(width, cx));
-        }
+        self.item.update_chat(cx, |panel, cx| {
+            if panel.openrig_width_changed(width) {
+                panel.set_openrig_width(width, cx);
+            }
+        });
+        // A terminal owns Escape, so only conversation-shaped windows dismiss on it.
+        let dismissible = self.item.chat().is_some();
         div()
             .debug_selector(|| "panel-window-root".into())
             .size_full()
@@ -261,13 +290,17 @@ impl Render for PanelWindow {
             ))
             .on_action(cx.listener(
                 |this, action: &change_review::CloseChangeReview, window, cx| {
-                    if action.panel == this.panel.entity_id() {
+                    if action.panel == this.item.entity_id() {
                         this.close(false, window, cx);
                         cx.stop_propagation();
                     }
                 },
             ))
             .on_action(cx.listener(|this, _: &ClosePanel, window, cx| {
+                if this.item.chat().is_none() {
+                    cx.propagate();
+                    return;
+                }
                 this.close(false, window, cx);
                 cx.stop_propagation();
             }))
@@ -277,7 +310,10 @@ impl Render for PanelWindow {
                         .path
                         .canonicalize()
                         .unwrap_or_else(|_| action.path.clone());
-                    let bridge = this.panel.read(cx).bridge_for_file();
+                    let Some(bridge) = this.item.read_chat(cx).map(Panel::bridge_for_file) else {
+                        cx.propagate();
+                        return;
+                    };
                     let panel = cx.new(|cx| Panel::new_code_file(path, bridge, cx));
                     match open_panel_window(panel, None, window, cx) {
                         Ok(panel) => {
@@ -290,11 +326,13 @@ impl Render for PanelWindow {
                     cx.stop_propagation();
                 },
             ))
-            .key_context(crate::menu::CONTEXT)
-            .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
-                this.close(false, window, cx);
-            }))
-            .child(self.panel.clone())
+            .when(dismissible, |root| {
+                root.key_context(crate::menu::CONTEXT)
+                    .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
+                        this.close(false, window, cx);
+                    }))
+            })
+            .child(self.item.view())
     }
 }
 
@@ -308,19 +346,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("example.rs");
         std::fs::write(&path, "fn main() {}\n").unwrap();
-        let (window_view, vcx) = cx.add_window_view(|window, cx| PanelWindow {
-            panel: cx.new(|cx| Panel::new_code_file(path, crate::harness::spawn_inert(), cx)),
-            source: None,
-            source_session: None,
-            source_window: window.window_handle(),
-            finished: false,
-            window_background: None,
+        let (window_view, vcx) = cx.add_window_view(|window, cx| {
+            let panel = cx.new(|cx| Panel::new_code_file(path, crate::harness::spawn_inert(), cx));
+            PanelWindow::new(PanelItem::Chat(panel), None, None, window.window_handle())
         });
         vcx.run_until_parked();
-        let panel = window_view.read_with(vcx, |view, _| view.panel.clone());
+        let panel = window_view.read_with(vcx, |view, _| view.chat().unwrap().clone());
         vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.focus_input(window, cx)));
         vcx.simulate_keystrokes("escape");
         assert!(window_view.read_with(vcx, |view, _| view.finished));
+    }
+
+    /// The standalone terminal window used to host a bare `TerminalPanel`,
+    /// which never asked the compositor for the palette's window background.
+    #[gpui::test]
+    fn terminal_window_syncs_its_background_with_the_theme(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        cx.update(|cx| open_terminal_window(None, HostHandle::inert(), cx).unwrap());
+        cx.run_until_parked();
+        let window = cx.update(|cx| {
+            let windows = cx.windows();
+            assert_eq!(windows.len(), 1);
+            windows[0].downcast::<PanelWindow>()
+        });
+        let window = window.expect("terminal window is a PanelWindow");
+        window
+            .update(cx, |root, _, _| {
+                assert!(root.item.terminal().is_some());
+                assert_eq!(root.window_background, Some(Theme::window_background()));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn terminal_window_leaves_escape_to_the_shell(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (window_view, vcx) = cx.add_window_view(|window, cx| {
+            let terminal =
+                cx.new(|cx| TerminalPanel::new(None, None, None, HostHandle::inert(), cx));
+            PanelWindow::new(
+                PanelItem::Terminal(terminal),
+                None,
+                None,
+                window.window_handle(),
+            )
+        });
+        vcx.run_until_parked();
+        let item = window_view.read_with(vcx, |view, _| view.item.clone());
+        vcx.update(|window, cx| item.focus_input(window, cx));
+        vcx.simulate_keystrokes("escape");
+        assert!(!window_view.read_with(vcx, |view, _| view.finished));
     }
 
     #[gpui::test]
@@ -349,7 +424,7 @@ mod tests {
                 .into_iter()
                 .find_map(|handle| {
                     let handle = handle.downcast::<PanelWindow>()?;
-                    Some((handle, handle.read(cx).ok()?.panel.clone()))
+                    Some((handle, handle.read(cx).ok()?.chat()?.clone()))
                 })
                 .unwrap()
         });

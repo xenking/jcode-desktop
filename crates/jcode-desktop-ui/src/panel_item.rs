@@ -157,7 +157,6 @@ impl PanelItem {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn terminal(&self) -> Option<&Entity<TerminalPanel>> {
         match self {
             Self::Chat(_) => None,

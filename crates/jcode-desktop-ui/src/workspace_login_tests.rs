@@ -319,7 +319,8 @@ fn single_panel_accounts_choose_model_closes_accounts_and_opens_shared_picker(
         .downcast::<panel_window::PanelWindow>()
         .unwrap()
         .update(vcx, |root, _, cx| {
-            root.panel
+            root.chat()
+                .unwrap()
                 .update(cx, |_, cx| cx.emit(crate::panel::AccountsPanelChooseModel));
         })
         .unwrap();
@@ -412,7 +413,9 @@ fn reset_composer_command_opens_read_only_claude_review(cx: &mut gpui::TestAppCo
     submit(vcx, "/reset usage limits claude");
     assert!(vcx.debug_bounds("usage-reset-dialog").is_some());
     workspace.read_with(vcx, |w, cx| {
-        let dialog = w.active_modal::<usage_reset::UsageReset>(cx).expect("reset dialog");
+        let dialog = w
+            .active_modal::<usage_reset::UsageReset>(cx)
+            .expect("reset dialog");
         let dialog = dialog.read(cx);
         assert_eq!(dialog.provider, crate::accounts::ResetProvider::Claude);
         // Tests never reach the network, so the dialog stays in its read-only check.
