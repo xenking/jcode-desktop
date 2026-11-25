@@ -3,9 +3,10 @@
 //! capability consent prompt, applet toasts, and the applet settings list.
 use super::applets::SHOWCASE_ID;
 use super::*;
+use crate::applet_runtime::ConsentRow;
 use gpui::FontWeight;
 use jcode_applet_types::{
-    Capability, Placement,
+    Placement,
     placement::{Corner, Scope},
 };
 
@@ -26,13 +27,7 @@ impl Workspace {
         let active = self.slots.get(self.active).map(|slot| self.panel_metadata(slot, cx));
         let dir = active.and_then(|panel| panel.working_dir.as_deref());
         let session = active.map(|panel| panel.session_id.as_str());
-        runtime
-            .host
-            .borrow()
-            .at(filter)
-            .filter(|mounted| crate::applet_host::AppletHost::in_scope(mounted, dir, session))
-            .map(|mounted| mounted.instance.id.clone())
-            .collect()
+        runtime.instance_ids(filter, Some((dir, session)))
     }
 
     /// Compact cards for sidebar-placed instances. Manifest sidebar launchers
@@ -95,8 +90,6 @@ impl Workspace {
         let mut corners: Vec<(Corner, Vec<gpui::AnyElement>)> = Vec::new();
         for instance in instances {
             let corner = crate::applet_runtime::get(cx)
-                .host
-                .borrow()
                 .instance(&instance)
                 .and_then(|mounted| match mounted.instance.placement {
                     Placement::Overlay { corner } => Some(corner),
@@ -146,8 +139,6 @@ impl Workspace {
     ) -> Option<gpui::AnyElement> {
         let pending = cx
             .try_global::<crate::applet_runtime::Runtime>()?
-            .host
-            .borrow()
             .pending_consent();
         let (manifest, capabilities) = pending
             .into_iter()
@@ -290,23 +281,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let runtime = cx.try_global::<crate::applet_runtime::Runtime>()?;
-        let host = runtime.host.borrow();
-        let rows: Vec<(String, String, Vec<Capability>, bool)> = host
-            .manifests()
-            .filter(|manifest| !manifest.capabilities.is_empty())
-            .filter(|manifest| {
-                manifest.id != SHOWCASE_ID && manifest.id != jcode_applet_types::agent::APPLET_ID
-            })
-            .map(|manifest| {
-                (
-                    manifest.id.clone(),
-                    manifest.title.clone(),
-                    host.effective(&manifest.id),
-                    host.grants().contains_key(&manifest.id),
-                )
-            })
-            .collect();
-        drop(host);
+        let rows = runtime.consent_rows(&[SHOWCASE_ID, jcode_applet_types::agent::APPLET_ID]);
         if rows.is_empty() {
             return None;
         }
@@ -317,7 +292,13 @@ impl Workspace {
             .flex_col()
             .gap_1()
             .child(div().pt_2().text_color(theme.TEXT_DIM).child("Applets"));
-        for (id, title, granted, decided) in rows {
+        for ConsentRow {
+            id,
+            title,
+            granted,
+            decided,
+        } in rows
+        {
             let summary = if !decided {
                 "Not asked yet".to_owned()
             } else if granted.is_empty() {

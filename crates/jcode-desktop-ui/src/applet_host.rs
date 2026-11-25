@@ -109,12 +109,22 @@ impl AppletHost {
         self.trusted.insert(applet.to_owned());
     }
 
-    pub fn grants(&self) -> &Grants {
-        &self.grants
+    /// A host that starts with the user's saved capability decisions.
+    pub fn with_grants(grants: Grants) -> Self {
+        Self {
+            grants,
+            ..Self::default()
+        }
     }
 
-    pub fn set_grants(&mut self, grants: Grants) {
-        self.grants = grants;
+    /// The decisions as pretty JSON, for saving them between runs.
+    pub fn grants_json(&self) -> serde_json::Result<Vec<u8>> {
+        serde_json::to_vec_pretty(&self.grants)
+    }
+
+    /// Whether the user has been asked about this applet, whatever the answer.
+    pub fn has_decided(&self, applet: &str) -> bool {
+        self.grants.contains_key(applet)
     }
 
     /// Record the user's decision. Denying records an empty set, so the
@@ -339,8 +349,9 @@ impl AppletHost {
     }
 
     /// Pending messages, each addressed to the applet (provider) it concerns.
+    /// Each is handed out once.
     pub fn drain_outbox(&mut self) -> Vec<(String, HostMessage)> {
-        std::mem::take(&mut self.outbox)
+        self.outbox.drain(..).collect()
     }
 
     fn reject(
@@ -698,6 +709,8 @@ impl AppletHost {
 pub(crate) struct AssetCache {
     by_hash: HashMap<[u8; 32], std::sync::Arc<gpui::Image>>,
 }
+
+impl gpui::Global for AssetCache {}
 
 impl AssetCache {
     pub fn image(&mut self, mime: &str, base64_data: &str) -> Option<std::sync::Arc<gpui::Image>> {

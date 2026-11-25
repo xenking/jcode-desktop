@@ -170,7 +170,7 @@ fn session_tasks_follow_todo_events_without_applet_revision(cx: &mut gpui::TestA
         vcx.update(|_, cx| {
             assert_eq!(
                 crate::applet_runtime::get(cx)
-                    .host
+                    .host()
                     .borrow()
                     .instance(&id)
                     .unwrap()
@@ -321,7 +321,7 @@ fn transcript_applet_keeps_draft_and_routes_real_click(cx: &mut gpui::TestAppCon
     vcx.update(|_, cx| {
         assert_eq!(
             crate::applet_runtime::get(cx)
-                .host
+                .host()
                 .borrow()
                 .state(&id, "note"),
             Some(&json!("note"))
@@ -337,7 +337,7 @@ fn transcript_applet_keeps_draft_and_routes_real_click(cx: &mut gpui::TestAppCon
     vcx.update(|_, cx| {
         assert_eq!(
             crate::applet_runtime::get(cx)
-                .host
+                .host()
                 .borrow()
                 .state(&id, "note"),
             Some(&json!("note!"))
@@ -347,7 +347,7 @@ fn transcript_applet_keeps_draft_and_routes_real_click(cx: &mut gpui::TestAppCon
     vcx.simulate_click(button.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     vcx.update(|_, cx| {
-        let outbox = crate::applet_runtime::get(cx).agent_outbox.borrow();
+        let outbox = crate::applet_runtime::get(cx).agent_outbox().borrow();
         assert!(matches!(&outbox[..], [AgentOutbound::Action { session_id, instance, action, state, source_key }] if session_id == "session-a" && instance == "review" && action.action == "approve" && state["note"] == "note!" && source_key.as_deref() == Some("approve")), "{outbox:?}");
     });
     vcx.update(|_, cx| {
@@ -358,7 +358,7 @@ fn transcript_applet_keeps_draft_and_routes_real_click(cx: &mut gpui::TestAppCon
     vcx.update(|_, cx| {
         assert_eq!(
             crate::applet_runtime::get(cx)
-                .host
+                .host()
                 .borrow()
                 .state(&id, "note"),
             Some(&json!("reset"))
@@ -371,7 +371,7 @@ fn transcript_applet_keeps_draft_and_routes_real_click(cx: &mut gpui::TestAppCon
     vcx.update(|_, cx| {
         assert_eq!(
             crate::applet_runtime::get(cx)
-                .host
+                .host()
                 .borrow()
                 .state(&id, "note"),
             Some(&json!("reset!"))
@@ -387,7 +387,7 @@ fn transcript_applet_keeps_draft_and_routes_real_click(cx: &mut gpui::TestAppCon
     vcx.update(|_, cx| {
         assert_eq!(
             crate::applet_runtime::get(cx)
-                .host
+                .host()
                 .borrow()
                 .state(&id, "note"),
             Some(&json!("new"))

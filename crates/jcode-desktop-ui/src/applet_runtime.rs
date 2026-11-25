@@ -11,9 +11,9 @@
 //! A misbehaving provider can only affect its own instances: every message is
 //! validated by the host, output lines are size-capped, and a crashed process
 //! is reported on its instances rather than taking the UI down.
-use crate::applet_host::{AppletHost, AssetCache, Effect};
+use crate::applet_host::{AppletHost, Effect, Mounted};
 use gpui::{App, Global};
-use jcode_applet_types::{HostMessage, ProviderMessage};
+use jcode_applet_types::{Capability, HostMessage, Manifest, Placement, ProviderMessage};
 use serde::Deserialize;
 use std::{
     cell::RefCell,
@@ -61,20 +61,19 @@ struct InstanceWriteback {
 }
 
 pub(crate) struct Runtime {
-    pub host: RefCell<AppletHost>,
-    pub assets: RefCell<AssetCache>,
+    host: RefCell<AppletHost>,
     processes: RefCell<HashMap<String, Process>>,
     inbound_tx: mpsc::Sender<Inbound>,
     inbound_rx: RefCell<mpsc::Receiver<Inbound>>,
     /// Host effects that need workspace access (new chats, prompts).
-    pub effects: RefCell<Vec<Effect>>,
+    effects: RefCell<Vec<Effect>>,
     /// Toasts waiting to be shown by the workspace.
-    pub toasts: RefCell<Vec<(String, jcode_applet_types::view::Tone)>>,
+    toasts: RefCell<Vec<(String, jcode_applet_types::view::Tone)>>,
     /// Bumped on every visible change, so views know to re-render.
     pub generation: std::cell::Cell<u64>,
     /// Actions on agent instances, for the workspace to forward to the SDK:
     /// `(session_id, local instance id, message)`.
-    pub agent_outbox: RefCell<Vec<AgentOutbound>>,
+    agent_outbox: RefCell<Vec<AgentOutbound>>,
     /// Last accepted server state, separate from locally edited host state.
     agent_states: RefCell<HashMap<String, serde_json::Value>>,
     /// Persistent instances were restored from disk once per process.
@@ -84,6 +83,25 @@ pub(crate) struct Runtime {
     /// Launches requested before their provider registered, such as a
     /// shortcut pressed while a local applet is still starting.
     pending_launches: RefCell<Vec<(String, jcode_applet_types::manifest::Trigger)>>,
+}
+
+/// Queued for the workspace by applets and agent instances.
+pub(crate) struct Work {
+    /// Intents on agent instances, bound for the SDK.
+    pub agent: Vec<AgentOutbound>,
+    /// Effects that start chats or send prompts.
+    pub effects: Vec<Effect>,
+    /// Toasts to show.
+    pub toasts: Vec<(String, jcode_applet_types::view::Tone)>,
+}
+
+/// An applet's row in settings.
+pub(crate) struct ConsentRow {
+    pub id: String,
+    pub title: String,
+    pub granted: Vec<Capability>,
+    /// Whether the user was asked, whatever they answered.
+    pub decided: bool,
 }
 
 /// A user intent on an agent-mounted instance, bound for the SDK.
@@ -123,7 +141,11 @@ impl Global for Runtime {}
 impl Default for Runtime {
     fn default() -> Self {
         let (inbound_tx, inbound_rx) = mpsc::channel();
-        let mut host = AppletHost::new();
+        let mut host = if cfg!(test) {
+            AppletHost::new()
+        } else {
+            AppletHost::with_grants(load_grants())
+        };
         host.trust(SHOWCASE_ID);
         host.trust(jcode_applet_types::agent::APPLET_ID);
         let _ = host.apply(
@@ -132,12 +154,8 @@ impl Default for Runtime {
                 manifest: jcode_applet_types::agent::manifest(),
             },
         );
-        if !cfg!(test) {
-            host.set_grants(load_grants());
-        }
         Self {
             host: RefCell::new(host),
-            assets: RefCell::new(AssetCache::default()),
             processes: RefCell::new(HashMap::new()),
             inbound_tx,
             inbound_rx: RefCell::new(inbound_rx),
@@ -172,6 +190,115 @@ pub(crate) fn get(cx: &mut App) -> &Runtime {
 impl Runtime {
     fn bump(&self) {
         self.generation.set(self.generation.get() + 1);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn host(&self) -> &RefCell<AppletHost> {
+        &self.host
+    }
+
+    #[cfg(test)]
+    pub(crate) fn agent_outbox(&self) -> &RefCell<Vec<AgentOutbound>> {
+        &self.agent_outbox
+    }
+
+    /// A copy of one mounted instance.
+    pub fn instance(&self, id: &str) -> Option<Mounted> {
+        self.host.borrow().instance(id).cloned()
+    }
+
+    /// What an applet may do right now: declared and granted.
+    pub fn effective(&self, applet: &str) -> Vec<Capability> {
+        self.host.borrow().effective(applet)
+    }
+
+    /// Ids of the instances whose placement passes `placement`, and, when
+    /// `scope` is given as `(working dir, session)`, that are visible there.
+    pub fn instance_ids(
+        &self,
+        placement: impl Fn(&Placement) -> bool,
+        scope: Option<(Option<&str>, Option<&str>)>,
+    ) -> Vec<String> {
+        self.host
+            .borrow()
+            .at(placement)
+            .filter(|mounted| {
+                scope.is_none_or(|(dir, session)| AppletHost::in_scope(mounted, dir, session))
+            })
+            .map(|mounted| mounted.instance.id.clone())
+            .collect()
+    }
+
+    /// Inline, composer and sidebar instances shown with one session.
+    pub fn inline_instances(&self, session_id: &str) -> Vec<Mounted> {
+        self.host.borrow().inline_for(session_id).cloned().collect()
+    }
+
+    /// Composer strip instances of one session.
+    pub fn composer_instance_ids(&self, session_id: &str) -> Vec<String> {
+        self.host
+            .borrow()
+            .composer_for(session_id)
+            .map(|mounted| mounted.instance.id.clone())
+            .collect()
+    }
+
+    /// The instance that replaces a tool call's generic row.
+    pub fn tool_card_instance_id(&self, session_id: &str, call_id: &str) -> Option<String> {
+        self.host
+            .borrow()
+            .tool_card(session_id, call_id)
+            .map(|mounted| mounted.instance.id.clone())
+    }
+
+    /// Whether some applet draws results of `tool` itself.
+    pub fn claims_tool(&self, tool: &str) -> bool {
+        self.host
+            .borrow()
+            .manifests()
+            .any(|manifest| manifest.tool_cards.iter().any(|claim| claim.tool == tool))
+    }
+
+    /// Applets waiting for the user's decision on capabilities they declared.
+    pub fn pending_consent(&self) -> Vec<(Manifest, Vec<Capability>)> {
+        self.host.borrow().pending_consent()
+    }
+
+    /// One settings row per applet that declares capabilities, except the
+    /// `hidden` ones.
+    pub fn consent_rows(&self, hidden: &[&str]) -> Vec<ConsentRow> {
+        let host = self.host.borrow();
+        host.manifests()
+            .filter(|manifest| !manifest.capabilities.is_empty())
+            .filter(|manifest| !hidden.contains(&manifest.id.as_str()))
+            .map(|manifest| ConsentRow {
+                id: manifest.id.clone(),
+                title: manifest.title.clone(),
+                granted: host.effective(&manifest.id),
+                decided: host.has_decided(&manifest.id),
+            })
+            .collect()
+    }
+
+    /// Queue a host effect that needs the workspace (new chat, prompt).
+    pub fn defer_effect(&self, effect: Effect) {
+        self.effects.borrow_mut().push(effect);
+    }
+
+    /// Whether [`Self::take_work`] would return anything.
+    pub fn has_work(&self) -> bool {
+        !self.agent_outbox.borrow().is_empty()
+            || !self.effects.borrow().is_empty()
+            || !self.toasts.borrow().is_empty()
+    }
+
+    /// Everything queued for the workspace, handed out once.
+    pub fn take_work(&self) -> Work {
+        Work {
+            agent: self.agent_outbox.borrow_mut().drain(..).collect(),
+            effects: self.effects.borrow_mut().drain(..).collect(),
+            toasts: self.toasts.borrow_mut().drain(..).collect(),
+        }
     }
 
     /// Apply a message from an in-process provider.
@@ -393,7 +520,7 @@ impl Runtime {
         }
         let Some(dir) = applets_dir() else { return };
         let _ = std::fs::create_dir_all(&dir);
-        if let Ok(json) = serde_json::to_vec_pretty(self.host.borrow().grants()) {
+        if let Ok(json) = self.host.borrow().grants_json() {
             let _ = std::fs::write(dir.join("grants.json"), json);
         }
     }

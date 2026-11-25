@@ -106,12 +106,8 @@ impl Workspace {
     pub(crate) fn sync_applet_panels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let runtime = crate::applet_runtime::get(cx);
         runtime.pump();
-        let wanted: Vec<String> = runtime
-            .host
-            .borrow()
-            .at(|placement| matches!(placement, Placement::Panel { .. }))
-            .map(|mounted| mounted.instance.id.clone())
-            .collect();
+        let wanted: Vec<String> =
+            runtime.instance_ids(|placement| matches!(placement, Placement::Panel { .. }), None);
         for instance in wanted {
             let session_id = format!("{}{instance}", crate::panel::applet_panel::APPLET_PREFIX);
             let shown = self
@@ -243,11 +239,7 @@ impl Workspace {
             } => (call_id, name, Some(output), error.as_ref(), true),
             _ => return,
         };
-        let claimed = crate::applet_runtime::get(cx)
-            .host
-            .borrow()
-            .manifests()
-            .any(|manifest| manifest.tool_cards.iter().any(|claim| &claim.tool == tool));
+        let claimed = crate::applet_runtime::get(cx).claims_tool(tool);
         if !claimed {
             return;
         }
@@ -275,10 +267,11 @@ impl Workspace {
     /// Deliver queued applet work that needs the workspace: agent intents
     /// to the SDK, new chats and prompts, and toasts.
     pub(crate) fn drain_applet_work(&mut self, cx: &mut Context<Self>) {
-        let runtime = crate::applet_runtime::get(cx);
-        let outbound = std::mem::take(&mut *runtime.agent_outbox.borrow_mut());
-        let effects = std::mem::take(&mut *runtime.effects.borrow_mut());
-        let toasts = std::mem::take(&mut *runtime.toasts.borrow_mut());
+        let crate::applet_runtime::Work {
+            agent: outbound,
+            effects,
+            toasts,
+        } = crate::applet_runtime::get(cx).take_work();
         for message in outbound {
             let (session_id, operation) = match message {
                 crate::applet_runtime::AgentOutbound::Action {
@@ -366,10 +359,8 @@ impl Workspace {
         let focus = crate::applet_runtime::get(cx).launch(applet, index);
         if let Some(instance) = focus {
             let placement = crate::applet_runtime::get(cx)
-                .host
-                .borrow()
                 .instance(&instance)
-                .map(|mounted| mounted.instance.placement.clone());
+                .map(|mounted| mounted.instance.placement);
             if matches!(placement, Some(Placement::Panel { .. })) {
                 self.open_applet_instance(&instance, window, cx);
             }
@@ -401,9 +392,7 @@ pub(crate) fn install(workspace: &Entity<Workspace>, window: &mut Window, app: &
                     let runtime = crate::applet_runtime::get(app);
                     runtime.pump();
                     let generation = runtime.generation.get();
-                    let pending = !runtime.agent_outbox.borrow().is_empty()
-                        || !runtime.effects.borrow().is_empty()
-                        || !runtime.toasts.borrow().is_empty();
+                    let pending = runtime.has_work();
                     if pending {
                         workspace.update(app, |workspace, cx| workspace.drain_applet_work(cx));
                     }

@@ -2,7 +2,7 @@
 //! placement: panels, transcript cards, composer strips, sidebar sections and
 //! overlays. One code path means an instance behaves identically wherever it
 //! is placed, and `Move` never changes how its controls work.
-use crate::applet_host::Effect;
+use crate::applet_host::{AssetCache, Effect};
 use crate::applet_view::{self, RenderCx, ViewEvent};
 use crate::text_selection::TextSelection;
 use crate::theme::Theme;
@@ -27,10 +27,7 @@ pub(crate) fn handle(instance: &str, event: ViewEvent, app: &mut App) -> Option<
         Some(Effect::Copy(text)) => app.write_to_clipboard(ClipboardItem::new_string(text.clone())),
         Some(Effect::OpenFile(path)) => app.open_with_system(std::path::Path::new(path)),
         Some(effect @ (Effect::StartChat { .. } | Effect::SendPrompt { .. })) => {
-            crate::applet_runtime::get(app)
-                .effects
-                .borrow_mut()
-                .push(effect.clone());
+            crate::applet_runtime::get(app).defer_effect(effect.clone());
         }
         _ => {}
     }
@@ -59,11 +56,11 @@ pub(crate) fn render_document(
     app: &mut App,
 ) -> Option<AnyElement> {
     let runtime = crate::applet_runtime::get(app);
-    let mounted = runtime.host.borrow().instance(instance).cloned()?;
+    let mounted = runtime.instance(instance)?;
     // The cache is moved out while rendering so the global is not borrowed
     // across element construction, then moved back.
-    let granted = runtime.host.borrow().effective(&mounted.instance.applet);
-    let assets = std::cell::RefCell::new(std::mem::take(&mut *runtime.assets.borrow_mut()));
+    let granted = runtime.effective(&mounted.instance.applet);
+    let assets = std::cell::RefCell::new(std::mem::take(app.default_global::<AssetCache>()));
     let render_cx = RenderCx {
         granted: &granted,
         scope: instance,
@@ -79,7 +76,7 @@ pub(crate) fn render_document(
         }),
     };
     let element = applet_view::render(&render_cx, window, app);
-    *crate::applet_runtime::get(app).assets.borrow_mut() = assets.into_inner();
+    *app.default_global::<AssetCache>() = assets.into_inner();
     Some(element)
 }
 
@@ -105,11 +102,7 @@ pub(crate) fn card_with_tasks(
     app: &mut App,
 ) -> Option<AnyElement> {
     let theme = Theme::global();
-    let mounted = crate::applet_runtime::get(app)
-        .host
-        .borrow()
-        .instance(instance)
-        .cloned()?;
+    let mounted = crate::applet_runtime::get(app).instance(instance)?;
     let body = render_document(
         instance,
         true,
