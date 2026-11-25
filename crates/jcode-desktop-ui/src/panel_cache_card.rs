@@ -61,7 +61,7 @@ impl CacheTelemetry {
     }
 
     pub(in crate::panel) fn last_hit_rate(&self) -> Option<f32> {
-        self.usage.last.and_then(Tokens::percent)
+        self.usage.last_hit_rate()
     }
 
     pub(in crate::panel) fn miss(&mut self, notice: &CacheMissNotice) {
@@ -385,11 +385,7 @@ fn usage_row(
     let pct = tokens.and_then(Tokens::percent);
     let value = pct.map_or_else(|| NOT_REPORTED.into(), |pct| format!("{pct:.0}% cached"));
     let details = tokens.map(|tokens| {
-        let (remainder, label) = if tokens.written.is_none() {
-            (tokens.not_read(), "not read")
-        } else {
-            (tokens.uncached(), "uncached")
-        };
+        let (remainder, label) = tokens.remainder();
         format!(
             "{} read · {} written · {} {label} · {count} {}",
             amount(tokens.read),
