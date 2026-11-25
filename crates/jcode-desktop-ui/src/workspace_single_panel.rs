@@ -52,7 +52,7 @@ impl Workspace {
                 // `render_strip`.
                 div()
                     .size_full()
-                    .child(slot.panel.view())
+                    .child(slot.panel.surface().view())
                     .into_any_element()
             }
         });
@@ -363,7 +363,7 @@ mod tests {
             assert!(match utility {
                 Utility::Accounts => item.read_chat(cx).is_some_and(Panel::is_accounts_panel),
                 Utility::Review => item.read_chat(cx).is_some_and(Panel::is_change_review),
-                Utility::Changelog => item.is_changelog(),
+                Utility::Changelog => item.profile().is_changelog(),
             });
             item
         });
