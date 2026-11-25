@@ -517,20 +517,7 @@ impl Workspace {
             Some((provider, model, method)) => (Some(provider), Some(model), method),
             None => (None, None, None),
         };
-        panel.update(cx, |panel, cx| {
-            if panel.provider == provider && panel.model == model && panel.auth_method == method {
-                return;
-            }
-            panel.provider = provider;
-            panel.auth_method = method;
-            if panel.model != model {
-                panel.model = model.clone();
-                panel
-                    .input
-                    .update(cx, |input, cx| input.set_current_model(model, cx));
-            }
-            cx.notify();
-        });
+        panel.update(cx, |panel, cx| panel.show_identity(provider, model, method, cx));
     }
 
     /// Right-half action: import the checked logins, then enter the workspace.
@@ -593,7 +580,7 @@ impl Workspace {
         self.continue_account_sign_in(window, cx);
         let usable = self.slots.get(self.active).is_some_and(|slot| {
             slot.panel.read_chat(cx).is_some_and(|panel| {
-                panel.preview_state.is_none()
+                !panel.is_preview()
                     && !panel.is_default_directory()
                     && !panel.is_machines()
             })
@@ -1646,7 +1633,7 @@ impl Workspace {
             .map(|demo| demo.panel.clone());
         let composer = demo
             .as_ref()
-            .and_then(|panel| panel.read(cx).input.read(cx).voice_bounds());
+            .and_then(|panel| panel.read(cx).composer_voice_bounds(cx));
         div()
             .id("account-sign-in-right")
             .debug_selector(|| "account-sign-in-right".into())
