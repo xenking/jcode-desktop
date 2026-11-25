@@ -1944,7 +1944,6 @@ mod tests {
     #[gpui::test]
     fn voice_shortcut_toggles_focused_composer_without_sending(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            crate::input::bind_keys(cx);
             crate::bind_workspace_keys(cx);
             // Reloading the keymap must not dispatch the toggle twice.
             crate::bind_workspace_keys(cx);

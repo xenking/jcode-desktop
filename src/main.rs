@@ -52,6 +52,14 @@ actions!(
     [ReloadUi, RebuildAndReloadUi, RollbackUi]
 );
 
+fn bind_reload_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("ctrl-r", RebuildAndReloadUi, None),
+        KeyBinding::new("ctrl-shift-r", RebuildAndReloadUi, None),
+        KeyBinding::new("f6", RollbackUi, None),
+    ]);
+}
+
 fn rebuild_ui(force: bool) -> anyhow::Result<()> {
     let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     // Unify dependency features with the host build. Building only the plugin
@@ -714,13 +722,7 @@ fn main() {
             std::future::ready(())
         })
         .detach();
-        cx.bind_keys([
-            // Ctrl+R must always activate code built from the current checkout,
-            // rather than silently reloading a stale cdylib from an earlier build.
-            KeyBinding::new("ctrl-r", RebuildAndReloadUi, None),
-            KeyBinding::new("ctrl-shift-r", RebuildAndReloadUi, None),
-            KeyBinding::new("f6", RollbackUi, None),
-        ]);
+        bind_reload_keys(cx);
 
         let (width, height) = launch_mode.initial_window_size();
         let width = if control_fixture {

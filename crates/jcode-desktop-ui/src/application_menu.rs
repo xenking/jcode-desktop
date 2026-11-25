@@ -48,6 +48,16 @@ fn show_about(cx: &mut App) {
     });
 }
 
+pub(super) fn bind_keys(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        gpui::KeyBinding::new("cmd-,", OpenSettings, None),
+        gpui::KeyBinding::new("cmd-alt-h", HideOthers, None),
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    let _ = cx;
+}
+
 /// Install the native macOS menu without changing other platforms' shortcuts.
 ///
 /// The workspace owns `OpenSettings`, New Session, and Quit. Global native
@@ -55,8 +65,6 @@ fn show_about(cx: &mut App) {
 pub fn init(cx: &mut App) {
     #[cfg(any(target_os = "macos", test))]
     {
-        use gpui::KeyBinding;
-
         let already_registered = cx.try_global::<MenuCallbacks>().is_some();
         cx.set_global(MenuCallbacks {
             check_for_updates: |cx| {
@@ -90,10 +98,6 @@ pub fn init(cx: &mut App) {
                 callback(cx);
             });
         }
-        cx.bind_keys([
-            KeyBinding::new("cmd-,", OpenSettings, None),
-            KeyBinding::new("cmd-alt-h", HideOthers, None),
-        ]);
         // Keep Jcode's existing navigation and closing conventions. Cmd-H
         // focuses left, Cmd-Q closes a panel, and Cmd-Shift-Q quits. Hide is
         // still available from the menu without stealing a workspace shortcut.

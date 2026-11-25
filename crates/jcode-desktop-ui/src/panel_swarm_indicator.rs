@@ -934,6 +934,7 @@ mod tests {
     fn effort_and_mode_pills_toggle_with_mouse_and_can_open_with_enter_or_space(
         cx: &mut gpui::TestAppContext,
     ) {
+        cx.update(crate::bind_workspace_keys);
         let (panel, vcx) = setup(cx);
         panel.update(vcx, |panel, cx| {
             panel.apply(

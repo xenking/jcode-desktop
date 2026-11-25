@@ -13,10 +13,7 @@ fn setup_with_email(
     cx: &mut gpui::TestAppContext,
     email: bool,
 ) -> (Entity<Workspace>, &mut gpui::VisualTestContext) {
-    cx.update(|cx| {
-        crate::bind_workspace_keys(cx);
-        crate::input::bind_keys(cx);
-    });
+    cx.update(crate::bind_workspace_keys);
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
         w.account_sign_in.email = email;

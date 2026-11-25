@@ -3041,6 +3041,7 @@ mod tests {
     }
     #[gpui::test]
     fn resume_aliases_open_locally_from_startup_in_both_modes(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
         for single_panel in [false, true] {
             let (workspace, vcx) = cx.add_window_view(|_, cx| {
                 let mut w = Workspace::for_test(learning::Coach::new(), cx);

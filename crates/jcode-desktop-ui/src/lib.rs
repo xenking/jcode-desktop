@@ -129,9 +129,19 @@ use workspace::{
     WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
 };
 
-/// The workspace keymap. Extracted so tests can dispatch through exactly the
-/// bindings the user presses, rather than a second copy that could drift.
+/// Replace the UI keymap without changing the host's reload and rollback shortcuts.
 pub fn bind_workspace_keys(cx: &mut App) {
+    let host_bindings: Vec<_> = cx
+        .key_bindings()
+        .borrow()
+        .bindings()
+        .filter(|binding| binding.action().name().starts_with("jcode_desktop_host::"))
+        .cloned()
+        .collect();
+    cx.clear_key_bindings();
+    if !host_bindings.is_empty() {
+        cx.bind_keys(host_bindings);
+    }
     code_editor::bind_keys(cx);
     terminal::bind_keys(cx);
     panel::voice::bind_keys(cx);
@@ -273,6 +283,30 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("cmd-/", ToggleHints, None),
         KeyBinding::new("cmd-shift-q", Quit, None),
     ]);
+
+    input::bind_keys(cx);
+    application_menu::bind_keys(cx);
+}
+
+struct InstalledKeymap {
+    generation: &'static u8,
+    version: gpui::KeymapVersion,
+}
+
+impl gpui::Global for InstalledKeymap {}
+
+fn activate_keymap(cx: &mut App, generation: &'static u8) {
+    let keymap = cx.key_bindings();
+    if cx.try_global::<InstalledKeymap>().is_some_and(|active| {
+        std::ptr::eq(active.generation, generation) && active.version == keymap.borrow().version()
+    }) {
+        return;
+    }
+    bind_workspace_keys(cx);
+    cx.set_global(InstalledKeymap {
+        generation,
+        version: keymap.borrow().version(),
+    });
 }
 
 use jcode_desktop_api::{
@@ -350,7 +384,10 @@ unsafe extern "C-unwind" fn activate(
         // WindowOptions before mapping. Updating WM_CLASS during initial X11
         // setup can disrupt the first paint, so defer until the next frame.
         window.on_next_frame(|window, _| window.set_app_id(APP_ID));
-        bind_workspace_keys(app);
+        // Each linked or loaded UI image owns a distinct static. The host calls
+        // activate for each window, including when it restores an earlier image.
+        static KEYMAP_GENERATION: u8 = 0;
+        activate_keymap(app, &KEYMAP_GENERATION);
         app.on_action(|_: &Quit, cx| {
             // A shared single-panel host owns other people's windows. Quit
             // closes this one; the process exits after its last window.
@@ -489,8 +526,6 @@ unsafe extern "C-unwind" fn activate(
                 }
             }
         });
-        // Workspace construction installs composer bindings. Native Edit menu
-        // key equivalents must be generated from that complete keymap.
         application_menu::init(app);
         if let Some(recovery) = recovery {
             use workspace::recovery::Claim;

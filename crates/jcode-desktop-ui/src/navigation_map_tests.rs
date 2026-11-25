@@ -59,6 +59,7 @@ fn repeated_keymap_installation_preserves_binding_count(cx: &mut gpui::TestAppCo
         })
     });
     assert!(counts[0] > 0);
+    eprintln!("bindings after three keymap installations: {counts:?}");
     assert_eq!(counts, [counts[0]; 3]);
 }
 
@@ -71,7 +72,30 @@ fn new_workspace_windows_preserve_binding_count(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.key_bindings().borrow().bindings().len())
     });
     assert!(initial > 0);
+    eprintln!("bindings after three workspace windows: {counts:?}");
     assert_eq!(counts, [initial; 3]);
+}
+
+#[gpui::test]
+fn keymap_changes_only_when_the_active_ui_generation_changes(cx: &mut gpui::TestAppContext) {
+    static LINKED: u8 = 0;
+    static RELOAD: u8 = 0;
+    cx.update(|cx| {
+        let keymap = cx.key_bindings();
+        let mut previous = keymap.borrow().version();
+        for generation in [&LINKED, &RELOAD, &LINKED] {
+            crate::activate_keymap(cx, generation);
+            let installed = keymap.borrow().version();
+            assert!(installed != previous);
+            crate::activate_keymap(cx, generation);
+            assert!(keymap.borrow().version() == installed);
+            previous = installed;
+        }
+        let bindings = keymap.borrow().bindings().len();
+        cx.bind_keys([gpui::KeyBinding::new("f12", FocusLeft, None)]);
+        crate::activate_keymap(cx, &LINKED);
+        assert_eq!(keymap.borrow().bindings().len(), bindings);
+    });
 }
 
 #[gpui::test]

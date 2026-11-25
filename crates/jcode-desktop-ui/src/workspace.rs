@@ -998,7 +998,6 @@ impl Workspace {
         snapshot: Option<WorkspaceSnapshot>,
         crash_launch: Option<jcode_desktop_api::WindowLaunch>,
     ) -> Self {
-        crate::input::bind_keys(cx);
         crate::init_harness();
         // Launch work that must not wait for a pane: a packaged build whose
         // release state is still `Unknown` shows no update badge, so a
@@ -1800,7 +1799,6 @@ impl Workspace {
     /// drive real keystrokes through the real keymap.
     #[cfg(test)]
     pub fn for_test(coach: learning::Coach, cx: &mut Context<Self>) -> Self {
-        crate::input::bind_keys(cx);
         Self {
             window_background: None,
             global_voice: Default::default(),
@@ -10209,9 +10207,8 @@ impl Render for Workspace {
             // the active panel currently owns keyboard focus. Capture these at
             // the workspace boundary so a terminal, composer, picker, or other
             // focused child cannot consume the action before it reaches us.
-            // Each handler must stop propagation explicitly: capture listeners
-            // propagate by default, allowing older hot-reload key bindings to
-            // execute the same motion again for a single physical keypress.
+            // Capture listeners propagate by default, so each handler stops
+            // propagation to keep focused children from handling the motion.
             .capture_action(cx.listener(Self::focus_left))
             .capture_action(cx.listener(Self::focus_right))
             .capture_action(cx.listener(Self::focus_up))
@@ -14563,10 +14560,7 @@ mod tests {
 
     #[gpui::test]
     fn session_shortcuts_use_the_directory_pinned_once(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            crate::bind_workspace_keys(cx);
-            crate::input::bind_keys(cx);
-        });
+        cx.update(crate::bind_workspace_keys);
         let root = tempfile::tempdir().unwrap();
         let favorite = root.path().join("favorite");
         let other = root.path().join("other");
@@ -17626,6 +17620,7 @@ mod tests {
 
     #[gpui::test]
     fn settings_default_send_mode_controls_active_panel(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("send-mode", cx);

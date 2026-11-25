@@ -778,6 +778,7 @@ fn legacy_machines_sidebar_restores_sessions() {
 fn startup_enter_queues_and_inline_local_recovery_preserves_it_without_remote_fallback(
     cx: &mut gpui::TestAppContext,
 ) {
+    cx.update(crate::bind_workspace_keys);
     let (bridge, commands) = harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|window, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
@@ -926,6 +927,7 @@ fn startup_enter_queues_and_inline_local_recovery_preserves_it_without_remote_fa
 
 #[gpui::test]
 fn cloud_startup_progress_and_failure_are_visible_in_the_composer(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
     let (workspace, vcx) = cx.add_window_view(|window, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
         w.remotes.default_host = Some("jcode-cloud-alpha".into());
