@@ -15,6 +15,22 @@ pub struct Destination {
 
 impl Destination {
     pub fn new(endpoint: &str, label: &str, working_dir: &str) -> Result<Self, String> {
+        Self::with_id(
+            uuid::Uuid::new_v4().simple().to_string(),
+            endpoint,
+            label,
+            working_dir,
+        )
+    }
+
+    /// Validate the same fields for a machine that keeps its id, such as one
+    /// that is paired again after the gateway revoked its token.
+    pub fn with_id(
+        id: String,
+        endpoint: &str,
+        label: &str,
+        working_dir: &str,
+    ) -> Result<Self, String> {
         let url =
             reqwest::Url::parse(endpoint.trim()).map_err(|_| "Enter a valid HTTPS endpoint")?;
         if url.scheme() != "https"
@@ -36,7 +52,7 @@ impl Destination {
             return Err("Enter an absolute remote project path".into());
         }
         Ok(Self {
-            id: uuid::Uuid::new_v4().simple().to_string(),
+            id,
             endpoint: url.to_string().trim_end_matches('/').to_owned(),
             label: label.into(),
             working_dir: working_dir.into(),
@@ -75,6 +91,19 @@ pub fn find(host: &str) -> Result<Destination, String> {
     Ok(destination)
 }
 
+fn write_all(destinations: &[Destination]) -> Result<(), String> {
+    let path = path();
+    let dir = path.parent().ok_or("Invalid paired machines path")?;
+    fs::create_dir_all(dir).map_err(|_| "Could not create paired machines directory")?;
+    let mut file =
+        tempfile::NamedTempFile::new_in(dir).map_err(|_| "Could not save paired machine")?;
+    serde_json::to_writer(&mut file, destinations).map_err(|_| "Could not encode paired machine")?;
+    file.flush().map_err(|_| "Could not save paired machine")?;
+    file.persist(path)
+        .map_err(|_| "Could not save paired machine")?;
+    Ok(())
+}
+
 pub fn save(destination: &Destination, token: &str) -> Result<(), String> {
     let _guard = WRITE_LOCK
         .lock()
@@ -85,23 +114,48 @@ pub fn save(destination: &Destination, token: &str) -> Result<(), String> {
     }
     set_token(&destination.id, token)?;
     destinations.push(destination.clone());
-    let result = (|| -> Result<(), String> {
-        let path = path();
-        let dir = path.parent().ok_or("Invalid paired machines path")?;
-        fs::create_dir_all(dir).map_err(|_| "Could not create paired machines directory")?;
-        let mut file =
-            tempfile::NamedTempFile::new_in(dir).map_err(|_| "Could not save paired machine")?;
-        serde_json::to_writer(&mut file, &destinations)
-            .map_err(|_| "Could not encode paired machine")?;
-        file.flush().map_err(|_| "Could not save paired machine")?;
-        file.persist(path)
-            .map_err(|_| "Could not save paired machine")?;
-        Ok(())
-    })();
+    let result = write_all(&destinations);
     if result.is_err() {
         let _ = delete_token(&destination.id);
     }
     result
+}
+
+/// Replace the token and details of an already paired machine, keeping its id
+/// so sessions and the default keep pointing at it.
+pub fn save_repaired(destination: &Destination, token: &str) -> Result<(), String> {
+    let _guard = WRITE_LOCK
+        .lock()
+        .map_err(|_| "Paired machine storage unavailable")?;
+    let mut destinations = list()?;
+    let slot = destinations
+        .iter_mut()
+        .find(|d| d.id == destination.id)
+        .ok_or("Paired machine not found")?;
+    *slot = destination.clone();
+    set_token(&destination.id, token)?;
+    write_all(&destinations)
+}
+
+/// Change the project path new sessions on this machine start in.
+pub fn set_working_dir(id: &str, working_dir: &str) -> Result<Destination, String> {
+    let _guard = WRITE_LOCK
+        .lock()
+        .map_err(|_| "Paired machine storage unavailable")?;
+    let mut destinations = list()?;
+    let slot = destinations
+        .iter_mut()
+        .find(|d| d.id == id)
+        .ok_or("Paired machine not found")?;
+    let updated = Destination::with_id(
+        slot.id.clone(),
+        &slot.endpoint,
+        &slot.label,
+        working_dir,
+    )?;
+    *slot = updated.clone();
+    write_all(&destinations)?;
+    Ok(updated)
 }
 
 #[cfg(target_os = "macos")]
@@ -150,5 +204,24 @@ mod tests {
         let d = Destination::new("https://host", "Work", "/work").unwrap();
         assert!(crate::remote_targets::paired_id(&d.host()).is_some());
         assert!(!serde_json::to_string(&d).unwrap().contains("token"));
+    }
+
+    #[test]
+    fn working_dir_is_editable_per_machine_and_validated() {
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: the only test in this crate touching JCODE_HOME for paired machines.
+        unsafe { std::env::set_var("JCODE_HOME", home.path()) };
+        let a = Destination::new("https://a.example", "A", "/a").unwrap();
+        let b = Destination::new("https://b.example", "B", "/b").unwrap();
+        write_all(&[a.clone(), b.clone()]).unwrap();
+        let updated = set_working_dir(&a.id, " /a/new ").unwrap();
+        assert_eq!(updated.working_dir, "/a/new");
+        assert_eq!(updated.label, "A");
+        assert!(set_working_dir(&a.id, "relative").is_err());
+        let listed = list().unwrap();
+        assert_eq!(listed[0].working_dir, "/a/new");
+        assert_eq!(listed[1].working_dir, "/b");
+        assert!(set_working_dir("missing", "/x").is_err());
+        unsafe { std::env::remove_var("JCODE_HOME") };
     }
 }

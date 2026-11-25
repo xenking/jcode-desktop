@@ -148,6 +148,9 @@ pub enum Update {
         message: String,
         request_id: Option<String>,
         failed: bool,
+        /// Set when a paired machine failed to connect. The owner-facing
+        /// sentence comes from it, not from `message`.
+        failure: Option<crate::connect_failure::ConnectFailure>,
     },
     RemoteSessions {
         request_id: u64,
@@ -1837,6 +1840,7 @@ fn run_with_transports(
                                         message: message.to_owned(),
                                         request_id: progress_request.clone(),
                                         failed: false,
+                                        failure: None,
                                     });
                                 })
                             },
@@ -2447,7 +2451,16 @@ fn list_remote_sessions(
     connect: impl FnOnce(&str) -> jcode_sdk::Result<JcodeClient>,
 ) -> Result<Vec<SessionInfo>, String> {
     let host = crate::remote_targets::validate_destination(host)?;
-    let client = connect(&host).map_err(|error| error.to_string())?;
+    let client = connect(&host).map_err(|error| {
+        if crate::remote_targets::paired_id(&host).is_some() {
+            let label = crate::paired::find(&host)
+                .map(|destination| destination.label)
+                .unwrap_or_else(|_| "this machine".into());
+            crate::connect_failure::ConnectFailure::from_error(&error).summary(&label)
+        } else {
+            error.to_string()
+        }
+    })?;
     let address = remote::SessionAddress {
         host: Some(host),
         session_id: String::new(),
@@ -2469,7 +2482,7 @@ fn create_remote_session(
     internal: Sender<Command>,
     connector: impl FnOnce(&str) -> jcode_sdk::Result<(JcodeClient, bool)>,
 ) {
-    let result = crate::remote_targets::validate_destination(&host).and_then(|host| {
+    let result = crate::remote_targets::validate_destination(&host).map_err(CreateFailure::from).and_then(|host| {
         let managed = crate::managed_cloud::Destination::parse(&host).is_some();
         let paired = crate::remote_targets::paired_id(&host).is_some();
         let _ = updates.send(Update::RemoteStatus {
@@ -2483,8 +2496,12 @@ fn create_remote_session(
             },
             request_id: request_id.clone(),
             failed: false,
+            failure: None,
         });
-        let (client, self_hosted) = connector(&host).map_err(|error| error.to_string())?;
+        let (client, self_hosted) = connector(&host).map_err(|error| CreateFailure {
+            message: error.to_string(),
+            failure: paired.then(|| crate::connect_failure::ConnectFailure::from_error(&error)),
+        })?;
         let _ = updates.send(Update::RemoteStatus {
             host: host.clone(),
             message: if managed || paired {
@@ -2494,6 +2511,7 @@ fn create_remote_session(
             },
             request_id: request_id.clone(),
             failed: false,
+            failure: None,
         });
         let working_dir = if paired && working_dir.is_none() {
             Some(crate::paired::find(&host)?.working_dir)
@@ -2507,7 +2525,7 @@ fn create_remote_session(
         });
         let mut session = client
             .create_session(working_dir.clone())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| CreateFailure::from(error.to_string()))?;
         if session.working_dir.as_deref().is_none_or(str::is_empty) {
             session.working_dir = working_dir;
         }
@@ -2529,6 +2547,7 @@ fn create_remote_session(
                     message,
                     request_id: request_id.clone(),
                     failed: false,
+                    failure: None,
                 });
             }
         }
@@ -2542,6 +2561,7 @@ fn create_remote_session(
                 message: format!("Connected to {}", host.trim()),
                 request_id: request_id.clone(),
                 failed: false,
+                failure: None,
             });
             let _ = internal.send(Command::CreatedInternal {
                 session,
@@ -2552,10 +2572,27 @@ fn create_remote_session(
         Err(error) => {
             let _ = updates.send(Update::RemoteStatus {
                 host,
-                message: format!("Remote session failed: {error}"),
+                message: format!("Remote session failed: {}", error.message),
                 request_id,
                 failed: true,
+                failure: error.failure,
             });
+        }
+    }
+}
+
+/// Why a remote create failed: a printable message, plus the typed cause when
+/// the destination is a paired machine.
+struct CreateFailure {
+    message: String,
+    failure: Option<crate::connect_failure::ConnectFailure>,
+}
+
+impl From<String> for CreateFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            failure: None,
         }
     }
 }

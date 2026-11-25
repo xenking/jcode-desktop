@@ -60,7 +60,10 @@ impl RemoteTransports {
                 jcode_sdk::Error::new(jcode_sdk::ErrorKind::InvalidOption, message)
             })?;
             let token = crate::paired::token(&destination.id).map_err(|message| {
-                jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, message)
+                jcode_sdk::Error::new(
+                    jcode_sdk::ErrorKind::Paired(jcode_sdk::PairedFailure::NoToken),
+                    message,
+                )
             })?;
             return JcodeClient::connect_paired_harness(
                 &destination.endpoint,

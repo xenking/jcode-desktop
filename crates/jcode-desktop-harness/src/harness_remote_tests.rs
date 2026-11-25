@@ -754,6 +754,34 @@ fn remote_create_failure_is_visible_and_never_retries_a_startup_draft() {
 }
 
 #[test]
+fn paired_create_failure_carries_the_typed_cause_and_ssh_failure_does_not() {
+    for (host, expect_typed) in [
+        ("paired:0123456789abcdef0123456789abcdef", true),
+        ("desktop", false),
+    ] {
+        let (internal, _created) = channel();
+        let (tx, updates) = update_channel();
+        create_remote_session(host.into(), None, Some("draft-id".into()), tx, internal, |_| {
+            Err(jcode_sdk::Error::new(
+                jcode_sdk::ErrorKind::Paired(jcode_sdk::PairedFailure::Unresolved),
+                "The gateway's name did not resolve",
+            ))
+        });
+        let update = wait_update(&updates, |update| {
+            matches!(update, Update::RemoteStatus { failed: true, .. })
+        });
+        let Update::RemoteStatus { failure, .. } = update else { unreachable!() };
+        assert_eq!(failure.is_some(), expect_typed, "{host}");
+        if let Some(failure) = failure {
+            assert_eq!(
+                failure.kind,
+                crate::connect_failure::FailureKind::Paired(jcode_sdk::PairedFailure::Unresolved)
+            );
+        }
+    }
+}
+
+#[test]
 fn invalid_remote_create_host_never_starts_a_transport() {
     let (internal, created) = channel();
     let (tx, updates) = update_channel();
