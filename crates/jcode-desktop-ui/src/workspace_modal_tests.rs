@@ -136,7 +136,7 @@ fn composer_focus(
 ) -> gpui::FocusHandle {
     vcx.update(|_, cx| {
         let w = workspace.read(cx);
-        w.slots[w.active].panel.input_focus_handle(cx)
+        w.slots[w.active].panel.surface().input_focus_handle(cx)
     })
 }
 
