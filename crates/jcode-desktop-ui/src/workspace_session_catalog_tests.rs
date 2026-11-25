@@ -618,7 +618,7 @@ fn session_refresh_updates_the_footer_directory_without_a_title(cx: &mut gpui::T
                 },
                 cx,
             );
-            assert_eq!(workspace.slots[slot].panel.working_dir(cx), Some(directory));
+            assert_eq!(workspace.slots[slot].panel.profile().working_dir(cx), Some(directory));
         }
         for directory in [None, Some("   ")] {
             session.working_dir = directory.map(str::to_owned);
@@ -629,7 +629,7 @@ fn session_refresh_updates_the_footer_directory_without_a_title(cx: &mut gpui::T
                 cx,
             );
             assert_eq!(
-                workspace.slots[slot].panel.working_dir(cx),
+                workspace.slots[slot].panel.profile().working_dir(cx),
                 Some("/srv/other")
             );
         }
