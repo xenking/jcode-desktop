@@ -649,7 +649,7 @@ fn super_t_opens_and_paints_a_plain_terminal_panel(cx: &mut gpui::TestAppContext
     // and verifies replayed output without opening a window.
     workspace.update(cx, |workspace, _| {
         assert!(
-            workspace.slots[0].panel.terminal().is_some(),
+            workspace.slots[0].panel.profile().terminal().is_some(),
             "terminal parser should exist even when the test host has no PTY"
         );
     });
