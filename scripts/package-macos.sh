@@ -19,6 +19,10 @@ DMG_ROOT="$OUT/dmg-root"
 ENTITLEMENTS="$ROOT/packaging/macos/Jcode.entitlements"
 SPARKLE_ROOT="${SPARKLE_ROOT:-$OUT/sparkle}"
 read -r -a TARGETS <<< "${PACKAGE_TARGETS:-aarch64-apple-darwin}"
+# Extra cargo features for the Desktop build, comma separated. A Mac without
+# the Metal toolchain passes `gpui_platform/runtime_shaders` so shaders compile
+# when the app starts instead of when it is built.
+DESKTOP_CARGO_FEATURES="${DESKTOP_CARGO_FEATURES:-}"
 
 if [[ "${GITHUB_ACTIONS:-}" != true || "${RUNNER_ENVIRONMENT:-}" != github-hosted ]]; then
   admission=(python3 "$JCODE_REPO/scripts/build-admission.py")
@@ -133,7 +137,8 @@ for target in "${TARGETS[@]}"; do rustup target add "$target"; done
 "$ROOT/scripts/fetch-sparkle.sh" "$SPARKLE_ROOT"
 
 for target in "${TARGETS[@]}"; do
-  cargo build --manifest-path "$ROOT/Cargo.toml" --release --target "$target"
+  cargo build --manifest-path "$ROOT/Cargo.toml" --release --target "$target" \
+    ${DESKTOP_CARGO_FEATURES:+--features "$DESKTOP_CARGO_FEATURES"}
   cargo build --manifest-path "$JCODE_REPO/Cargo.toml" --release --target "$target" --bin jcode
   cargo build --manifest-path "$JCODE_REPO/Cargo.toml" --release --target "$target" \
     --package jcode-harness-api-server --bin jcode-harness-api-bridge
