@@ -42,7 +42,7 @@ impl InlineTurn {
 }
 
 impl InlineQuestion {
-    pub(super) fn with_pending_follow_up(
+    pub(in crate::panel) fn with_pending_follow_up(
         child_session_id: String,
         first: &crate::harness::SideQuestionTurn,
         previous: &[crate::harness::SideQuestionTurn],
@@ -63,7 +63,7 @@ impl InlineQuestion {
         std::iter::once(&self.first).chain(&self.follow_ups)
     }
 
-    pub(super) fn selection_segments(&self, row: usize) -> Vec<(SharedString, SharedString)> {
+    pub(in crate::panel) fn selection_segments(&self, row: usize) -> Vec<(SharedString, SharedString)> {
         self.turns()
             .enumerate()
             .flat_map(|(index, turn)| {
@@ -102,7 +102,7 @@ fn pending_turn<'a>(items: &'a mut Transcript, session_id: &str) -> Option<&'a m
     turn.outcome.is_none().then_some(turn)
 }
 
-pub(super) fn append_follow_up(items: &mut Transcript, child_id: &str, question: &str) -> bool {
+pub(in crate::panel) fn append_follow_up(items: &mut Transcript, child_id: &str, question: &str) -> bool {
     let Some(thread) = find_thread(items, child_id) else {
         return false;
     };
@@ -110,7 +110,7 @@ pub(super) fn append_follow_up(items: &mut Transcript, child_id: &str, question:
     true
 }
 
-pub(super) fn apply_event(items: &mut Transcript, child_session_id: &str, event: &ApiEvent) {
+pub(in crate::panel) fn apply_event(items: &mut Transcript, child_session_id: &str, event: &ApiEvent) {
     let outcome = match event {
         ApiEvent::TextDelta { .. } => None,
         ApiEvent::TurnDone { .. } => Some(Outcome::Done),
@@ -129,14 +129,14 @@ pub(super) fn apply_event(items: &mut Transcript, child_session_id: &str, event:
     }
 }
 
-pub(super) fn close(items: &mut Transcript, child_session_id: &str) {
+pub(in crate::panel) fn close(items: &mut Transcript, child_session_id: &str) {
     if let Some(question) = pending_turn(items, child_session_id) {
         question.outcome = Some(Outcome::Closed);
     }
 }
 
 impl Panel {
-    pub(super) fn record_inline_side_question(&mut self, child_session_id: &str, question: &str) {
+    pub(in crate::panel) fn record_inline_side_question(&mut self, child_session_id: &str, question: &str) {
         self.push_inline_side_question(InlineQuestion {
             child_session_id: child_session_id.into(),
             first: InlineTurn::pending(question),
@@ -144,14 +144,14 @@ impl Panel {
         });
     }
 
-    pub(super) fn push_inline_side_question(&mut self, question: InlineQuestion) {
+    pub(in crate::panel) fn push_inline_side_question(&mut self, question: InlineQuestion) {
         self.flush_reasoning();
         self.flush_streaming();
         self.items.push(Item::SideQuestion(Box::new(question)));
         self.transcript_measurements.dirty = true;
     }
 
-    pub(super) fn render_inline_side_question(
+    pub(in crate::panel) fn render_inline_side_question(
         &self,
         index: usize,
         question: &InlineQuestion,
@@ -290,7 +290,7 @@ impl Panel {
     }
 }
 
-pub(super) fn screenshot_fixture() -> Vec<Item> {
+pub(in crate::panel) fn screenshot_fixture() -> Vec<Item> {
     let thread = screenshot_thread();
     let mut turns = thread.turns.iter().map(InlineTurn::from_saved);
     vec![
@@ -308,7 +308,7 @@ pub(super) fn screenshot_fixture() -> Vec<Item> {
     ]
 }
 
-pub(super) fn screenshot_thread() -> crate::harness::SideQuestionThread {
+pub(in crate::panel) fn screenshot_thread() -> crate::harness::SideQuestionThread {
     use crate::harness::{SideQuestionThread, SideQuestionTurn};
     SideQuestionThread {
         session: serde_json::from_value(serde_json::json!({

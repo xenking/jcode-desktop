@@ -144,6 +144,15 @@ impl std::fmt::Debug for LabelLayouts {
 }
 
 impl AskCard {
+    /// The editor dictation should land in while this card is waiting.
+    pub(super) fn voice_input(&self) -> Option<Entity<PromptInput>> {
+        let (q, option) = self.voice_target?;
+        match option {
+            Some(o) => self.comment_inputs.get(q)?.get(o).cloned(),
+            None => self.other_inputs.get(q).cloned(),
+        }
+    }
+
     pub fn new(request_id: String, questions: Vec<AskQuestion>) -> Self {
         let n = questions.len();
         Self {
@@ -591,15 +600,6 @@ impl Panel {
         self.ask_card
             .as_ref()
             .is_some_and(|card| card.focused_editor(window, cx).is_some())
-    }
-
-    pub(super) fn ask_voice_input(&self) -> Option<Entity<PromptInput>> {
-        let card = self.ask_card.as_ref()?;
-        let (q, option) = card.voice_target?;
-        match option {
-            Some(o) => card.comment_inputs.get(q)?.get(o).cloned(),
-            None => card.other_inputs.get(q).cloned(),
-        }
     }
 
     pub(crate) fn capture_focused_ask_voice_target(&mut self, window: &Window, cx: &App) -> bool {

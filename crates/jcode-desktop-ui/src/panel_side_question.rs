@@ -12,6 +12,9 @@ use jcode_sdk::{ApiEvent, SessionInfo};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{cell::Cell, rc::Rc};
 
+#[path = "panel_side_question_inline.rs"]
+pub(super) mod inline;
+
 #[cfg(test)]
 #[path = "panel_composer_overlay_tests.rs"]
 mod overlay_tests;
@@ -177,7 +180,7 @@ impl Panel {
         card.reasoning.clear();
         card.error = None;
         card.status = SideQuestionStatus::Working;
-        let existing_inline = side_question_inline::append_follow_up(
+        let existing_inline = inline::append_follow_up(
             &mut self.items,
             &card.child_session_id,
             question,
@@ -195,7 +198,7 @@ impl Panel {
         if existing_inline {
             self.transcript_measurements.dirty = true;
         } else if clean_chat && let Some((first, previous)) = card.previous.split_first() {
-            let inline = side_question_inline::InlineQuestion::with_pending_follow_up(
+            let inline = inline::InlineQuestion::with_pending_follow_up(
                 card.child_session_id.clone(),
                 first,
                 previous,
@@ -389,7 +392,7 @@ impl Panel {
         }
         if changed {
             if card.tracked_in_transcript {
-                side_question_inline::apply_event(&mut self.items, &card.child_session_id, event);
+                inline::apply_event(&mut self.items, &card.child_session_id, event);
                 self.transcript_measurements.dirty = true;
             }
             if was_working && !card.is_working() {
@@ -411,7 +414,7 @@ impl Panel {
             .as_ref()
             .filter(|card| card.tracked_in_transcript && card.is_working())
         {
-            side_question_inline::close(&mut self.items, &card.child_session_id);
+            inline::close(&mut self.items, &card.child_session_id);
             self.transcript_measurements.dirty = true;
         }
         if card.is_some() {

@@ -5,6 +5,7 @@
 //! showing the model the session runs now. The queued target is shown beside
 //! it, with a way to cancel, and the transcript says when the switch landed.
 use super::*;
+use gpui::AnyElement;
 use jcode_sdk::api::ModelSwitchState;
 
 impl Panel {
@@ -130,6 +131,102 @@ impl Panel {
                     cx.stop_propagation();
                 })),
         )
+    }
+}
+
+/// The model list popover opened from the composer or from an error card.
+impl Panel {
+    pub(crate) fn toggle_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A draft borrows the list another session reported; opening it must
+        // not create this one.
+        self.seed_draft_models(cx);
+        if self.recovery_picker_open {
+            self.recovery_picker_open = false;
+        } else if self.model_picker_open && self.picker_search.is_some() {
+            self.close_model_picker(cx);
+        } else {
+            self.open_recovery_models(cx);
+        }
+        self.focus_input(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn open_recovery_models(&mut self, cx: &mut Context<Self>) {
+        self.login = None;
+        if self.available_models.is_empty() {
+            self.recovery_picker_open = true;
+        } else {
+            self.open_model_picker(cx);
+        }
+        self.focus_pending = true;
+        cx.notify();
+    }
+
+    pub(super) fn render_recovery_model_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .debug_selector(|| "recovery-model-picker".into())
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_2()
+            .py_1p5()
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .bg(Theme::global().HEADER_BG)
+            .text_size(px(12.))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child("Choose a model")
+                    .child(
+                        div()
+                            .id("recovery-model-close")
+                            .debug_selector(|| "recovery-model-close".into())
+                            .cursor_pointer()
+                            .child("Close")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.recovery_picker_open = false;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(self.available_models.is_empty(), |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id("recovery-connect-account")
+                                .debug_selector(|| "recovery-connect-account".into())
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .hover(|el| el.bg(Theme::global().ACCENT_DIM))
+                                .child("Connect account")
+                                .on_click(cx.listener(|this, _, _, cx| this.open_login_picker(cx))),
+                        )
+                        .child(
+                            div()
+                                .id("recovery-refresh-models")
+                                .debug_selector(|| "recovery-refresh-models".into())
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .hover(|el| el.bg(Theme::global().ACCENT_DIM))
+                                .child("Refresh choices")
+                                .on_click(cx.listener(|this, _, _, _| {
+                                    this.bridge.send(Command::RefreshRuntime {
+                                        session_id: this.session_id.clone(),
+                                    });
+                                })),
+                        ),
+                )
+            })
+            .into_any_element()
     }
 }
 

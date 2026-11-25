@@ -1,6 +1,10 @@
 //! Prompt-cache status for the composer bar: a short retention countdown or
 //! the latest completed request's cache hit rate.
 use super::*;
+
+#[path = "panel_cache_card.rs"]
+pub(super) mod card;
+
 use jcode_desktop_model::prompt_cache::{CacheFacts, SHORT_COUNTDOWN_MAX_SECS};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -338,7 +342,7 @@ impl Render for CachePill {
                     if let Some(pill) = pill.upgrade() {
                         cx.observe(&pill, |_, _, cx| cx.notify()).detach();
                     }
-                    super::cache_card::CacheTooltip {
+                    card::CacheTooltip {
                         panel: panel.clone(),
                         pill: pill.clone(),
                     }

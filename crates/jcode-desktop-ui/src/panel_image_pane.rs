@@ -2,91 +2,15 @@
 //! pane mode replaces large inline previews with compact navigation links.
 use super::*;
 
-#[derive(Clone, serde::Deserialize)]
-struct GalleryImage {
-    image_id: String,
-    #[serde(default)]
-    ordinal: Option<usize>,
-    message_index: usize,
-    timestamp: Option<String>,
-    media_type: String,
-}
-
-impl GalleryImage {
-    fn transcript_image(&self, data: String) -> TranscriptImage {
-        let mut image = TranscriptImage::new(self.media_type.clone(), data, Some(format!("[#{}]", self.image_id)));
-        image.session_image = self.ordinal.map(|ordinal| jcode_sdk::api::SessionImageRef {
-            image_id: self.image_id.clone(), ordinal,
-        });
-        image
-    }
-}
-
-#[derive(Default)]
-pub(super) struct Gallery {
-    metadata: Option<Result<Vec<GalleryImage>, String>>,
-    live_ordinals: HashMap<String, usize>,
-    requested_prompt_keys: std::collections::HashSet<String>,
-    loading: bool,
-}
-
-impl Gallery {
-    pub(super) fn receive(&mut self, result: Result<String, String>) {
-        self.loading = false;
-        self.metadata = Some(result.and_then(|json| {
-            serde_json::from_str(&json).map_err(|error| error.to_string())
-        }));
-    }
-
-    pub(super) fn loaded_image(&self, image_id: &str, data: &str) -> Option<TranscriptImage> {
-        let image = self.metadata.as_ref()?
-            .as_ref()
-            .ok()?
-            .iter()
-            .find(|image| image.image_id == image_id)?;
-        Some(image.transcript_image(data.to_owned()))
-    }
-
-    pub(super) fn highest_ordinal(&self) -> Option<usize> {
-        self.metadata.as_ref()?.as_ref().ok()?.iter().filter_map(|image| image.ordinal).max()
-    }
-
-    fn ordinal(&self, id: &str) -> Option<usize> {
-        self.live_ordinals
-            .get(id)
-            .copied()
-            .or_else(|| {
-                self.metadata
-                    .as_ref()?
-                    .as_ref()
-                    .ok()?
-                    .iter()
-                    .find(|image| image.image_id == id)?
-                    .ordinal
-            })
-            .filter(|ordinal| *ordinal > 0)
-    }
-}
 
 impl Panel {
-    pub(super) fn note_session_image_ordinal(&mut self, ordinal: Option<usize>, cx: &mut Context<Self>) {
-        if let Some(ordinal) = ordinal.filter(|&ordinal| ordinal > self.session_image_base) {
-            self.session_image_base = ordinal;
-            self.input.update(cx, |input, cx| input.set_session_image_base(ordinal, cx));
-        }
-    }
 
     pub(super) fn observe_session_image_ids(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
         let ApiEvent::UserImageIds { session_id, original_content, content, image_ids, image_ordinals } = event else { return };
         if session_id != &self.session_id { return; }
         self.note_session_image_ordinal(image_ordinals.iter().copied().max(), cx);
-        self.session_image_gallery.live_ordinals.extend(
-            image_ids
-                .iter()
-                .cloned()
-                .zip(image_ordinals.iter().copied())
-                .filter(|(_, ordinal)| *ordinal > 0),
-        );
+        self.session_image_gallery
+            .note_live_ordinals(image_ids, image_ordinals);
         let Some(index) = self.items.iter().enumerate().find_map(|(index, item)| {
             matches!(item, Item::User(text) if text == original_content && !self.user_attachment_range(index).is_empty()).then_some(index)
         }).or_else(|| self.items.iter().rposition(|item| matches!(item, Item::User(text) if text == original_content))) else { return };
@@ -200,10 +124,6 @@ impl Panel {
             .or_else(|| self.items.iter().position(matches))
     }
 
-    pub(super) fn gallery_image_ordinal(&self, marker: &str) -> Option<usize> {
-        self.session_image_gallery
-            .ordinal(crate::image_chip::session_image_key(marker)?)
-    }
 
     pub(super) fn render_user_image_chip(
         &self,
@@ -376,32 +296,23 @@ impl Panel {
     }
 
     pub(super) fn request_session_image_gallery(&mut self) {
-        if self.session_image_gallery.loading || self.is_pending_session() {
+        if self.is_pending_session() || !self.session_image_gallery.begin_load() {
             return;
         }
-        self.session_image_gallery.loading = true;
         self.bridge.send(Command::ListSessionImages {
             session_id: self.session_id.clone(),
         });
     }
 
     pub(super) fn may_request_prompt_image_ordinal(&self, key: &str) -> bool {
-        !self.is_pending_session()
-            && !self
-                .session_image_gallery
-                .requested_prompt_keys
-                .contains(key)
+        !self.is_pending_session() && self.session_image_gallery.may_request_prompt_key(key)
     }
 
     pub(super) fn request_prompt_image_ordinals(&mut self, unresolved: Vec<String>) {
         if self.is_pending_session() {
             return;
         }
-        let mut new_key = false;
-        for key in unresolved {
-            new_key |= self.session_image_gallery.requested_prompt_keys.insert(key);
-        }
-        if new_key {
+        if self.session_image_gallery.request_prompt_keys(unresolved) {
             self.request_session_image_gallery();
         }
     }
@@ -412,9 +323,7 @@ impl Panel {
     ) -> Option<gpui::AnyElement> {
         if !self.draft_has_images
             && self.selected_session_image_index().is_none()
-            && !self.session_image_gallery.metadata.as_ref().is_some_and(|result| {
-                result.as_ref().is_ok_and(|images| !images.is_empty())
-            })
+            && !self.session_image_gallery.listing().has_images()
         {
             return None;
         }
@@ -499,10 +408,8 @@ impl Panel {
         let theme = Theme::global();
         let indices = self.session_image_indices();
         let selected = self.selected_session_image_index();
-        let gallery = self.session_image_gallery.metadata.clone();
-        let gallery_has_images = gallery
-            .as_ref()
-            .is_some_and(|result| result.as_ref().is_ok_and(|images| !images.is_empty()));
+        let gallery = self.session_image_gallery.listing().clone();
+        let gallery_has_images = gallery.has_images();
         let image = selected.and_then(|index| match &self.items[index] {
             Item::Image(image) => Some(image),
             _ => None,
@@ -544,10 +451,11 @@ impl Panel {
                             .text_color(theme.TEXT)
                             .child(format!(
                                 "Session images · {}",
-                                gallery
-                                    .as_ref()
-                                    .and_then(|result| result.as_ref().ok())
-                                    .map_or(indices.len(), Vec::len)
+                                if gallery.is_loaded() && gallery.error().is_none() {
+                                    gallery.rows().len()
+                                } else {
+                                    indices.len()
+                                }
                             )),
                     )
                     .when(!indices.is_empty(), |header| {
@@ -578,8 +486,8 @@ impl Panel {
                             })),
                     ),
             )
-            .when_some(gallery, |el, gallery| match gallery {
-                Ok(images) => el.child(
+            .when(gallery.is_loaded(), |el| match gallery.error() {
+                None => el.child(
                     div()
                         .id("session-gallery-list")
                         .debug_selector(|| "session-gallery-list".into())
@@ -591,15 +499,9 @@ impl Panel {
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .children(images.into_iter().enumerate().map(|(index, image)| {
+                        .children(gallery.rows().iter().cloned().enumerate().map(|(index, image)| {
                             let id = image.image_id.clone();
-                            let image_label = image.ordinal.map_or_else(|| id.clone(), |ordinal| format!("Image #{ordinal}"));
-                            let label = format!(
-                                "{} · message {} · {}",
-                                image_label,
-                                image.message_index + 1,
-                                image.timestamp.as_deref().unwrap_or("time unavailable")
-                            );
+                            let label = image.row_label();
                             div()
                                 .id(("session-gallery-image", index))
                                 .debug_selector(move || format!("session-gallery-image-{index}"))
@@ -626,7 +528,7 @@ impl Panel {
                                 }))
                         })),
                 ),
-                Err(error) => el.child(
+                Some(error) => el.child(
                     div()
                         .text_size(px(11.))
                         .text_color(theme.TEXT_DIM)

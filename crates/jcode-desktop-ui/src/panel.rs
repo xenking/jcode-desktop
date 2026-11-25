@@ -68,8 +68,6 @@ mod slash_send_tests;
 #[path = "panel_rewind_tests.rs"]
 mod rewind_tests;
 
-#[path = "panel_rewind.rs"]
-mod rewind;
 
 #[path = "panel_menu.rs"]
 mod overlay_keys;
@@ -144,8 +142,6 @@ mod ask;
 mod ask_images;
 #[path = "panel_background_jobs.rs"]
 mod background_jobs;
-#[path = "panel_cache_card.rs"]
-mod cache_card;
 #[path = "panel_cache_miss.rs"]
 mod cache_miss;
 #[path = "panel_cache_timer.rs"]
@@ -167,8 +163,6 @@ mod rig_hud;
 mod account_routing;
 #[path = "panel_side_question.rs"]
 mod side_question;
-#[path = "panel_side_question_inline.rs"]
-mod side_question_inline;
 #[path = "panel_session_status.rs"]
 mod session_status;
 #[path = "panel_swarm_card.rs"]
@@ -192,6 +186,8 @@ mod mode_switch;
 pub(crate) mod expandable;
 #[path = "panel_flicker.rs"]
 mod flicker;
+#[path = "panel_gallery.rs"]
+mod gallery;
 #[path = "panel_image_pane.rs"]
 mod image_pane;
 #[cfg(test)]
@@ -428,7 +424,7 @@ pub enum Item {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timestamp_ms: Option<i64>,
     },
-    SideQuestion(Box<side_question_inline::InlineQuestion>),
+    SideQuestion(Box<side_question::inline::InlineQuestion>),
     ResponseStats(response_stats::ResponseStats),
     Reasoning(String),
     Tool {
@@ -819,7 +815,7 @@ pub struct Panel {
     /// Display-only: it feeds the composer status line, never the transcript.
     memory_activity: Option<jcode_sdk::api::MemoryActivitySnapshot>,
     response_stats: response_stats::Tracker,
-    cache_telemetry: cache_card::CacheTelemetry,
+    cache_telemetry: cache_timer::card::CacheTelemetry,
     pub items: Transcript,
     /// Streaming assistant text accumulates here until the turn ends.
     streaming_text: String,
@@ -867,7 +863,7 @@ pub struct Panel {
     swarm_row_focus: std::cell::RefCell<HashMap<String, gpui::FocusHandle>>,
     voice: voice_state::VoiceState,
     image_pane_open: bool,
-    session_image_gallery: image_pane::Gallery,
+    session_image_gallery: gallery::Gallery,
     session_image_base: usize,
     draft_has_images: bool,
     image_pane_selected: Option<usize>,
@@ -892,7 +888,7 @@ pub struct Panel {
     routing_chip: Option<crate::routing::RoutingChip>,
     /// A spending limit holds the turn until the person answers.
     routing_gate: Option<crate::routing::GateCard>,
-    rewind_selection: Option<rewind::Selection>,
+    rewind_selection: Option<history_paging::rewind::Selection>,
     expandable_viewport_height: gpui::Pixels,
     transcript_row_count: usize,
     transcript_measurements: TranscriptMeasurements,
@@ -1737,7 +1733,7 @@ impl Panel {
             let panel = cx.weak_entity();
             cx.defer(move |cx| {
                 let _ = panel.update(cx, |panel, cx| {
-                    panel.show_saved_side_question(side_question_inline::screenshot_thread(), cx);
+                    panel.show_saved_side_question(side_question::inline::screenshot_thread(), cx);
                 });
             });
         }
@@ -1825,7 +1821,7 @@ impl Panel {
             context_usage: context_usage::State::default(),
             memory_activity: None,
             response_stats: response_stats::Tracker::default(),
-            cache_telemetry: cache_card::CacheTelemetry::default(),
+            cache_telemetry: cache_timer::card::CacheTelemetry::default(),
             items,
             live_assistant_output: None,
             streaming_text: if streaming_fixture {
@@ -6956,6 +6952,13 @@ impl Panel {
 /// Keep provider-level reasoning segments in one visual block. Some providers
 /// emit `ReasoningDone` between segments even though they belong to the same
 /// uninterrupted thinking phase.
+impl Panel {
+    /// The ask editor dictation is aimed at, when an ask card is showing one.
+    pub(super) fn ask_voice_input(&self) -> Option<Entity<PromptInput>> {
+        self.ask_card.as_ref()?.voice_input()
+    }
+}
+
 fn append_reasoning(items: &mut Vec<Item>, text: String) {
     if let Some(Item::Reasoning(existing)) = items.last_mut() {
         append_reasoning_text(existing, &text);
@@ -12975,7 +12978,7 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
         return agent_message::screenshot_fixture();
     }
     if crate::harness::screenshot_mode() && matches!(fixture.as_deref(), Some("btw-normal" | "btw-clean" | "btw-clean-expanded")) {
-        return side_question_inline::screenshot_fixture();
+        return side_question::inline::screenshot_fixture();
     }
     if crate::harness::screenshot_mode()
         && matches!(

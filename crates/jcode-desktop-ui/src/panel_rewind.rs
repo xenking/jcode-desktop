@@ -2,7 +2,7 @@ use super::*;
 use gpui::Pixels;
 use jcode_sdk::api::{RewindAnchor, RewindMessageKey};
 
-pub(super) struct Selection {
+pub(in crate::panel) struct Selection {
     selected: usize,
     reveal: bool,
     inset: Pixels,
@@ -40,7 +40,7 @@ impl Panel {
             .collect()
     }
 
-    pub(super) fn start_rewind(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::panel) fn start_rewind(&mut self, cx: &mut Context<Self>) {
         if self.is_side_document()
             || self.preview_state.is_some()
             || self.rewind_selection.is_some()
@@ -80,7 +80,7 @@ impl Panel {
         }
     }
 
-    pub(super) fn shift_rewind_selection(&mut self, items: usize, rows: usize) {
+    pub(in crate::panel) fn shift_rewind_selection(&mut self, items: usize, rows: usize) {
         let older_target = self
             .rewind_selection
             .as_ref()
@@ -106,7 +106,7 @@ impl Panel {
         }
     }
 
-    pub(super) fn remap_rewind_projection(
+    pub(in crate::panel) fn remap_rewind_projection(
         &mut self,
         old: &[TranscriptRenderRow],
         new: &[TranscriptRenderRow],
@@ -145,7 +145,7 @@ impl Panel {
         }
     }
 
-    pub(super) fn reveal_rewind_selection(
+    pub(in crate::panel) fn reveal_rewind_selection(
         &mut self,
         rows: &[TranscriptRenderRow],
         dock_pad: f32,
@@ -210,7 +210,7 @@ impl Panel {
         inset
     }
 
-    pub(super) fn finish_rewind(
+    pub(in crate::panel) fn finish_rewind(
         &mut self,
         confirm: bool,
         window: &mut Window,
@@ -231,7 +231,7 @@ impl Panel {
         true
     }
 
-    pub(super) fn handle_rewind_key(
+    pub(in crate::panel) fn handle_rewind_key(
         &mut self,
         event: &gpui::KeyDownEvent,
         cx: &mut Context<Self>,
@@ -250,7 +250,7 @@ impl Panel {
         true
     }
 
-    pub(super) fn confirm_rewind_selection(
+    pub(in crate::panel) fn confirm_rewind_selection(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -259,7 +259,7 @@ impl Panel {
     }
 
     /// Up and Down walk messages. False when no rewind selection is open.
-    pub(super) fn step_rewind_message(&mut self, older: bool, cx: &mut Context<Self>) -> bool {
+    pub(in crate::panel) fn step_rewind_message(&mut self, older: bool, cx: &mut Context<Self>) -> bool {
         if self.rewind_selection.is_none() {
             return false;
         }
@@ -346,7 +346,7 @@ impl Panel {
         }
     }
 
-    pub(super) fn render_rewind_row(
+    pub(in crate::panel) fn render_rewind_row(
         &self,
         index: usize,
         item: &Item,
@@ -385,7 +385,7 @@ impl Panel {
             .into_any_element()
     }
 
-    pub(super) fn render_rewind_hint(&self) -> Option<gpui::AnyElement> {
+    pub(in crate::panel) fn render_rewind_hint(&self) -> Option<gpui::AnyElement> {
         self.rewind_selection.as_ref()?;
         Some(
             div()

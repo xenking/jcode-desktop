@@ -1,10 +1,12 @@
 //! The composer pill's prompt-cache hover card.
-use super::{cache_miss::CacheMissNotice, cache_timer, meter, *};
+use super::*;
+use crate::panel::{cache_miss::CacheMissNotice, meter};
+use super as cache_timer;
 use jcode_desktop_model::prompt_cache::{CacheFacts, Tokens, Usage};
 use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Default)]
-pub(super) struct CacheTelemetry {
+pub(in crate::panel) struct CacheTelemetry {
     usage: Usage,
     keepalive: jcode_sdk::api::CacheKeepaliveUsage,
     route: Option<(String, String)>,
@@ -13,11 +15,11 @@ pub(super) struct CacheTelemetry {
 }
 
 impl CacheTelemetry {
-    pub(super) fn observe(&mut self, event: &ApiEvent) {
+    pub(in crate::panel) fn observe(&mut self, event: &ApiEvent) {
         self.observe_at(event, cache_timer::now_ms());
     }
 
-    pub(super) fn observe_at(&mut self, event: &ApiEvent, at_ms: i64) {
+    pub(in crate::panel) fn observe_at(&mut self, event: &ApiEvent, at_ms: i64) {
         if let ApiEvent::CacheKeepalive { usage, .. } = event {
             // An attach snapshot can race a live settlement of the same ping.
             if usage.attempted > self.keepalive.attempted
@@ -53,19 +55,19 @@ impl CacheTelemetry {
         }
     }
 
-    pub(super) fn has_requests(&self) -> bool {
+    pub(in crate::panel) fn has_requests(&self) -> bool {
         self.usage.count() != 0
     }
 
-    pub(super) fn last_hit_rate(&self) -> Option<f32> {
+    pub(in crate::panel) fn last_hit_rate(&self) -> Option<f32> {
         self.usage.last.and_then(Tokens::percent)
     }
 
-    pub(super) fn miss(&mut self, notice: &CacheMissNotice) {
+    pub(in crate::panel) fn miss(&mut self, notice: &CacheMissNotice) {
         self.misses.record(notice);
     }
 
-    pub(super) fn retention(&self, panel: &Panel) -> Option<CacheFacts> {
+    pub(in crate::panel) fn retention(&self, panel: &Panel) -> Option<CacheFacts> {
         let route = self.route.as_ref()?;
         let (provider, model) = route;
         let completed = self
@@ -92,7 +94,7 @@ impl CacheTelemetry {
         ))
     }
 
-    pub(super) fn keepalive_retention(
+    pub(in crate::panel) fn keepalive_retention(
         &self,
         provider: &str,
         model: Option<&str>,
@@ -118,7 +120,7 @@ impl CacheTelemetry {
 impl Panel {
     /// The route the cache figures were recorded on, when the session has
     /// moved to another model since. `None` while they still match.
-    pub(super) fn cache_route_left_behind(&self) -> Option<String> {
+    pub(in crate::panel) fn cache_route_left_behind(&self) -> Option<String> {
         let (provider, model) = self.cache_telemetry.route.as_ref()?;
         let current = self.model.as_deref()?;
         let bare = |model: &str| model.strip_suffix("[1m]").unwrap_or(model).to_owned();
@@ -222,9 +224,9 @@ fn tokens(provider: &str, input: Option<u64>, read: Option<u64>, write: Option<u
     Tokens::new(prompt, read, write)
 }
 
-pub(super) struct CacheTooltip {
-    pub(super) panel: gpui::WeakEntity<Panel>,
-    pub(super) pill: gpui::WeakEntity<cache_timer::CachePill>,
+pub(in crate::panel) struct CacheTooltip {
+    pub(in crate::panel) panel: gpui::WeakEntity<Panel>,
+    pub(in crate::panel) pill: gpui::WeakEntity<cache_timer::CachePill>,
 }
 
 impl Render for CacheTooltip {

@@ -1,6 +1,11 @@
 //! Lazy expansion of the daemon's compacted transcript window.
 use super::*;
 
+/// Rewind is a mode of walking history: it selects an earlier prompt and
+/// pages older history in when the target lies beyond the loaded window.
+#[path = "panel_rewind.rs"]
+pub(super) mod rewind;
+
 const PAGE_SIZE: usize = 128;
 const INITIAL_WINDOW: usize = 64;
 
@@ -105,6 +110,15 @@ impl HistoryPaging {
 }
 
 impl Panel {
+    /// A prompt's number counting the turns paged out of the loaded window.
+    pub(super) fn absolute_prompt_number(&self, index: usize) -> Option<usize> {
+        let offset = match &self.history_paging {
+            Some(paging) => paging.prompt_offset(),
+            None => Some(0),
+        }?;
+        prompt::prompt_number(&self.items, index).map(|number| number + offset)
+    }
+
     pub(super) fn request_older_history(&mut self) {
         let Some(paging) = &mut self.history_paging else {
             return;

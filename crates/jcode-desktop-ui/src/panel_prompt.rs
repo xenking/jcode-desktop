@@ -131,14 +131,6 @@ impl Panel {
         self.expanded_pinned_prompt = None;
     }
 
-    pub(super) fn absolute_prompt_number(&self, index: usize) -> Option<usize> {
-        let offset = match &self.history_paging {
-            Some(paging) => paging.prompt_offset(),
-            None => Some(0),
-        }?;
-        prompt_number(&self.items, index).map(|number| number + offset)
-    }
-
     /// The transcript always renders the complete prompt. Only the pinned copy has disclosure.
     pub(super) fn render_user_prompt(
         &self,
