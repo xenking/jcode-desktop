@@ -206,7 +206,7 @@ pub(super) fn render_workers(
             // The row stays one line while collapsed. A worker whose task name
             // does not fit gets a chevron that wraps it in place, so the whole
             // assignment is readable without leaving the sidebar.
-            let expand_key = expandable::key::worker(&worker.session_id);
+            let expand_key = expandable::Key::worker(&worker.session_id);
             let expanded = expanded_lines.contains(&expand_key);
             let toggle_key = expand_key.clone();
             let label_truncated = worker
@@ -330,12 +330,12 @@ pub(super) fn render_workers(
                 .child(sidebar_session_catalog::agent_badge())
                 .when(label_truncated, |el| {
                     let key = toggle_key.clone();
-                    el.child(expandable::glyph_toggle(
+                    el.child(expandable::Disclosure::glyph(
                         format!("sidebar-worker-expand-{sidebar_index}-{index}").into(),
                         expanded,
                         cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
-                            expandable::flip(&mut this.expanded_lines, &key);
+                            expandable::Regions::flip(&mut this.expanded_lines, &key);
                             cx.notify();
                         }),
                     ))
@@ -398,7 +398,7 @@ pub(super) fn render_workers(
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        expandable::flip(&mut this.expanded_lines, &key);
+                        expandable::Regions::flip(&mut this.expanded_lines, &key);
                         cx.notify();
                     }))
                     .child(if expanded {
