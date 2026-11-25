@@ -1,6 +1,25 @@
 //! Applying runtime updates to the workspace.
 use super::*;
 
+/// Let the updater show its blocked-update dialog in a workspace window.
+#[cfg(target_os = "macos")]
+pub(super) fn install_update_dialog_host(cx: &mut App) {
+    cx.set_global(updates::DialogHost(std::rc::Rc::new(
+        |app, preferred, sessions| {
+            let window = app
+                .windows()
+                .into_iter()
+                .filter_map(|window| window.downcast::<Workspace>())
+                .min_by_key(|window| window.window_id() != preferred)?;
+            window
+                .update(app, |_, window, cx| {
+                    updates::show_pair_dialog(sessions, window, cx)
+                })
+                .ok()
+        },
+    )));
+}
+
 impl Workspace {
     pub(super) fn dispatch_bridge_batch(workspace: &Entity<Self>, updates: Vec<Update>, cx: &mut App) {
         let mut changed = false;

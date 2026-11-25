@@ -1,6 +1,6 @@
 //! Desktop workspace slash actions. No command is sent as a model prompt.
 use super::*;
-use crate::panel::workspace_commands::parse::{WorkspaceCommand, parse};
+use crate::workspace_command_parse::{WorkspaceCommand, parse};
 use crate::ui_actions::{PromoteSideQuestion, WorkspaceSlashCommand};
 
 #[cfg(test)]

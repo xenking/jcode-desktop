@@ -5,7 +5,7 @@
 //! inside the viewport, so cost is independent of file length. Syntax colors
 //! come from an incremental per-line highlighter that re-highlights from the
 //! first edited line to the end of the visible region.
-use crate::markdown::{LineHighlighter, MAX_HIGHLIGHT_LINE, token_color};
+use crate::code_block::{LineHighlighter, MAX_HIGHLIGHT_LINE, token_color};
 use crate::theme::{Palette, Theme, to_hsla};
 use gpui::{
     App, Bounds, ClipboardItem, Context, Element, ElementId, ElementInputHandler, Entity,

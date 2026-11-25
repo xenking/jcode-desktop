@@ -395,7 +395,7 @@ fn node(
             ))
             .into_any_element(),
         NodeKind::Code { text, language } => {
-            crate::markdown::code_block(language.as_deref().unwrap_or(""), text, window)
+            crate::code_block::code_block(language.as_deref().unwrap_or(""), text, window)
         }
         NodeKind::Image {
             source,

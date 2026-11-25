@@ -15,6 +15,8 @@ impl Workspace {
         // render-triggered release check would never start the automatic update
         // loop for a user who stays in the session view.
         updates::ensure_release_check();
+        #[cfg(target_os = "macos")]
+        super::runtime_updates::install_update_dialog_host(cx);
         // Read the account file here so the first frame needs no disk access.
         jcode_account::JcodeAccount::prime();
         let bridge = harness::spawn();
@@ -151,7 +153,7 @@ impl Workspace {
                 };
                 let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
                     if workspace.accounts != accounts {
-                        cx.set_global(crate::panel::usage::StatusAccounts(accounts.clone()));
+                        cx.set_global(crate::account_status::StatusAccounts(accounts.clone()));
                         for slot in &workspace.slots {
                             slot.panel.update_chat(cx, |_, cx| cx.notify());
                         }

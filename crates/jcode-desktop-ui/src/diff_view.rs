@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use crate::diff_model::{DiffFile, DiffLine, DiffPreview, LineKind, replacement_pairs};
-use crate::markdown::{flatten_highlights, highlight_code};
+use crate::code_block::{flatten_highlights, highlight_code};
 use crate::text_selection::{self, TextSelection};
 use crate::theme::{Theme, to_hsla};
 

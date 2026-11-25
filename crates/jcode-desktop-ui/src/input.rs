@@ -2045,7 +2045,7 @@ impl PromptInput {
                 route.model == model
                     && provider.is_none_or(|provider| route.provider == provider)
                     && auth.is_none_or(|auth| {
-                        crate::panel::human_auth_method(&route.api_method) == auth
+                        crate::provider_mark::human_auth_method(&route.api_method) == auth
                     })
             });
             let (spec, _) = matches.next()?;
@@ -2470,8 +2470,8 @@ impl PromptInput {
         if !self.submission_enabled || self.queue_editor {
             return;
         }
-        if let Some(crate::panel::workspace_commands::parse::WorkspaceCommand::Invalid(usage)) =
-            crate::panel::workspace_commands::parse::parse(&command)
+        if let Some(crate::workspace_command_parse::WorkspaceCommand::Invalid(usage)) =
+            crate::workspace_command_parse::parse(&command)
         {
             self.set_transient_notice(usage.into(), cx);
             return;
@@ -2481,7 +2481,7 @@ impl PromptInput {
                 || crate::commands::is_accounts_command(&command)
                 || crate::commands::reset_command(&command).is_some()
                 || command == "/btw"
-                || crate::panel::is_draft_config_command(&command))
+                || crate::commands::is_draft_config_command(&command))
         {
             self.attachment_notice = Some(PENDING_COMMAND_NOTICE.into());
             cx.notify();

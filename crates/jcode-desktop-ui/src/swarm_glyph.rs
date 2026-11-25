@@ -214,9 +214,9 @@ impl Render for MarkView {
 #[derive(Default)]
 pub(crate) struct Marks {
     marks: HashMap<String, Entity<MarkView>>,
-    /// The composer's cache countdown. A leaf view for the same reason: its
-    /// own tick repaints the label, never the panel around it.
-    cache: Option<Entity<crate::panel::cache_timer::CachePill>>,
+    /// A custom leaf view kept beside the marks (the composer's cache
+    /// countdown): its own tick repaints its label, never the panel around it.
+    pinned: Option<gpui::AnyEntity>,
 }
 
 impl Marks {
@@ -271,20 +271,22 @@ impl Marks {
         view.into_any_element()
     }
 
-    pub(crate) fn cache_pill<T: 'static>(
+    /// The pinned leaf view: created by `create` on first use, then handed
+    /// to `refresh` on every later call.
+    pub(crate) fn pinned<V: gpui::Render, T: 'static>(
         &mut self,
-        value: crate::panel::cache_timer::CachePillValue,
-        source: crate::panel::cache_timer::CacheSource,
+        create: impl FnOnce(&mut Context<V>) -> V,
+        refresh: impl FnOnce(&mut V, &mut Context<V>),
         cx: &mut Context<T>,
     ) -> AnyElement {
-        match self.cache.clone() {
+        match self.pinned.clone().and_then(|view| view.downcast::<V>().ok()) {
             Some(view) => {
-                view.update(cx, |view, cx| view.set(value, cx));
+                view.update(cx, refresh);
                 view.into_any_element()
             }
             None => {
-                let view = cx.new(|cx| crate::panel::cache_timer::CachePill::new(value, source, cx));
-                self.cache = Some(view.clone());
+                let view = cx.new(create);
+                self.pinned = Some(view.clone().into());
                 view.into_any_element()
             }
         }

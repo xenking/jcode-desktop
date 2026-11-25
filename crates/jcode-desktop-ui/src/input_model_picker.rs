@@ -689,7 +689,7 @@ impl PromptInput {
                 .model_details
                 .get(model)
                 .and_then(|detail| {
-                    cx.try_global::<crate::panel::usage::StatusAccounts>()
+                    cx.try_global::<crate::account_status::StatusAccounts>()
                         .map(|accounts| {
                             model_menu::route_quota(
                                 &accounts.0,
@@ -1141,7 +1141,7 @@ fn header_quota(index: usize, quota: &model_menu::RouteQuota) -> gpui::Div {
         } else {
             format!("{:.0}% left", 100. - used)
         };
-        let color = crate::panel::meter::usage_color(used, theme);
+        let color = crate::account_status::usage_color(used, theme);
         div()
             .debug_selector(move || format!("model-picker-quota-{index}-{window}"))
             .flex()

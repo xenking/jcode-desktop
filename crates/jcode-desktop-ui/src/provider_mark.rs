@@ -53,6 +53,19 @@ pub(crate) fn provider_logo(provider: &str, api_method: &str) -> &'static str {
     ""
 }
 
+/// `oauth`, `api_key`, or a route id such as `claude-oauth`, phrased for the
+/// account label.
+pub(crate) fn human_auth_method(method: &str) -> String {
+    let method = method.to_lowercase();
+    if method.contains("oauth") {
+        "oauth".to_string()
+    } else if method.contains("api-key") || method.contains("api_key") || method.ends_with("-api") {
+        "api key".to_string()
+    } else {
+        method
+    }
+}
+
 /// The model family's mark, from the leading word of the model id.
 fn family_logo(model: &str) -> Option<&'static str> {
     let bare = model.trim().rsplit('/').next().unwrap_or_default();
@@ -141,5 +154,12 @@ mod tests {
         assert_eq!(fallback_name(Some("mystery-oauth"), None), "mystery");
         assert_eq!(fallback_name(None, Some("widget-1")), "widget");
         assert_eq!(fallback_name(None, None), "?");
+    }
+
+    #[test]
+    fn auth_methods_read_as_oauth_or_api_key() {
+        assert_eq!(human_auth_method("oauth"), "oauth");
+        assert_eq!(human_auth_method("api_key"), "api key");
+        assert_eq!(human_auth_method("claude-api"), "api key");
     }
 }

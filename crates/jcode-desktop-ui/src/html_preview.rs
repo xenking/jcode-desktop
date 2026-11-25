@@ -456,7 +456,7 @@ impl Render for Preview {
                     ),
             );
         if self.show_source {
-            return root.child(crate::markdown::code_block("html", &self.source, window));
+            return root.child(crate::code_block::code_block("html", &self.source, window));
         }
         if let Some(error) = &self.error {
             return root.child(

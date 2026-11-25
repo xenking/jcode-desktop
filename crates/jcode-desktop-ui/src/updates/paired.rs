@@ -1,4 +1,4 @@
-use super::{ReleaseStatus, UpdateState, current, paired_dialog, set, store_release_status};
+use super::{DialogHost, ReleaseStatus, UpdateState, current, set, store_release_status};
 use gpui::{App, PromptButton, PromptLevel};
 use jcode_desktop_updater::paired::{self, BlockedAction, Change, Install, Preview, Progress};
 use std::{
@@ -146,13 +146,9 @@ pub(super) fn request(cx: &mut App) {
                 };
                 show_state(cx, UpdateState::ApplyingPair);
                 let (answer, _closing) = cx.update(|app| {
-                    let dialog_window = app.windows().into_iter()
-                        .filter_map(|w| w.downcast::<crate::workspace::Workspace>())
-                        .min_by_key(|w| w.window_id() != window.window_id());
-                    dialog_window.map(|handle| handle.update(app, |_, window, cx| {
-                        paired_dialog::show(sessions.clone(), window, cx)
-                    })).transpose()
-                })?.ok_or_else(|| anyhow::anyhow!("The update was blocked:\n{}", sessions.join("\n")))?;
+                    let host = app.try_global::<DialogHost>().cloned()?;
+                    (host.0)(app, window.window_id(), sessions.clone())
+                }).ok_or_else(|| anyhow::anyhow!("The update was blocked:\n{}", sessions.join("\n")))?;
                 match answer.recv().await.unwrap_or(BlockedAction::Cancel) {
                     BlockedAction::Cancel => return Ok(false),
                     BlockedAction::InstallNow => install = Install::Now,

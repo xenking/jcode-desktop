@@ -164,7 +164,7 @@ impl Workspace {
     /// configured credential, red at exhaustion, each with the same hover card
     /// it had in the composer bar. Clicking one opens the account picker.
     fn render_sidebar_quota(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
-        let Some(accounts) = cx.try_global::<crate::panel::usage::StatusAccounts>() else {
+        let Some(accounts) = cx.try_global::<crate::account_status::StatusAccounts>() else {
             return Vec::new();
         };
         let chips = crate::panel::usage::quota_chips(&accounts.0);
@@ -191,7 +191,7 @@ impl Workspace {
                     let tooltip = crate::panel::usage::quota_card(account, &chip);
                     let color = match chip.percent {
                         Some(percent) if percent >= 70. => {
-                            crate::panel::meter::usage_color(percent, theme)
+                            crate::account_status::usage_color(percent, theme)
                         }
                         _ => theme.TEXT_DIM,
                     };
@@ -350,7 +350,7 @@ mod tests {
                 &mut accounts,
                 r#"{"providers":[{"provider_name":"Anthropic (Claude)","limits":[{"name":"7-day window","usage_percent":41.0,"reset_in":"1d 11h"}],"extra_info":[],"error":null}]}"#,
             );
-            cx.set_global(crate::panel::usage::StatusAccounts(accounts));
+            cx.set_global(crate::account_status::StatusAccounts(accounts));
         });
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx)

@@ -1,6 +1,7 @@
 //! Jcode Desktop: a spatial, niri-inspired canvas of Jcode sessions.
 
 mod ack;
+mod account_status;
 mod applet_host;
 mod applet_runtime;
 mod applet_surface;
@@ -11,6 +12,7 @@ mod build_info;
 mod bundled_applets;
 mod changelog;
 mod clipboard_image;
+mod code_block;
 mod code_editor;
 mod commands;
 #[cfg(unix)]
@@ -51,6 +53,7 @@ mod persisted_history;
 mod popover;
 mod preview_control;
 pub mod preview_state;
+mod prompt_images;
 mod provider_mark;
 mod publish;
 mod restart_spawn;
@@ -71,6 +74,7 @@ mod update_notes;
 mod updates;
 mod window_caption;
 mod workspace;
+mod workspace_command_parse;
 
 // The GPUI-free harness bridge and its transports live in their own crate so
 // edits there do not recompile this one. Re-exported under their old paths.

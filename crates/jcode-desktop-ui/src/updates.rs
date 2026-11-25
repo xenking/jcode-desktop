@@ -13,6 +13,39 @@ mod paired_dialog;
 #[cfg(target_os = "macos")]
 pub(crate) use paired_dialog::render as render_pair_dialog;
 
+/// Shows the blocked-update dialog in a window and hands back the user's
+/// answer. The windowing layer supplies it, so the updater needs no knowledge
+/// of the windows it prompts in; the window it asks for is preferred.
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+pub(crate) struct DialogHost(
+    pub(crate)  std::rc::Rc<
+        dyn Fn(
+            &mut gpui::App,
+            gpui::WindowId,
+            Vec<String>,
+        ) -> Option<(
+            async_channel::Receiver<jcode_desktop_updater::paired::BlockedAction>,
+            gpui::Subscription,
+        )>,
+    >,
+);
+#[cfg(target_os = "macos")]
+impl gpui::Global for DialogHost {}
+
+/// Show the blocked dialog in `window`.
+#[cfg(target_os = "macos")]
+pub(crate) fn show_pair_dialog(
+    sessions: Vec<String>,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) -> (
+    async_channel::Receiver<jcode_desktop_updater::paired::BlockedAction>,
+    gpui::Subscription,
+) {
+    paired_dialog::show(sessions, window, cx)
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn paired_screenshot_fixture(window: &mut gpui::Window, cx: &mut gpui::App) {
     let sessions = vec![

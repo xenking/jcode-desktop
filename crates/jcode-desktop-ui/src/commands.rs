@@ -300,6 +300,15 @@ pub(crate) fn is_accounts_command(content: &str) -> bool {
     matches!(content.trim(), "/account" | "/accounts")
 }
 
+/// `/model` and `/effort` only record a choice, so a draft answers them
+/// without a runtime session.
+pub(crate) fn is_draft_config_command(content: &str) -> bool {
+    matches!(
+        content.split_whitespace().next(),
+        Some("/model" | "/models" | "/effort" | "/mode" | "/speed")
+    )
+}
+
 /// Target of a `/reset` command typed in the composer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResetCommand {
