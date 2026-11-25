@@ -31,7 +31,7 @@ impl Workspace {
         let existing = self
             .slots
             .iter()
-            .position(|slot| !slot.closing && slot.panel.is_changelog());
+            .position(|slot| !slot.closing && slot.panel.profile().is_changelog());
         let index = existing.unwrap_or_else(|| {
             let changelog = cx.new(ChangelogPanel::new);
             let index = 0;
@@ -103,7 +103,7 @@ impl Workspace {
             || self
                 .slots
                 .iter()
-                .any(|slot| !slot.closing && slot.panel.is_changelog())
+                .any(|slot| !slot.closing && slot.panel.profile().is_changelog())
         {
             return;
         }
@@ -152,7 +152,7 @@ mod tests {
                 w.open_changelog(&OpenChangelog, window, cx);
                 assert_eq!(w.slots.len(), 1);
                 assert_eq!(w.active, 0);
-                assert!(w.slots[0].panel.is_changelog());
+                assert!(w.slots[0].panel.profile().is_changelog());
                 assert!(w.snapshot(window, cx).unwrap().slots.is_empty());
             })
         });
@@ -186,7 +186,7 @@ mod tests {
                 let source = w.slots[4].panel.entity_id();
                 w.open_changelog(&OpenChangelog, window, cx);
                 assert_eq!(w.active, 0);
-                assert!(w.slots[0].panel.is_changelog());
+                assert!(w.slots[0].panel.profile().is_changelog());
                 assert_eq!(w.slots[0].row, 1);
                 assert_eq!(w.slots[0].width_fraction, 0.5);
                 assert_eq!(w.slots[1].width_fraction, 1.0);
@@ -204,7 +204,7 @@ mod tests {
                 w.active = 4;
                 w.open_changelog(&OpenChangelog, window, cx);
                 assert_eq!(w.slots.len(), 6);
-                assert!(w.slots[0].panel.is_changelog());
+                assert!(w.slots[0].panel.profile().is_changelog());
                 assert_eq!(w.previous, Some(source));
             })
         });
@@ -228,11 +228,11 @@ mod tests {
                 assert_eq!(w.slots.len(), 2);
                 assert_eq!(w.active, 0);
                 assert_eq!(w.slots[1].width_fraction, 0.5);
-                assert!(w.slots[w.active].panel.is_changelog());
+                assert!(w.slots[w.active].panel.profile().is_changelog());
                 assert!(
                     w.slots[w.active]
                         .panel
-                        .input_focus_handle(cx)
+                        .surface().input_focus_handle(cx)
                         .is_focused(window)
                 );
                 let snapshot = w.snapshot(window, cx).unwrap();
@@ -346,11 +346,11 @@ mod tests {
             assert!(
                 w.slots[w.active]
                     .panel
-                    .input_focus_handle(cx)
+                    .surface().input_focus_handle(cx)
                     .is_focused(window),
                 "keyboard focus stays on the panel the user was on"
             );
-            assert!(w.slots.iter().any(|slot| slot.panel.is_changelog()));
+            assert!(w.slots.iter().any(|slot| slot.panel.profile().is_changelog()));
         });
         let after_bounds = vcx
             .debug_bounds("panel-3")
@@ -371,7 +371,7 @@ mod tests {
             assert!(
                 w.slots[w.active]
                     .panel
-                    .input_focus_handle(cx)
+                    .surface().input_focus_handle(cx)
                     .is_focused(window)
             );
         });
