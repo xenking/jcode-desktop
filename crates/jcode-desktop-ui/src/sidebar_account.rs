@@ -153,7 +153,7 @@ impl Workspace {
                     .children(self.render_sidebar_quota(cx))
                     .child(div().flex_1())
                     .tooltip(move |_, cx| {
-                        cx.new(|_| crate::panel::usage::MeterTooltip(account_tooltip.clone()))
+                        cx.new(|_| crate::panel::meter::MeterTooltip(account_tooltip.clone()))
                             .into()
                     }),
             )
@@ -191,7 +191,7 @@ impl Workspace {
                     let tooltip = crate::panel::usage::quota_card(account, &chip);
                     let color = match chip.percent {
                         Some(percent) if percent >= 70. => {
-                            crate::panel::usage::usage_color(percent, theme)
+                            crate::panel::meter::usage_color(percent, theme)
                         }
                         _ => theme.TEXT_DIM,
                     };

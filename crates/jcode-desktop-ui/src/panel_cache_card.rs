@@ -1,5 +1,5 @@
 //! The composer pill's prompt-cache hover card.
-use super::{cache_miss::CacheMissNotice, cache_timer, usage, *};
+use super::{cache_miss::CacheMissNotice, cache_timer, meter, *};
 use jcode_desktop_model::prompt_cache::{CacheFacts, Tokens, Usage};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -253,7 +253,7 @@ impl Render for CacheTooltip {
         let pill = self.pill.upgrade().map(|pill| pill.read(cx));
         let now = cx.background_executor().now();
         let theme = Theme::global();
-        usage::meter_card(theme)
+        meter::meter_card(theme)
             .debug_selector(|| "panel-cache-tooltip".into())
             .w(px(312.))
             .child(
@@ -264,11 +264,11 @@ impl Render for CacheTooltip {
                     .child(title),
             )
             .children(previous_route.map(|route| {
-                usage::meter_detail(format!("Figures below are from {route}").into(), theme)
+                meter::meter_detail(format!("Figures below are from {route}").into(), theme)
                     .debug_selector(|| "panel-cache-previous-route".into())
             }))
             .children(pill.map(|pill| {
-                usage::meter_detail(pill.caption(now).into(), theme)
+                meter::meter_detail(pill.caption(now).into(), theme)
                     .debug_selector(|| "panel-cache-footer-metric".into())
             }))
             .child(usage_row(
@@ -290,11 +290,11 @@ impl Render for CacheTooltip {
                 theme,
             ))
             .children(keepalive_label(&telemetry.keepalive).map(|text| {
-                usage::meter_detail(text.into(), theme)
+                meter::meter_detail(text.into(), theme)
                     .debug_selector(|| "panel-cache-keepalive".into())
             }))
             .child(render_misses(&telemetry.misses, theme))
-            .child(usage::meter_detail(
+            .child(meter::meter_detail(
                 "Requests and misses observed in this panel".into(),
                 theme,
             ))
@@ -332,8 +332,8 @@ fn one_line(text: &str) -> String {
 
 const NOT_REPORTED: &str = "not reported";
 
-fn meter_ids(id: &str, value: &str) -> usage::MeterIds {
-    usage::MeterIds {
+fn meter_ids(id: &str, value: &str) -> meter::MeterIds {
+    meter::MeterIds {
         row: format!("panel-cache-{id}"),
         value: format!("panel-cache-{id}-value-{value}"),
         bar: format!("panel-cache-{id}-bar"),
@@ -363,7 +363,7 @@ fn usage_row(
             if count == 1 { "request" } else { "requests" },
         )
     });
-    usage::meter_row(
+    meter::meter_row(
         meter_ids(id, &value),
         name.into(),
         value,
@@ -431,7 +431,7 @@ fn retention_row(facts: Option<CacheFacts>, theme: &Palette) -> gpui::Div {
             (value, Some((percent, color)), Some(detail))
         },
     );
-    usage::meter_row(
+    meter::meter_row(
         meter_ids("retention", &value),
         "Retention".into(),
         value,
@@ -484,7 +484,7 @@ fn render_misses(misses: &Misses, theme: &Palette) -> gpui::Div {
         )
         .children(misses.recent.iter().enumerate().map(|(index, miss)| {
             let reason = miss.reason.replace('_', " ");
-            usage::meter_detail(
+            meter::meter_detail(
                 format!(
                     "{} · {}",
                     amount(Some(miss.missed_tokens)),

@@ -102,7 +102,7 @@ impl Panel {
                     let Some(entity) = panel.upgrade() else {
                         return;
                     };
-                    let room = (input.top() - body.top() - px(composer::OVERLAY_GAP)).max(px(0.));
+                    let room = (input.top() - body.top() - px(chrome::OVERLAY_GAP)).max(px(0.));
                     let panel = entity.read(cx);
                     if panel.composer_overlay_room.replace(room) != room
                         && (panel.side_question.is_some()

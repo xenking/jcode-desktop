@@ -5,7 +5,7 @@
 //! source session is never touched. That keeps the parent's prompt cache and
 //! transcript intact. The card can continue the same fork or open it as a
 //! full chat. Dismiss leaves the fork on disk for `/btw` history.
-use super::ask::{CardActionTooltip, embedded_reply_frame};
+use super::chrome::{CardActionTooltip, embedded_reply_frame};
 use super::*;
 use crate::harness::{SideQuestionThread, SideQuestionTopic, SideQuestionTurn};
 use jcode_sdk::{ApiEvent, SessionInfo};

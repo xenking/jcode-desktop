@@ -41,6 +41,10 @@ mod runtime_commands;
 #[path = "panel_commands.rs"]
 mod desktop_commands;
 
+#[path = "panel_chrome.rs"]
+mod chrome;
+#[path = "panel_meter.rs"]
+pub(crate) mod meter;
 #[path = "panel_clean_chat.rs"]
 mod clean_chat;
 #[path = "panel_assistant_output.rs"]
@@ -8586,7 +8590,7 @@ fn render_todo_marker(todo: &TodoCardItem, id: String) -> impl IntoElement {
         .when_some(label, |marker, label| {
             let tip = format!("Confidence: {label}");
             marker.tooltip(move |_, cx| {
-                cx.new(|_| crate::panel::usage::MeterTooltip(tip.clone()))
+                cx.new(|_| crate::panel::meter::MeterTooltip(tip.clone()))
                     .into()
             })
         })
@@ -8971,7 +8975,7 @@ fn render_todo_card_with_style(
                                 .text_size(px(10.0))
                                 .text_color(Theme::global().TEXT_FAINT)
                                 .tooltip(move |_, cx| {
-                                    cx.new(|_| usage::MeterTooltip(full.clone())).into()
+                                    cx.new(|_| meter::MeterTooltip(full.clone())).into()
                                 })
                                 .child(label)
                         })),

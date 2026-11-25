@@ -316,7 +316,7 @@ impl Panel {
                             window,
                             cx,
                         )))
-                        .child(super::recovery::copy_pill("stop-notice-copy", index, copy)),
+                        .child(super::chrome::copy_pill("stop-notice-copy", index, copy)),
                 )
             })
             .when(

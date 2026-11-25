@@ -249,7 +249,7 @@ impl Panel {
         let marker = chip.warning_marker();
         let pending = chip.pending.clone();
         Some(
-            super::composer::composer_pill("composer-routing-chip")
+            super::chrome::composer_pill("composer-routing-chip")
                 .relative()
                 .children(crate::fixture_control_targets::marker(
                     || "routing-chip".into(),
@@ -262,7 +262,7 @@ impl Panel {
                 .px_2()
                 .gap_1()
                 .tooltip(move |_, cx| {
-                    cx.new(|_| super::usage::RowsTooltip {
+                    cx.new(|_| super::meter::RowsTooltip {
                         title: "Account routing".into(),
                         rows: rows.clone(),
                     })

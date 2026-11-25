@@ -196,7 +196,7 @@ impl Panel {
                 .debug_selector(|| ID.into())
                 .relative()
                 .flex_none()
-                .size(px(composer::TAB_HEIGHT))
+                .size(px(chrome::TAB_HEIGHT))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -230,7 +230,7 @@ impl Panel {
                     gpui::svg()
                         .data(include_bytes!("../../../assets/icons/comment.svg") as &'static [u8])
                         .text_color(color)
-                        .size(px(composer::BAR_ICON)),
+                        .size(px(chrome::BAR_ICON)),
                 ),
         )
         .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
@@ -241,7 +241,7 @@ impl Panel {
             panel.toggle_clean_chat(cx);
             cx.stop_propagation();
         }))
-        .tooltip(move |_, cx| cx.new(|_| usage::MeterTooltip(tooltip.into())).into())
+        .tooltip(move |_, cx| cx.new(|_| meter::MeterTooltip(tooltip.into())).into())
         .into_any_element()
     }
 

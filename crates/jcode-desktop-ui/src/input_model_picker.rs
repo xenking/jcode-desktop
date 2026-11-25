@@ -1107,7 +1107,7 @@ fn header_quota(index: usize, quota: &model_menu::RouteQuota) -> gpui::Div {
         } else {
             format!("{:.0}% left", 100. - used)
         };
-        let color = crate::panel::usage::usage_color(used, theme);
+        let color = crate::panel::meter::usage_color(used, theme);
         div()
             .debug_selector(move || format!("model-picker-quota-{index}-{window}"))
             .flex()

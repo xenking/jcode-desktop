@@ -8,11 +8,8 @@
 //! focused pane's background in several palettes, and a pill that vanishes on
 //! the pane you are typing in is not a pill.
 use super::*;
+use super::chrome::{BAR_ICON, EffortTooltip, OVERLAY_GAP, TAB_HEIGHT, composer_button, composer_pill, pretty_model_label};
 
-/// Pill height.
-pub(super) const TAB_HEIGHT: f32 = 22.;
-/// One size for the effort circle, worker cluster, wait mark and cache timer.
-pub(crate) const BAR_ICON: f32 = 13.;
 /// Gap between the input and the pill row below it.
 const PILL_GAP: f32 = 4.;
 /// Distance from the input's right edge to the in-box voice button.
@@ -22,7 +19,6 @@ const DOCK_FADE: f32 = 28.;
 /// Opacity of the veil behind the composer. High enough that history behind
 /// the controls is a quiet hint, never competing with the draft.
 const DOCK_VEIL_ALPHA: f32 = 0.86;
-pub(super) const OVERLAY_GAP: f32 = 4.;
 /// Right padding the input reserves so text never runs under the voice
 /// button. Linux shows a single-glyph keycap; other platforms spell out the
 /// chord, so their button is wider.
@@ -696,24 +692,6 @@ impl Render for LocationTooltip {
     }
 }
 
-/// Hover for the effort pill: the pill shows the dot alone, so the level name
-/// has to live here.
-pub(super) struct EffortTooltip(pub(super) String);
-
-impl Render for EffortTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let _render_scope = crate::render_stats::scope("EffortTooltip");
-        div()
-            .debug_selector(|| "composer-effort-tooltip".into())
-            .max_w(px(300.))
-            .p_2()
-            .rounded_md()
-            .bg(Theme::global().HEADER_BG)
-            .text_size(px(12.))
-            .text_color(Theme::global().TEXT)
-            .child(self.0.clone())
-    }
-}
 
 impl Panel {
     /// Chat panels on this computer can pick another folder from the pill.
@@ -769,36 +747,6 @@ impl Panel {
     }
 }
 
-pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
-    composer_button(id, false).bg(Theme::global().chip_background())
-}
-
-fn composer_button(id: &'static str, compact_hover: bool) -> gpui::Stateful<gpui::Div> {
-    let theme = Theme::global();
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .h(px(TAB_HEIGHT))
-        .px_2p5()
-        .flex()
-        .items_center()
-        .gap_1p5()
-        .rounded_full()
-        .text_size(px(10.5))
-        .font_family(theme.FONT_MONO)
-        .text_color(theme.composer_secondary())
-        .whitespace_nowrap()
-        .cursor_pointer()
-        .when(compact_hover, |el| el.group(id))
-        .hover(|el| {
-            let el = el.text_color(theme.TEXT);
-            if compact_hover {
-                el
-            } else {
-                el.bg(theme.chip_active_background())
-            }
-        })
-}
 
 // The segment owns hover, click and focus. Its absolute fill follows the
 // content width without growing the layout or taking any event handlers.
@@ -818,19 +766,6 @@ fn composer_hover_content(group: &'static str, pad: f32) -> gpui::Div {
     )
 }
 
-/// `claude-opus-4-8` reads `Opus 4.8`. The provider already appears in the
-/// method pill, so the redundant `Claude` family prefix is dropped, matching
-/// the TUI's compact model label.
-pub(super) fn pretty_model_label(model: Option<&str>) -> String {
-    let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) else {
-        return "Choose model".into();
-    };
-    let pretty = jcode_provider_core::model_names::pretty_model_display_name(model);
-    match pretty.strip_prefix("Claude ") {
-        Some(rest) if !rest.trim().is_empty() => rest.to_string(),
-        _ => pretty,
-    }
-}
 
 /// Last path component. The full path is kept in the hover card.
 fn location_label(path: &str) -> String {

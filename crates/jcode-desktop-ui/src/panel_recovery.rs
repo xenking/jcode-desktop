@@ -1,5 +1,6 @@
 //! Native recovery actions. Route changes never pass through the composer.
 use super::*;
+use super::chrome::{action_pill, copy_pill};
 use gpui::AnyElement;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,30 +125,6 @@ pub(super) fn native_error_message(message: &str) -> String {
         RecoveryKind::Failover => unreachable!("parsed above"),
         RecoveryKind::Other => return crate::friendly_error::summarize(message),
     }.to_string()
-}
-
-/// A compact pill which copies the complete original text.
-pub(super) fn copy_pill(id: &'static str, index: usize, text: String) -> gpui::Stateful<gpui::Div> {
-    action_pill(id, index, "Copy").on_click(move |_, _, cx| {
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
-        cx.stop_propagation();
-    })
-}
-
-fn action_pill(id: &'static str, index: usize, label: &'static str) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id((id, index))
-        .debug_selector(move || id.into())
-        .flex_none()
-        .px_2p5()
-        .py(px(2.))
-        .rounded_full()
-        .bg(Theme::global().ACCENT_DIM)
-        .text_size(px(11.))
-        .text_color(Theme::global().TEXT)
-        .cursor_pointer()
-        .hover(|el| el.opacity(0.8))
-        .child(label)
 }
 
 impl Panel {

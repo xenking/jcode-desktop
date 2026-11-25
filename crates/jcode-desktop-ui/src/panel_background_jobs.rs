@@ -6,7 +6,7 @@ use jcode_sdk::api::{
     BackgroundTasksSnapshot, format_progress_summary,
 };
 
-struct JobTooltip(super::usage::RowsTooltip);
+struct JobTooltip(super::meter::RowsTooltip);
 
 impl Render for JobTooltip {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -203,7 +203,7 @@ impl Panel {
         .when(selected, |el| el.bg(theme.USER_BG))
         .hover(|el| el.bg(theme.USER_BG))
         .tooltip(move |_, cx| {
-            cx.new(|_| JobTooltip(super::usage::RowsTooltip {
+            cx.new(|_| JobTooltip(super::meter::RowsTooltip {
                 title: tooltip_title.clone(),
                 rows: tooltip_rows.clone(),
             }))

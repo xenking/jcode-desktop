@@ -23,7 +23,7 @@ impl Panel {
                 .font_family(theme.FONT_MONO)
                 .text_size(px(10.))
                 .text_color(theme.TEXT_DIM)
-                .tooltip(move |_, cx| cx.new(|_| super::usage::RowsTooltip {
+                .tooltip(move |_, cx| cx.new(|_| super::meter::RowsTooltip {
                     title: "Voice cost estimate".into(),
                     rows: tooltip.clone(),
                 }).into())

@@ -1,4 +1,4 @@
-use super::composer::{BAR_ICON, TAB_HEIGHT};
+use super::chrome::{BAR_ICON, TAB_HEIGHT};
 use super::*;
 use crate::swarm_glyph::{Icon, Mark, Motion};
 
@@ -202,7 +202,7 @@ impl Panel {
                 || Some(self.session_id.clone()),
             ))
             .tooltip(move |_, cx| {
-                cx.new(|_| super::usage::MeterTooltip(tooltip.clone().into()))
+                cx.new(|_| super::meter::MeterTooltip(tooltip.clone().into()))
                     .into()
             })
             .child(div().debug_selector(move || selector.into()).child(icon))

@@ -324,7 +324,7 @@ impl Row<'_> {
                             .size(px(14.0))
                             .when_some(description, |el, description| {
                                 el.tooltip(move |_, cx| {
-                                    cx.new(|_| ask::CardActionTooltip(description)).into()
+                                    cx.new(|_| chrome::CardActionTooltip(description)).into()
                                 })
                             })
                             .child(

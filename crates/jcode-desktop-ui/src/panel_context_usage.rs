@@ -1087,7 +1087,7 @@ impl Panel {
                 |el| {
                     el.tooltip(|_, cx| {
                         cx.new(|_| {
-                            super::usage::MeterTooltip(
+                            super::meter::MeterTooltip(
                                 "Manual tool shaking is unavailable on this runtime.".into(),
                             )
                         })
@@ -1122,7 +1122,7 @@ impl Panel {
                     .child(forecast)
                     .when_some(compact_measurement, |el, measurement| {
                         el.tooltip(move |_, cx| {
-                            cx.new(|_| super::usage::MeterTooltip(format!(
+                            cx.new(|_| super::meter::MeterTooltip(format!(
                                 "Local Snapcompact estimate: {} → {} tokens. Excludes provider-generated decisions.",
                                 format_tokens(measurement.before_tokens), format_tokens(measurement.after_tokens),
                             ))).into()

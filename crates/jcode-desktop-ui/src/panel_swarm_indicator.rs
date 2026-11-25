@@ -267,7 +267,7 @@ impl Panel {
                 Mark {
                     icon: Icon::Workers,
                     color,
-                    size: super::composer::BAR_ICON,
+                    size: super::chrome::BAR_ICON,
                     motion,
                 },
                 cx,
@@ -279,7 +279,7 @@ impl Panel {
         });
         Some(
             crate::keyboard::popover_trigger(
-                super::composer::composer_pill("composer-workers"),
+                super::chrome::composer_pill("composer-workers"),
                 &self.swarm_trigger_focus,
             )
             .flex_none()
@@ -289,7 +289,7 @@ impl Panel {
                 el.bg(theme.chip_active_background()).text_color(theme.TEXT)
             })
             .tooltip(move |_, cx| {
-                cx.new(|_| super::usage::RowsTooltip {
+                cx.new(|_| super::meter::RowsTooltip {
                     title: (if job_total > 0 {
                         "Active work"
                     } else {
@@ -423,7 +423,7 @@ impl Panel {
                 .text_color(theme.composer_secondary())
                 .tooltip(move |_, cx| {
                     cx.new(|_| {
-                        super::usage::RowsTooltip::separated(
+                        super::meter::RowsTooltip::separated(
                             tooltip_name.clone(),
                             tooltip
                                 .strip_prefix(&format!("{} · ", tooltip_name))
@@ -757,7 +757,7 @@ mod tests {
         let (panel, vcx) = setup(cx);
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("session-status-idle").is_some());
-        let slot_size = gpui::size(px(18.), px(super::super::composer::TAB_HEIGHT));
+        let slot_size = gpui::size(px(18.), px(super::super::chrome::TAB_HEIGHT));
         for (frame, expected) in [
             (serde_json::json!({"ev":"reasoning_delta","text":"hm"}), "session-status-working"),
             (serde_json::json!({"ev":"tool_start","call_id":"c1","name":"swarm"}), "session-status-tools"),

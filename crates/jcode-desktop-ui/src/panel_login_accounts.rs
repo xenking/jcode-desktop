@@ -1081,7 +1081,7 @@ impl Panel {
                     )
                     .tooltip(|_, cx| {
                         cx.new(|_| {
-                            super::usage::MeterTooltip(
+                            super::meter::MeterTooltip(
                                 "Drag to reorder or move between Auto-switch and Manual".into(),
                             )
                         })
@@ -1127,7 +1127,7 @@ impl Panel {
                         .child(label)
                         .tooltip(move |_, cx| {
                             cx.new(|_| {
-                                super::usage::MeterTooltip(format!(
+                                super::meter::MeterTooltip(format!(
                                     "Move {direction} in auto-switch order"
                                 ))
                             })
@@ -1187,7 +1187,7 @@ impl Panel {
                     .id(SharedString::from(format!("login-status-chip-{key}")))
                     .debug_selector(move || status_selector.clone())
                     .tooltip(move |_, cx| {
-                        cx.new(|_| super::usage::MeterTooltip(tip.into())).into()
+                        cx.new(|_| super::meter::MeterTooltip(tip.into())).into()
                     }),
             );
         } else {
@@ -1223,7 +1223,7 @@ impl Panel {
                     .child("Test")
                     .tooltip(|_, cx| {
                         cx.new(|_| {
-                            super::usage::MeterTooltip(
+                            super::meter::MeterTooltip(
                                 "Test account · Uses quota or credit".into(),
                             )
                         })

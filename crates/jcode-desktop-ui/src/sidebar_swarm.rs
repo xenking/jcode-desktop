@@ -270,7 +270,7 @@ pub(super) fn render_workers(
                 .text_color(theme.TEXT_DIM)
                 .tooltip(move |_, cx| {
                     cx.new(|_| {
-                        crate::panel::usage::RowsTooltip::separated(
+                        crate::panel::meter::RowsTooltip::separated(
                             tooltip_name.clone(),
                             tooltip
                                 .strip_prefix(&format!("{} · ", tooltip_name))

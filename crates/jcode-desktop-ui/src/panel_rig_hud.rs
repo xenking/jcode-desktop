@@ -1,4 +1,4 @@
-use super::{Panel, composer, usage, *};
+use super::{Panel, chrome, meter, *};
 use jcode_desktop_openrig::fleet::Fleet;
 
 #[derive(Clone, PartialEq)]
@@ -71,7 +71,7 @@ impl Render for Tooltip {
                 .child(div().text_color(theme.TEXT_FAINT).child(label))
                 .child(div().text_color(theme.TEXT).child(value))
         };
-        usage::meter_card(theme)
+        meter::meter_card(theme)
             .relative()
             .children(crate::fixture_control_targets::marker(
                 || "tooltip:openrig".into(),
@@ -102,7 +102,7 @@ impl Render for Tooltip {
                     .work
                     .map(|v| row("In progress", in_progress_label(v))),
             )
-            .child(usage::meter_detail(
+            .child(meter::meter_detail(
                 "Click to open in OpenRig".into(),
                 theme,
             ))
@@ -141,7 +141,7 @@ impl Panel {
         let theme = Theme::global();
         let selector = format!("panel-openrig:{}", self.session_id);
         Some(
-            composer::composer_pill("panel-openrig")
+            chrome::composer_pill("panel-openrig")
                 .relative()
                 .flex_none()
                 .px_2()
@@ -155,7 +155,7 @@ impl Panel {
                         crate::swarm_glyph::Mark::still(
                             crate::swarm_glyph::Icon::OpenRig,
                             theme.composer_secondary(),
-                            composer::BAR_ICON,
+                            chrome::BAR_ICON,
                         )
                         .render(None),
                     ),

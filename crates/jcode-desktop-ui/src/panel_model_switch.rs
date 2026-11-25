@@ -109,12 +109,12 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> Option<gpui::Stateful<gpui::Div>> {
         let target = self.pending_model.as_deref()?;
-        let label = format!("→ {} · queued", composer::pretty_model_label(Some(target)));
+        let label = format!("→ {} · queued", chrome::pretty_model_label(Some(target)));
         let hover = format!(
             "Switching to {target} when this turn ends. Click to keep the current model."
         );
         Some(
-            composer::composer_pill("panel-model-pending")
+            chrome::composer_pill("panel-model-pending")
                 .relative()
                 .children(crate::fixture_control_targets::marker(
                     || "panel-model-pending".into(),
@@ -124,7 +124,7 @@ impl Panel {
                 .min_w_0()
                 .overflow_hidden()
                 .child(div().min_w_0().truncate().child(label))
-                .tooltip(move |_, cx| cx.new(|_| composer::EffortTooltip(hover.clone())).into())
+                .tooltip(move |_, cx| cx.new(|_| chrome::EffortTooltip(hover.clone())).into())
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.cancel_pending_model(cx);
                     cx.stop_propagation();

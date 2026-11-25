@@ -2,25 +2,10 @@
 //!
 // Each question owns its free-answer editor and each selected option its comment.
 use super::*;
+use super::chrome::{CardActionTooltip, embedded_reply_frame};
 use jcode_sdk::{AskAnswer, AskQuestion, AskResponse};
 
 const COMMENT_ICON: &[u8] = include_bytes!("../../../assets/icons/comment.svg");
-
-pub(super) struct CardActionTooltip(pub(super) &'static str);
-
-impl gpui::Render for CardActionTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::global();
-        div()
-            .px_2()
-            .py_1()
-            .rounded_full()
-            .bg(theme.TOOL_BG)
-            .text_size(px(11.))
-            .text_color(theme.TEXT)
-            .child(self.0)
-    }
-}
 
 fn ask_action(
     id: &'static str,
@@ -444,34 +429,6 @@ struct AskToolInput {
 
 const ASK_CONNECTION_CHANGED: &str =
     "The connection changed. Your answer is retained here and was not resent.";
-
-pub(super) fn embedded_reply_frame(
-    input: &Entity<PromptInput>,
-    selected: bool,
-    window: &Window,
-    cx: &App,
-) -> gpui::Div {
-    let theme = Theme::global();
-    let focused = input.read(cx).focus_handle.is_focused(window);
-    div()
-        .flex_1()
-        .min_w_0()
-        .rounded(px(18.))
-        .bg(if selected {
-            theme.ACCENT_DIM
-        } else {
-            theme.INPUT_BG
-        })
-        .border_1()
-        .border_color(if selected {
-            theme.ACCENT
-        } else if focused {
-            theme.PANEL_BORDER_FOCUS
-        } else {
-            theme.INPUT_BORDER
-        })
-        .child(input.clone())
-}
 
 impl Panel {
     pub(super) fn show_live_ask(

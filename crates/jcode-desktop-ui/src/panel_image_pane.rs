@@ -442,7 +442,7 @@ impl Panel {
             .when(self.image_pane_open, |el| el.bg(theme.ACCENT_DIM))
             .hover(|el| el.bg(theme.QUOTE_BG))
             .tooltip(|_, cx| {
-                cx.new(|_| super::usage::MeterTooltip("Session images".into()))
+                cx.new(|_| super::meter::MeterTooltip("Session images".into()))
                     .into()
             })
             .child(

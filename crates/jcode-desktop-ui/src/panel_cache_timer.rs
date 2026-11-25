@@ -302,7 +302,7 @@ impl Render for CachePill {
             _ => (Icon::Timer, theme.TEXT_FAINT),
         };
         let label = metric.label();
-        super::composer::composer_pill("panel-cache")
+        super::chrome::composer_pill("panel-cache")
             .relative()
             .flex_none()
             .px_2()
@@ -313,7 +313,7 @@ impl Render for CachePill {
                     .debug_selector(move || format!("panel-cache-icon-{icon:?}").to_lowercase())
                     .flex_none()
                     .child(
-                        crate::swarm_glyph::Mark::still(icon, ink, super::composer::BAR_ICON)
+                        crate::swarm_glyph::Mark::still(icon, ink, super::chrome::BAR_ICON)
                             .render(None),
                     ),
             )
@@ -588,7 +588,7 @@ mod tests {
             .expect("timer icon");
         let text = vcx.debug_bounds("panel-cache-label-3m").unwrap();
         assert!(icon.left() >= pill.left() && icon.right() <= text.left());
-        assert_eq!(icon.size.width, px(super::super::composer::BAR_ICON));
+        assert_eq!(icon.size.width, px(super::super::chrome::BAR_ICON));
         let shown = panel.read_with(vcx, |panel, _| {
             panel.cache_pill_value().unwrap().metric().label()
         });

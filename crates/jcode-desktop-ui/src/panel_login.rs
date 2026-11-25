@@ -961,7 +961,7 @@ impl Panel {
                                     .when(running, |el| el.opacity(0.6))
                                     .tooltip(|_, cx| {
                                         cx.new(|_| {
-                                            super::usage::MeterTooltip(
+                                            super::meter::MeterTooltip(
                                                 "Test all accounts · Uses quota or credit".into(),
                                             )
                                         })
