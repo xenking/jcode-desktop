@@ -33,13 +33,101 @@ impl Panel {
         }
     }
 
+    pub(super) fn render_account_row(
+        &self,
+        row: &AccountRow,
+        pooled: Option<bool>,
+        visible: &Rc<Vec<String>>,
+        position: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let pick = self
+            .login
+            .as_ref()
+            .filter(|state| state.selection_only)
+            .map(|_| self.picker_choice(row, cx));
+        AccountRowView {
+            row,
+            pooled,
+            visible,
+            position,
+            pick,
+            default: pick.is_none() && self.is_default_account(&row.key, position),
+            live_error: self
+                .login
+                .as_ref()
+                .and_then(|state| state.live_errors.get(row.provider.id))
+                .map(String::as_str),
+        }
+        .render(Self::handle_account_row, cx)
+    }
+
+    fn handle_account_row(
+        &mut self,
+        action: RowAction<'_>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            RowAction::Redeem(reset) => cx.emit(AccountsPanelRedeemReset(reset.clone())),
+            RowAction::Place {
+                key,
+                pooled,
+                before,
+                visible,
+            } => self.place_account(key, pooled, before, visible, cx),
+            RowAction::Test(provider) => self.live_test_providers(Some(provider.to_owned()), cx),
+            RowAction::Choose {
+                provider,
+                label,
+                switching,
+            } => {
+                if switching {
+                    self.select_existing_provider(provider, label.clone(), window, cx);
+                } else {
+                    self.select_login_provider_for(provider, label.clone(), cx);
+                }
+            }
+        }
+    }
+}
+
+enum RowAction<'a> {
+    Redeem(&'a BankedReset),
+    Place {
+        key: &'a str,
+        pooled: bool,
+        before: Option<&'a str>,
+        visible: &'a [String],
+    },
+    Test(&'a str),
+    Choose {
+        provider: LoginProvider,
+        label: &'a Option<String>,
+        switching: bool,
+    },
+}
+
+type RowHandler<T> = fn(&mut T, RowAction<'_>, &mut Window, &mut Context<T>);
+
+struct AccountRowView<'a> {
+    row: &'a AccountRow,
+    pooled: Option<bool>,
+    visible: &'a Rc<Vec<String>>,
+    position: Option<usize>,
+    pick: Option<PickerChoice>,
+    default: bool,
+    live_error: Option<&'a str>,
+}
+
+impl AccountRowView<'_> {
     /// Banked resets on a login. Clicking only opens the workspace review,
     /// which prepares against the provider and needs an explicit confirm.
-    fn render_banked_reset(
-        &self,
+    fn render_banked_reset<T: 'static>(
         key: &str,
         reset: &BankedReset,
-        cx: &mut Context<Self>,
+        handle: RowHandler<T>,
+        cx: &mut Context<T>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
         let id = format!("login-reset-{key}");
@@ -63,16 +151,18 @@ impl Panel {
             pill = pill
                 .cursor_pointer()
                 .hover(move |el| el.bg(color.opacity(0.24)))
-                .on_click(cx.listener(move |_, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
-                    cx.emit(AccountsPanelRedeemReset(reset.clone()));
+                    handle(this, RowAction::Redeem(&reset), window, cx);
                 }));
         } else {
             pill = pill.on_click(|_, _, cx| cx.stop_propagation());
         }
         pill.into_any_element()
     }
+}
 
+impl Panel {
     fn place_account(
         &mut self,
         key: &str,
@@ -133,15 +223,20 @@ impl Panel {
         }
         cx.notify();
     }
+}
 
-    pub(super) fn render_account_row(
-        &self,
-        row: &AccountRow,
-        pooled: Option<bool>,
-        visible: &Rc<Vec<String>>,
-        position: Option<usize>,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+impl AccountRowView<'_> {
+    fn render<T: 'static>(&self, handle: RowHandler<T>, cx: &mut Context<T>) -> AnyElement {
+        let Self {
+            row,
+            pooled,
+            visible,
+            position,
+            pick,
+            default,
+            live_error,
+        } = *self;
+        let selecting = pick.is_some();
         let theme = Theme::global();
         let provider = row.provider;
         let status = row.status;
@@ -179,14 +274,10 @@ impl Panel {
                     .child(title.clone()),
             )
             .child(div().flex_none().child(login_method_icon(provider.method)));
-        let selecting = self
-            .login
-            .as_ref()
-            .is_some_and(|state| state.selection_only);
         if row.active && !selecting {
             name_line = name_line.child(chip("In use", theme.ACCENT));
         }
-        if !selecting && self.is_default_account(&row.key, position) {
+        if default {
             name_line = name_line.child(
                 chip("Default", theme.ACCENT).debug_selector(|| "login-default-account".into()),
             );
@@ -195,7 +286,7 @@ impl Panel {
             name_line = name_line.child(chip(plan.clone(), theme.TEXT_DIM));
         }
         if let Some(reset) = &row.banked {
-            name_line = name_line.child(self.render_banked_reset(&row.key, reset, cx));
+            name_line = name_line.child(Self::render_banked_reset(&row.key, reset, handle, cx));
         } else if let Some(status) = &row.reset_status {
             let selector = format!("login-reset-status-{}", row.key);
             name_line = name_line.child(
@@ -230,19 +321,15 @@ impl Panel {
             );
         }
         let connected = pooled.is_some();
-        let live_error = self
-            .login
-            .as_ref()
-            .and_then(|state| state.live_errors.get(provider.id))
-            .filter(|_| {
-                status == ConnectionStatus::Failed || status == ConnectionStatus::Unverified
-            });
+        let live_error = live_error.filter(|_| {
+            status == ConnectionStatus::Failed || status == ConnectionStatus::Unverified
+        });
         // A provider that rejected the key says why on the row itself, so the
         // user does not have to press Test to learn what went wrong.
         let usage_error = (status == ConnectionStatus::Failed)
-            .then(|| row.error.clone())
+            .then_some(row.error.as_deref())
             .flatten();
-        if let Some(error) = live_error.cloned().or(usage_error) {
+        if let Some(error) = live_error.or(usage_error) {
             text = text.child(
                 div()
                     .text_size(px(11.))
@@ -250,7 +337,7 @@ impl Panel {
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(first_line(&error)),
+                    .child(first_line(error)),
             );
         }
         // Meters sit on their own line inside the text column. Beside the
@@ -373,14 +460,18 @@ impl Panel {
                             .into()
                         })
                         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
                             if enabled {
-                                this.place_account(
-                                    &move_key,
-                                    true,
-                                    before.as_deref(),
-                                    &visible,
+                                handle(
+                                    this,
+                                    RowAction::Place {
+                                        key: &move_key,
+                                        pooled: true,
+                                        before: before.as_deref(),
+                                        visible: &visible,
+                                    },
+                                    window,
                                     cx,
                                 );
                             }
@@ -462,21 +553,18 @@ impl Panel {
                     .child("Test")
                     .tooltip(|_, cx| {
                         cx.new(|_| {
-                            super::meter::MeterTooltip(
-                                "Test account · Uses quota or credit".into(),
-                            )
+                            super::meter::MeterTooltip("Test account · Uses quota or credit".into())
                         })
                         .into()
                     })
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                        this.live_test_providers(Some(provider_id.clone()), cx)
+                        handle(this, RowAction::Test(provider_id.as_str()), window, cx)
                     })),
             );
         }
         let label = row.label.clone();
-        let pick = selecting.then(|| self.picker_choice(row, cx));
         match pick {
             Some(PickerChoice::Current) => {
                 // The active account stands out: accent outline and fill.
@@ -508,11 +596,16 @@ impl Panel {
             return element.into_any_element();
         }
         element = element.on_click(cx.listener(move |this, _, window, cx| {
-            if selecting {
-                this.select_existing_provider(provider, label.clone(), window, cx);
-            } else {
-                this.select_login_provider_for(provider, label.clone(), cx);
-            }
+            handle(
+                this,
+                RowAction::Choose {
+                    provider,
+                    label: &label,
+                    switching: selecting,
+                },
+                window,
+                cx,
+            );
         }));
         if let Some(pooled) = pooled {
             let before = key.clone();
@@ -529,13 +622,27 @@ impl Panel {
                     |dragged, _, _, cx| cx.new(|_| AccountDragPreview(dragged.title.clone())),
                 )
                 .drag_over::<DraggedAccount>(|style, _, _, _| style.bg(Theme::global().ACCENT_DIM))
-                .on_drop(cx.listener(move |this, dragged: &DraggedAccount, _, cx| {
-                    this.place_account(&dragged.key, pooled, Some(&before), &visible, cx)
-                }));
+                .on_drop(
+                    cx.listener(move |this, dragged: &DraggedAccount, window, cx| {
+                        handle(
+                            this,
+                            RowAction::Place {
+                                key: &dragged.key,
+                                pooled,
+                                before: Some(&before),
+                                visible: &visible,
+                            },
+                            window,
+                            cx,
+                        )
+                    }),
+                );
         }
         element.into_any_element()
     }
+}
 
+impl Panel {
     #[allow(clippy::too_many_arguments)]
     fn render_account_group(
         &self,
@@ -842,7 +949,6 @@ fn icon_reset(color: gpui::Rgba) -> gpui::Div {
     div().text_size(px(11.)).text_color(color).child("↻")
 }
 
-
 fn status_chip(label: &'static str, color: gpui::Rgba) -> gpui::Div {
     chip_base(color).child(label)
 }
@@ -861,5 +967,3 @@ fn chip_base(color: gpui::Rgba) -> gpui::Div {
         .text_color(color)
         .whitespace_nowrap()
 }
-
-
