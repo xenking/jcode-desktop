@@ -51,11 +51,33 @@ fn assert_pin_inside(vcx: &mut gpui::VisualTestContext, panel_index: usize) {
 }
 
 #[gpui::test]
+fn repeated_keymap_installation_preserves_binding_count(cx: &mut gpui::TestAppContext) {
+    let counts = cx.update(|cx| {
+        [(); 3].map(|()| {
+            crate::bind_workspace_keys(cx);
+            cx.key_bindings().borrow().bindings().len()
+        })
+    });
+    assert!(counts[0] > 0);
+    assert_eq!(counts, [counts[0]; 3]);
+}
+
+#[gpui::test]
+fn new_workspace_windows_preserve_binding_count(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
+    let initial = cx.update(|cx| cx.key_bindings().borrow().bindings().len());
+    let counts = [(); 3].map(|()| {
+        cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        cx.update(|cx| cx.key_bindings().borrow().bindings().len())
+    });
+    assert!(initial > 0);
+    assert_eq!(counts, [initial; 3]);
+}
+
+#[gpui::test]
 fn repeated_key_binding_still_moves_exactly_one_panel_and_keeps_map_in_sync(
     cx: &mut gpui::TestAppContext,
 ) {
-    // Plugin reloads may install the workspace keymap again. One physical key
-    // press must still produce one navigation action.
     cx.update(|cx| {
         crate::bind_workspace_keys(cx);
         crate::bind_workspace_keys(cx);
