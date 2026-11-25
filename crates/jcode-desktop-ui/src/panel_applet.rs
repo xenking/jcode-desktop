@@ -23,10 +23,8 @@ pub(super) struct AppletPanel {
 impl Panel {
     pub fn new_applet(instance: String, bridge: Bridge, cx: &mut Context<Self>) -> Self {
         let title = crate::applet_runtime::get(cx)
-            .host
-            .borrow()
             .instance(&instance)
-            .map(|mounted| mounted.instance.document.title.clone())
+            .map(|mounted| mounted.instance.document.title)
             .unwrap_or_else(|| "Applet".into());
         let mut panel = Self::new(
             format!("{APPLET_PREFIX}{instance}"),
@@ -119,7 +117,7 @@ impl Panel {
             });
         });
         let runtime = crate::applet_runtime::get(cx);
-        let mounted = runtime.host.borrow().instance(&instance_id).cloned();
+        let mounted = runtime.instance(&instance_id);
         let title = mounted
             .as_ref()
             .map(|mounted| mounted.instance.document.title.clone())

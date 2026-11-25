@@ -17,11 +17,11 @@ impl Panel {
             return;
         }
         self.applet_generation = key;
-        let host = runtime.host.borrow();
+        let mounted_rows = runtime.inline_instances(&self.session_id);
         let mut rows = Vec::new();
         let mut seen = HashSet::new();
         let mut receipts = None;
-        for mounted in host.inline_for(&self.session_id) {
+        for mounted in &mounted_rows {
             let id = mounted.instance.id.clone();
             if let Placement::Inline {
                 anchor: Anchor::ToolCall { call_id },
@@ -73,7 +73,6 @@ impl Panel {
             seen.insert(id.clone());
             rows.push((position, id));
         }
-        drop(host);
         // The panel snapshot may arrive before the first runtime snapshot.
         if !rows.is_empty() || !seen.is_empty() {
             self.applet_positions.retain(|id, _| seen.contains(id));
@@ -1160,10 +1159,7 @@ impl Panel {
                             .or_default()
                             .clone();
                         let applet_instance = crate::applet_runtime::get(cx)
-                            .host
-                            .borrow()
-                            .tool_card(&self.session_id, &call_id)
-                            .map(|mounted| mounted.instance.id.clone());
+                            .tool_card_instance_id(&self.session_id, &call_id);
                         let mut supplement = if name == "ask" && *done {
                             Some(
                                 div()

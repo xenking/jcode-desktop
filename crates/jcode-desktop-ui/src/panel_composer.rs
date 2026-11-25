@@ -642,12 +642,8 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let instances: Vec<String> = crate::applet_runtime::get(cx)
-            .host
-            .borrow()
-            .composer_for(&self.session_id)
-            .map(|mounted| mounted.instance.id.clone())
-            .collect();
+        let instances: Vec<String> =
+            crate::applet_runtime::get(cx).composer_instance_ids(&self.session_id);
         if instances.is_empty() {
             return None;
         }
