@@ -1292,7 +1292,7 @@ impl Workspace {
                 format!("SSH · {host} · ~ (remote home)"),
             ),
         };
-        let tooltip = crate::panel::usage::RowsTooltip {
+        let tooltip = crate::panel::meter::RowsTooltip {
             title: "New session destination".into(),
             rows: vec![description, format!("New session: {}", spawn_shortcut())],
         };
@@ -1312,7 +1312,7 @@ impl Workspace {
             .occlude()
             .hover(|el| el.bg(Theme::global().ACCENT_DIM))
             .tooltip(move |_, cx| {
-                cx.new(|_| crate::panel::usage::RowsTooltip {
+                cx.new(|_| crate::panel::meter::RowsTooltip {
                     title: tooltip.title.clone(),
                     rows: tooltip.rows.clone(),
                 }).into()

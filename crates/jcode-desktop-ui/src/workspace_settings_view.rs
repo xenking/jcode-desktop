@@ -376,7 +376,7 @@ impl Workspace {
                 for (report_index, report) in account.usage_reports.iter().enumerate() {
                     let amount =
                         |period| report.period_amount(period).unwrap_or_else(|| "n/a".into());
-                    let tooltip = crate::panel::usage::RowsTooltip {
+                    let tooltip = crate::panel::meter::RowsTooltip {
                         title: format!("{} · API estimate, not a bill", report.title()),
                         rows: ["Today", "Lifetime"]
                             .into_iter()
@@ -396,7 +396,7 @@ impl Workspace {
                             .gap_1()
                             .min_w_0()
                             .tooltip(move |_, cx| {
-                                cx.new(|_| crate::panel::usage::RowsTooltip {
+                                cx.new(|_| crate::panel::meter::RowsTooltip {
                                     title: tooltip.title.clone(),
                                     rows: tooltip.rows.clone(),
                                 })
