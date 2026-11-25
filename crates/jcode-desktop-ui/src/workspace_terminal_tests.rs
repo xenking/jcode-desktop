@@ -6,7 +6,7 @@ use crate::terminal::TerminalPanel;
 fn terminal_at(workspace: &Workspace, index: usize) -> Entity<TerminalPanel> {
     workspace.slots[index]
         .panel
-        .terminal()
+        .profile().terminal()
         .cloned()
         .expect("slot holds a terminal")
 }
