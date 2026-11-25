@@ -195,7 +195,7 @@ impl Panel {
         let running: Vec<String> = self
             .swarm_workers
             .iter()
-            .filter(|worker| worker.state.is_live())
+            .filter(|worker| worker.is_live())
             .map(|worker| worker.session_id.clone())
             .collect();
         if !running.is_empty() {

@@ -168,7 +168,7 @@ impl Panel {
         let finished = |id: &str| {
             self.swarm_workers
                 .iter()
-                .any(|worker| worker.session_id == id && worker.state.is_finished())
+                .any(|worker| worker.session_id == id && worker.is_finished())
         };
         let mut ids = Vec::new();
         let now = await_now_ms();
@@ -344,15 +344,15 @@ impl Panel {
         let mut workers: Vec<_> = self
             .swarm_workers
             .iter()
-            .filter(|worker| worker.state.is_live())
+            .filter(|worker| worker.is_live())
             .cloned()
             .collect();
-        workers.sort_by_key(|worker| !worker.state.is_active());
+        workers.sort_by_key(|worker| !worker.is_active());
         let active_count = workers.len();
         let finished = self
             .swarm_workers
             .iter()
-            .filter(|worker| worker.state.is_finished());
+            .filter(|worker| worker.is_finished());
         let finished_count = finished.clone().count();
         if self.swarm_finished_open {
             workers.extend(finished.cloned());
@@ -377,7 +377,7 @@ impl Panel {
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ");
-                let mark = worker.state.glyph().map(|glyph| {
+                let mark = worker.glyph().map(|glyph| {
                     self.swarm_marks.element(
                         &format!("worker:{}", worker.session_id),
                         Mark::glyph(glyph, 11.0),
@@ -393,12 +393,7 @@ impl Panel {
                 let effort = worker
                     .effort_level()
                     .and_then(|effort| crate::effort_icon::icon(&effort, 11.0));
-                let provider = crate::provider_mark::render(
-                    worker.meta.provider.as_deref(),
-                    worker.meta.model.as_deref(),
-                    11.0,
-                    theme.composer_secondary(),
-                );
+                let provider = worker.provider_mark(11.0, theme.composer_secondary());
                 let tokens = worker.tokens_text();
                 let cost = worker.cost_text();
                 crate::keyboard::tracked_button(
@@ -452,7 +447,7 @@ impl Panel {
                     div()
                         .flex_none()
                         .text_size(px(11.5))
-                        .children(worker.icon.map(|icon| icon.to_owned())),
+                        .children(worker.icon_text()),
                 )
                 .child(
                     div()

@@ -249,7 +249,7 @@ impl Panel {
                     "session_id": worker.session_id,
                     "name": worker.name,
                     "label": worker.row_title(),
-                    "state": worker.state.label(),
+                    "state": worker.state_label(),
                     "age_ms": worker.age_ms,
                     "meta": worker.meta,
                 }
