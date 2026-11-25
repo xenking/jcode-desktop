@@ -3451,7 +3451,25 @@ impl Workspace {
     /// Open `session` as a panel immediately to the right of the focused panel.
     /// Returns the index of the new slot.
     fn open_session(&mut self, session: jcode_sdk::SessionInfo, cx: &mut Context<Self>) -> usize {
-        self.open_session_with_identity(session.session_id, session.title, session.working_dir, cx)
+        self.open_session_in_row(session, self.active_row, cx)
+    }
+
+    /// Open `session` as a panel in `row`. A row other than the active one
+    /// receives the panel at its end and stays hidden: focus, the active row
+    /// and the camera are untouched.
+    fn open_session_in_row(
+        &mut self,
+        session: jcode_sdk::SessionInfo,
+        row: usize,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        self.open_session_with_identity(
+            session.session_id,
+            session.title,
+            session.working_dir,
+            row,
+            cx,
+        )
     }
 
     fn open_session_with_identity(
@@ -3459,10 +3477,12 @@ impl Workspace {
         session_id: String,
         title: Option<String>,
         working_dir: Option<String>,
+        row: usize,
         cx: &mut Context<Self>,
     ) -> usize {
+        debug_assert!(row < STRIP_COUNT);
         let width_fraction = spawned_panel_width(
-            self.row_indices(self.active_row)
+            self.row_indices(row)
                 .filter(|&index| !self.slots[index].closing)
                 .count(),
         );
@@ -3476,7 +3496,7 @@ impl Workspace {
         }
         let slot = Slot {
             panel: PanelItem::Chat(panel),
-            row: self.active_row,
+            row,
             width_fraction,
             animated_width: AnimatedValue::new(
                 0.0,
@@ -3497,8 +3517,8 @@ impl Workspace {
         let active_is_on_strip = self
             .slots
             .get(self.active)
-            .is_some_and(|slot| slot.row == self.active_row);
-        let row_last = self.row_indices(self.active_row).last();
+            .is_some_and(|slot| slot.row == row);
+        let row_last = self.row_indices(row).last();
         let insert_at = insert_index(self.active, active_is_on_strip, row_last, self.slots.len());
         self.slots.insert(insert_at, slot);
         self.slots[insert_at]
@@ -3507,7 +3527,7 @@ impl Workspace {
         // The lone panel that had the whole viewport steps back to the default
         // width now that it has company, leaving two equal halves.
         let live_indices = self
-            .row_indices(self.active_row)
+            .row_indices(row)
             .filter(|&index| !self.slots[index].closing)
             .collect::<Vec<_>>();
         let strip_panels = live_indices.len();
@@ -3528,7 +3548,7 @@ impl Workspace {
         if self.active >= insert_at {
             self.active += 1;
         }
-        if !is_startup {
+        if !is_startup && row == self.active_row {
             crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         }
         insert_at
@@ -3674,7 +3694,13 @@ impl Workspace {
                     self.open_session(session, cx)
                 } else {
                     // A signed DM may arrive ahead of the next catalog refresh.
-                    self.open_session_with_identity(session_id.to_owned(), None, None, cx)
+                    self.open_session_with_identity(
+                        session_id.to_owned(),
+                        None,
+                        None,
+                        self.active_row,
+                        cx,
+                    )
                 }
             });
         self.set_active(index, cx);

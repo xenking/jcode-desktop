@@ -371,11 +371,25 @@ impl Workspace {
                 destination:
                     jcode_sdk::desktop_control::OpenDestination::BackgroundPanel {
                         window_id: target_window,
+                        workspace,
                     },
             } => {
                 if target_window != window_id(window) {
                     return error("window_not_found", "window id does not match endpoint");
                 }
+                // One-based, as the user sees it. Every workspace of the strip
+                // exists from the start, so an empty one is not created, only
+                // filled. Absent means the active workspace.
+                let row = match workspace {
+                    None => self.active_row,
+                    Some(number) if (1..=STRIP_COUNT).contains(&number) => number - 1,
+                    Some(_) => {
+                        return error(
+                            "workspace_out_of_range",
+                            &format!("workspace must be between 1 and {STRIP_COUNT}"),
+                        );
+                    }
+                };
                 if self
                     .slots
                     .iter()
@@ -391,11 +405,11 @@ impl Workspace {
                 else {
                     return error("session_not_found", "session is not in the session catalog");
                 };
-                let index = self.open_session(session, cx);
+                let index = self.open_session_in_row(session, row, cx);
                 let panel_id = self.slots[index].panel.entity_id().as_u64();
                 cx.notify();
                 ok(
-                    json!({"window_id": target_window, "session_id": session_id, "panel_id": panel_id}),
+                    json!({"window_id": target_window, "session_id": session_id, "panel_id": panel_id, "workspace": row + 1}),
                 )
             }
             DesktopAction::List {} => {
