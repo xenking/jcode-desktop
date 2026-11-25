@@ -52,7 +52,9 @@ the user's real history.
   Capture the orchestration panel after each click. The second capture must show
   **Verify a background project**, phases 1 and 2, and the Review and Verification
   lanes. `drive --action list` must show one orchestration panel and the original
-  chat only. This uses a private persisted snapshot, not a live daemon.
+  chat only. This uses a private persisted snapshot, not a live daemon. The
+  snapshot also holds one `requests` todo: the sidebar count stays 1/3 and the
+  orchestration panel must not list it as a phase.
 - **Catalog controls:** in `sidebar-todos`, click `sidebar-sort-agent-activity`
   and then `sidebar-origin-agents`. Capture the selected controls and check that
   the ordinary chat leaves the list while the background project remains marked

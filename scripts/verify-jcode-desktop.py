@@ -245,6 +245,9 @@ class Instance:
             todos = self.profile / "jcode" / "todos"
             todos.mkdir()
             save(todos / f"{session}.json", [
+                # The user's requests lead the list but never count as plan work.
+                {"id": "request_1", "content": "Ask #1: Publish the result", "status": "in_progress",
+                 "priority": "medium", "group": "requests"},
                 {"id": "review", "content": "Review the migration", "status": "completed",
                  "priority": "high", "stage": 1, "group": "Review"},
                 {"id": "check", "content": "Check the isolated build", "status": "in_progress",
