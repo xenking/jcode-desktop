@@ -42,7 +42,7 @@ impl Panel {
         }
         let theme = Theme::global();
         let state = self.login.as_ref()?;
-        let query = state.search.read(cx).content.clone();
+        let query = state.search.read(cx).text();
         let rows = super::accounts::picker_rows(state.account_rows(&state.providers), &query);
         let visible = Rc::new(Vec::new());
         let remote = self.login_is_remote();

@@ -50,7 +50,7 @@ impl ActionState {
     /// The confirmation's text field owns the keyboard while it is focused.
     pub(super) fn input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
         matches!(&self.phase, Phase::Confirm { input: Some(input), .. }
-            if input.read(cx).focus_handle.is_focused(window))
+            if input.read(cx).is_focused(window))
     }
 
     pub(super) fn handle_key(&mut self, key: &str) -> bool {
@@ -375,7 +375,7 @@ impl State {
             })
         });
         if let Some(input) = &input {
-            window.focus(&input.read(cx).focus_handle.clone(), cx);
+            window.focus(&input.read(cx).editor_focus(), cx);
         } else {
             window.focus(&self.focus, cx);
         }
@@ -410,10 +410,10 @@ impl State {
         if !offered || self.snapshot.attention_target(&item) != Some(target) {
             return;
         }
-        let text = input.map_or("", |input| input.read(cx).content.as_str());
-        let Some(confirmed) = action.confirm(text) else {
+        let text = input.map_or_else(String::new, |input| input.read(cx).text_owned());
+        let Some(confirmed) = action.confirm(&text) else {
             if let Some(input) = input {
-                window.focus(&input.read(cx).focus_handle.clone(), cx);
+                window.focus(&input.read(cx).editor_focus(), cx);
             }
             return;
         };

@@ -36,7 +36,7 @@ impl ChatView {
     pub(super) fn composer_focused(&self, window: &Window, cx: &gpui::App) -> bool {
         self.relay
             .as_ref()
-            .is_some_and(|relay| relay.input.read(cx).focus_handle.is_focused(window))
+            .is_some_and(|relay| relay.input.read(cx).is_focused(window))
     }
 
     fn relay_sending(&self) -> bool {
@@ -191,7 +191,7 @@ impl State {
                     true
                 })
         });
-        window.focus(&input.read(cx).focus_handle.clone(), cx);
+        window.focus(&input.read(cx).editor_focus(), cx);
         self.chat.start_relay(Relay {
             host,
             role,
@@ -209,7 +209,7 @@ impl State {
         if !matches!(relay.phase, RelayPhase::Editing) {
             return;
         }
-        let message = relay.input.read(cx).content.clone();
+        let message = relay.input.read(cx).text();
         if message.trim().is_empty() {
             return;
         }

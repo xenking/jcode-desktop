@@ -169,7 +169,7 @@ impl Panel {
         let text = visible.as_ref();
         let clock = (!clean_chat).then(|| self.user_clock(index)).flatten();
         let mut unresolved = Vec::new();
-        let attachments: HashMap<_, _> = crate::input::image_marker_ranges(text)
+        let attachments: HashMap<_, _> = crate::image_chip::image_marker_ranges(text)
             .into_iter()
             .enumerate()
             .map(|(slot, range)| {

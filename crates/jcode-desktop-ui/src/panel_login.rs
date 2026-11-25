@@ -1033,7 +1033,7 @@ impl Panel {
         } else if !remote {
             let providers = catalog::filtered_providers(
                 &state.providers,
-                &state.search.read(cx).content,
+                &state.search.read(cx).text(),
                 state.statuses.as_ref(),
                 state.status_loading,
                 state.usage.as_ref(),

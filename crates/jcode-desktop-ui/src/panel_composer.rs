@@ -284,12 +284,8 @@ impl Panel {
         }
         let picker_open = self.picker_search.is_some();
         let hide_voice = picker_open && !self.input.read(cx).has_user_draft();
-        if self.input.read(cx).external_picker_open != picker_open {
-            self.input.update(cx, |input, cx| {
-                input.external_picker_open = picker_open;
-                cx.notify();
-            });
-        }
+        self.input
+            .update(cx, |input, cx| input.set_external_picker_open(picker_open, cx));
         div()
             .debug_selector(|| "composer".into())
             .relative()
@@ -532,7 +528,7 @@ impl Panel {
         };
         let panel = cx.entity().downgrade();
         let should_focus_ask = self.ask_card.as_ref().is_some_and(|card| {
-            self.input.read(cx).focus_handle.is_focused(window)
+            self.input.read(cx).is_focused(window)
                 || (card.submitting() && self.ask_editor_focused(window, cx))
         });
         if should_focus_ask {
@@ -545,7 +541,7 @@ impl Panel {
                             .ask_card
                             .as_ref()
                             .is_some_and(|card| {
-                                panel.input.read(cx).focus_handle.is_focused(window)
+                                panel.input.read(cx).is_focused(window)
                                     || (card.submitting() && panel.ask_editor_focused(window, cx))
                             })
                             .then(|| panel.focus_handle.clone())

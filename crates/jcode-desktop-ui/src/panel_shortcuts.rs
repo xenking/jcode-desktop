@@ -55,8 +55,8 @@ impl Panel {
 
     pub(super) fn jump_to_latest_if_empty(&mut self, window: &Window, cx: &mut Context<Self>) {
         let composer = self.input.read(cx);
-        if composer.focus_handle.is_focused(window)
-            && composer.content.is_empty()
+        if composer.is_focused(window)
+            && composer.is_empty()
             && self.ask_card.is_none()
         {
             self.jump_to_latest(cx);

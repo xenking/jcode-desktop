@@ -174,7 +174,7 @@ impl Panel {
         self.prompt_queue
             .queued_edit
             .as_ref()
-            .is_some_and(|edit| edit.input.read(cx).focus_handle.is_focused(window))
+            .is_some_and(|edit| edit.input.read(cx).is_focused(window))
     }
 
     /// Esc in the inline editor first closes an attachment preview it opened.
@@ -189,8 +189,8 @@ impl Panel {
     /// its own row. The composer keeps focus-free and its draft untouched.
     pub(super) fn queue_recall_prev(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.prompt_queue.queued_edit.is_some()
-            || !self.input.read(cx).focus_handle.is_focused(window)
-            || !self.input.read(cx).content.trim().is_empty()
+            || !self.input.read(cx).is_focused(window)
+            || !self.input.read(cx).is_blank()
         {
             return false;
         }
@@ -245,7 +245,7 @@ impl Panel {
         }
         let input = cx.new(|cx| PromptInput::queued_editor(content, images, attachments, cx));
         if let Some(window) = window {
-            window.focus(&input.read(cx).focus_handle.clone(), cx);
+            window.focus(&input.read(cx).editor_focus(), cx);
             // Bring the row into the card's view once it has been laid out.
             let reveal = self.queue_edit_anchor.clone();
             window.on_next_frame(move |window, cx| reveal.scroll_to(window, cx));
@@ -1717,7 +1717,7 @@ impl Panel {
     ) -> gpui::AnyElement {
         let (content, _) = crate::image_chip::numbered_text(content, images.len());
         let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
-        let ranges = crate::input::image_marker_ranges(&flat);
+        let ranges = crate::image_chip::image_marker_ranges(&flat);
         if ranges.is_empty() {
             return div().min_w_0().truncate().child(flat).into_any_element();
         }
@@ -1762,7 +1762,7 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let (content, _) = crate::image_chip::numbered_text(content, images.len());
-        let ranges = crate::input::image_marker_ranges(&content);
+        let ranges = crate::image_chip::image_marker_ranges(&content);
         let body = div()
             .debug_selector(|| "queue-expanded-content".into())
             .px_4()

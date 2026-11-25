@@ -105,7 +105,7 @@ impl Panel {
         let Some(Item::User(text)) = self.items.get(user_index) else {
             return Vec::new();
         };
-        crate::input::image_marker_ranges(text).into_iter().enumerate().filter_map(|(slot, range)| {
+        crate::image_chip::image_marker_ranges(text).into_iter().enumerate().filter_map(|(slot, range)| {
             let marker = &text[range];
             let index = self.prompt_image_index(user_index, slot, marker)?;
             self.user_attachment_range(user_index).contains(&index).then(|| (index, marker.to_owned()))

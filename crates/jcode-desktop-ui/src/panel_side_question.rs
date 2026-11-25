@@ -114,7 +114,7 @@ impl SideQuestionCard {
 
 impl Panel {
     fn return_side_question_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let focus = self.input.read(cx).focus_handle.clone();
+        let focus = self.input.read(cx).editor_focus();
         window.defer(cx, move |window, cx| window.focus(&focus, cx));
     }
 
@@ -458,7 +458,7 @@ impl Panel {
         };
         let collapsed = height <= minimum;
         let show_follow_up = height >= minimum + px(FOLLOW_UP_ROOM);
-        if !show_follow_up && card.editor.read(cx).focus_handle.is_focused(window) {
+        if !show_follow_up && card.editor.read(cx).is_focused(window) {
             self.return_side_question_focus(window, cx);
         }
         let measured = Rc::new(Cell::new(height));

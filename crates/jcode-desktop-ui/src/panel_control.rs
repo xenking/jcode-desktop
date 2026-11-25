@@ -326,7 +326,7 @@ impl Panel {
             }).flatten(),
             "fixture_side_questions": crate::fixture_control_targets::side_questions()
                 .then(|| self.side_question_control_state()),
-            "composer_focus": self.input.read(cx).focus_handle.is_focused(window),
+            "composer_focus": self.input.read(cx).is_focused(window),
             "picker_trigger_focus": picker_trigger_focus,
             "swarm_trigger_focus": self.swarm_trigger_focus.is_focused(window),
             "loaded_transcript_items": &*self.items,

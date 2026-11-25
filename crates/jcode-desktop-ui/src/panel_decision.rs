@@ -201,7 +201,7 @@ impl Panel {
             let count = entries.len();
             let mut image_offset = 0;
             for (i, entry) in entries.into_iter().enumerate() {
-                let marker_count = crate::input::image_marker_ranges(&entry.answer).len();
+                let marker_count = crate::image_chip::image_marker_ranges(&entry.answer).len();
                 let answer = marked_answer(&entry, answered);
                 let question_selector = format!("decision-question-{}", entry.title);
                 let answer_selector = format!("decision-answer-{answer}");

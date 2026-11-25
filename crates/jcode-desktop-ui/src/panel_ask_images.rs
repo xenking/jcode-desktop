@@ -26,7 +26,7 @@ impl Panel {
             .into_iter()
             .map(|(_, image)| image.clone())
             .collect();
-        let ranges = crate::input::image_marker_ranges(&shown);
+        let ranges = crate::image_chip::image_marker_ranges(&shown);
         let selected: Vec<Option<usize>> = ranges
             .iter()
             .enumerate()
@@ -114,7 +114,7 @@ impl Panel {
                     .map(|id| format!("[#{id}]"))
                     .or_else(|| {
                         image.label.as_ref().and_then(|text| {
-                            crate::input::image_marker_ranges(text)
+                            crate::image_chip::image_marker_ranges(text)
                                 .into_iter()
                                 .map(|range| text[range].to_owned())
                                 .find(|marker| marker.starts_with("[#img_"))
