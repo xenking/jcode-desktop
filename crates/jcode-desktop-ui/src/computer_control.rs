@@ -1,6 +1,6 @@
-use super::{Workspace, error, ok};
+use super::{error, ok};
 use crate::desktop_control::Pending;
-use gpui::{App, AsyncWindowContext, Entity, PromptButton, PromptLevel, Window};
+use gpui::{App, AsyncWindowContext, PromptButton, PromptLevel, Window};
 use jcode_computer::{Engine, Request};
 use jcode_sdk::desktop_control::{DesktopAction, DesktopResponse, DesktopTarget};
 use serde_json::json;
@@ -56,13 +56,7 @@ impl Drop for Lease {
     }
 }
 
-pub(super) fn validate_target(
-    workspace: &Workspace,
-    target: &DesktopTarget,
-    window: &Window,
-    cx: &App,
-) -> Result<(), DesktopResponse> {
-    workspace.control_target(target, window, cx)?;
+pub(super) fn require_local_session(target: &DesktopTarget) -> Result<(), DesktopResponse> {
     if crate::harness::is_remote_session(&target.session_id) {
         return Err(error(
             "desktop_unavailable",
@@ -72,21 +66,24 @@ pub(super) fn validate_target(
     Ok(())
 }
 
-pub(super) fn handle(workspace: &Entity<Workspace>, pending: Pending, cx: &mut AsyncWindowContext) {
+pub(super) fn handle(
+    pending: Pending,
+    cx: &mut AsyncWindowContext,
+    route: impl Fn(&DesktopTarget, &Window, &App) -> Result<(), DesktopResponse> + 'static,
+) {
     let DesktopAction::ComputerUse { target, input } = pending.request.action else {
         unreachable!("computer broker only accepts computer-use requests");
     };
     let cancelled = pending.cancelled;
     let deadline = pending.deadline;
     let alive = move || !cancelled.load(Ordering::Acquire) && Instant::now() < deadline;
-    let workspace = workspace.downgrade();
 
     cx.spawn(async move |cx| {
         let response = async {
             let validate = |cx: &mut AsyncWindowContext| {
                 cx.update(|window, cx| {
-                    let workspace = workspace.upgrade().ok_or_else(|| error("desktop_unavailable", "Desktop workspace closed"))?;
-                    validate_target(workspace.read(cx), &target, window, cx)
+                    route(&target, window, cx)?;
+                    require_local_session(&target)
                 }).map_err(|_| error("desktop_unavailable", "Desktop window closed"))?
             };
             validate(cx)?;

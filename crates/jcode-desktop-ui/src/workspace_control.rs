@@ -241,7 +241,14 @@ impl Workspace {
                 };
                 #[cfg(target_os = "macos")]
                 if matches!(&pending.request.action, DesktopAction::ComputerUse { .. }) {
-                    computer_control::handle(&workspace, pending, cx);
+                    let workspace = workspace.downgrade();
+                    computer_control::handle(pending, cx, move |target, window, cx| {
+                        let workspace = workspace.upgrade().ok_or_else(|| {
+                            error("desktop_unavailable", "Desktop workspace closed")
+                        })?;
+                        workspace.read(cx).control_target(target, window, cx)?;
+                        Ok(())
+                    });
                     continue;
                 }
                 let Ok(response) = cx.update(|window, cx| {
@@ -325,7 +332,8 @@ impl Workspace {
                         window_id: window_id(window),
                         session_id,
                     };
-                    match computer_control::validate_target(self, &target, window, cx) {
+                    match self.control_target(&target, window, cx)
+                        .and_then(|_| computer_control::require_local_session(&target)) {
                         Ok(()) => ok(json!(target)),
                         Err(response) => response,
                     }
