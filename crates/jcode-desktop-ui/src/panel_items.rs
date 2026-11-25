@@ -131,7 +131,7 @@ pub enum Item {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timestamp_ms: Option<i64>,
     },
-    SideQuestion(Box<side_question::inline::InlineQuestion>),
+    SideQuestion(Box<InlineQuestion>),
     ResponseStats(response_stats::ResponseStats),
     Reasoning(String),
     Tool {
@@ -432,36 +432,139 @@ impl TranscriptImage {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct PanelSnapshot {
-    #[serde(default, skip_serializing_if = "DraftConfig::is_empty")]
-    pub(crate) draft_config: DraftConfig,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) clean_chat_override: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transcript: Option<TranscriptSnapshot>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) turn_outcome: Option<turn::TurnOutcome>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) finished_unseen: bool,
-    #[serde(default)]
-    pub image_pane_open: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub side_document: Option<SideDocumentSnapshot>,
-    #[serde(default)]
-    pub prompt_queue: queue::PromptQueue,
-    pub session_id: String,
-    pub title: String,
-    pub working_dir: Option<String>,
-    pub draft: PromptInputSnapshot,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ask_draft: Option<ask::AskDraft>,
-    pub scroll_x: f32,
-    pub scroll_y: f32,
-    pub stick_to_bottom: bool,
-    pub terminal_resource_id: Option<u64>,
-    #[serde(default)]
-    pub terminal_output_cursor: Option<u64>,
-    #[serde(default)]
-    pub startup_layout: Option<StartupLayout>,
+// An inline `/btw` thread is a transcript row, so its data lives with the rows.
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct InlineQuestion {
+    pub(in crate::panel) child_session_id: String,
+    #[serde(flatten)]
+    pub(in crate::panel) first: InlineTurn,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(in crate::panel) follow_ups: Vec<InlineTurn>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(in crate::panel) struct InlineTurn {
+    pub(in crate::panel) question: String,
+    pub(in crate::panel) answer: String,
+    pub(in crate::panel) outcome: Option<Outcome>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(in crate::panel) enum Outcome {
+    Done,
+    Failed(String),
+    Closed,
+}
+
+impl InlineTurn {
+    pub(in crate::panel) fn pending(question: &str) -> Self {
+        Self {
+            question: question.into(),
+            answer: String::new(),
+            outcome: None,
+        }
+    }
+
+    pub(in crate::panel) fn from_saved(turn: &crate::harness::SideQuestionTurn) -> Self {
+        Self {
+            question: turn.question.clone(),
+            answer: turn.answer.clone(),
+            outcome: Some(Outcome::Done),
+        }
+    }
+}
+
+impl InlineQuestion {
+    pub(in crate::panel) fn with_pending_follow_up(
+        child_session_id: String,
+        first: &crate::harness::SideQuestionTurn,
+        previous: &[crate::harness::SideQuestionTurn],
+        question: &str,
+    ) -> Self {
+        Self {
+            child_session_id,
+            first: InlineTurn::from_saved(first),
+            follow_ups: previous
+                .iter()
+                .map(InlineTurn::from_saved)
+                .chain(std::iter::once(InlineTurn::pending(question)))
+                .collect(),
+        }
+    }
+
+    pub(in crate::panel) fn turns(&self) -> impl Iterator<Item = &InlineTurn> {
+        std::iter::once(&self.first).chain(&self.follow_ups)
+    }
+
+    pub(in crate::panel) fn selection_segments(&self, row: usize) -> Vec<(SharedString, SharedString)> {
+        self.turns()
+            .enumerate()
+            .flat_map(|(index, turn)| {
+                let prefix = format!("btw-{row}-{index}");
+                let question = (
+                    format!("{prefix}-question").into(),
+                    turn.question.clone().into(),
+                );
+                std::iter::once(question).chain(markdown::selection_segments_with_prefix(
+                    &turn.answer,
+                    &prefix,
+                    false,
+                    false,
+                ))
+            })
+            .collect()
+    }
+}
+
+fn find_thread<'a>(
+    items: &'a mut Transcript,
+    child_session_id: &str,
+) -> Option<&'a mut InlineQuestion> {
+    let index = items.iter().position(|item| {
+        matches!(item, Item::SideQuestion(question) if question.child_session_id == child_session_id)
+    })?;
+    let Item::SideQuestion(question) = &mut items[index] else {
+        return None;
+    };
+    Some(question)
+}
+
+fn pending_turn<'a>(items: &'a mut Transcript, session_id: &str) -> Option<&'a mut InlineTurn> {
+    let thread = find_thread(items, session_id)?;
+    let turn = thread.follow_ups.last_mut().unwrap_or(&mut thread.first);
+    turn.outcome.is_none().then_some(turn)
+}
+
+pub(in crate::panel) fn inline_append_follow_up(items: &mut Transcript, child_id: &str, question: &str) -> bool {
+    let Some(thread) = find_thread(items, child_id) else {
+        return false;
+    };
+    thread.follow_ups.push(InlineTurn::pending(question));
+    true
+}
+
+pub(in crate::panel) fn inline_apply_event(items: &mut Transcript, child_session_id: &str, event: &ApiEvent) {
+    let outcome = match event {
+        ApiEvent::TextDelta { .. } => None,
+        ApiEvent::TurnDone { .. } => Some(Outcome::Done),
+        ApiEvent::TurnStopped { message, .. } | ApiEvent::Error { message, .. } => {
+            Some(Outcome::Failed(message.clone()))
+        }
+        _ => return,
+    };
+    let Some(question) = pending_turn(items, child_session_id) else {
+        return;
+    };
+    if let ApiEvent::TextDelta { text, .. } = event {
+        question.answer.push_str(text);
+    } else {
+        question.outcome = outcome;
+    }
+}
+
+pub(in crate::panel) fn inline_close(items: &mut Transcript, child_session_id: &str) {
+    if let Some(question) = pending_turn(items, child_session_id) {
+        question.outcome = Some(Outcome::Closed);
+    }
 }

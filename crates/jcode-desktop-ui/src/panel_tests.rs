@@ -1779,4 +1779,3 @@ fn settle_tool_details(panel: &Entity<Panel>, cx: &mut gpui::VisualTestContext) 
 
 #[path = "panel_more_tests.rs"]
 mod more;
-use more::*;
