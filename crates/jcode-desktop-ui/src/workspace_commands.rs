@@ -54,7 +54,7 @@ impl Workspace {
         let Some(source) = self.slots[index].panel.chat().cloned() else {
             return;
         };
-        if source.read(cx).is_side_document() || source.read(cx).preview_state.is_some() {
+        if source.read(cx).is_side_document() || source.read(cx).is_preview() {
             return;
         }
         cx.stop_propagation();
