@@ -197,6 +197,9 @@ mod default_directory;
 #[cfg(test)]
 #[path = "workspace_default_directory_tests.rs"]
 mod default_directory_tests;
+#[cfg(test)]
+#[path = "workspace_modal_tests.rs"]
+mod modal_tests;
 
 #[cfg(test)]
 #[path = "workspace_resume_search_tests.rs"]
