@@ -22,8 +22,16 @@ struct FolderCandidates {
     running: bool,
 }
 
+struct FolderHost {
+    home: Box<dyn Fn(&App) -> Option<PathBuf>>,
+    sessions: Box<dyn Fn(&App) -> Vec<jcode_sdk::SessionInfo>>,
+    describe: Box<dyn Fn(&Path, bool, &App) -> (Option<String>, Option<String>)>,
+    pin: Box<dyn Fn(String, &mut App)>,
+    retain_focus: Box<dyn Fn(bool, &mut App)>,
+}
+
 pub(super) struct FolderPicker {
-    workspace: gpui::WeakEntity<Workspace>,
+    host: FolderHost,
     /// Directory being browsed.
     pub(super) dir: PathBuf,
     pub(super) error: Option<String>,
@@ -36,8 +44,8 @@ pub(super) struct FolderPicker {
 }
 
 impl FolderPicker {
-    pub(super) fn new(
-        workspace: gpui::WeakEntity<Workspace>,
+    fn new(
+        host: FolderHost,
         sets_default: bool,
         dir: PathBuf,
         source: Option<gpui::EntityId>,
@@ -67,7 +75,7 @@ impl FolderPicker {
             })
         });
         Self {
-            workspace,
+            host,
             dir,
             error: None,
             search,
@@ -77,12 +85,19 @@ impl FolderPicker {
         }
     }
 
+    pub(super) fn checkpoint(&self, cx: &App) -> (Option<String>, crate::input::PromptInputSnapshot) {
+        (self.error.clone(), self.search.read(cx).snapshot())
+    }
+
+    pub(super) fn restore_checkpoint(&mut self, error: Option<String>, search: Option<crate::input::PromptInputSnapshot>, cx: &mut Context<Self>) {
+        self.error = error;
+        if let Some(snapshot) = search {
+            self.search.update(cx, |search, cx| search.restore(snapshot, cx));
+        }
+    }
+
     fn home(&self, cx: &App) -> Option<PathBuf> {
-        self.workspace
-            .read_with(cx, |workspace, _| workspace.default_working_dir())
-            .ok()
-            .flatten()
-            .map(PathBuf::from)
+        (self.host.home)(cx)
     }
 
     fn open_searched(&mut self, query: &str, cx: &mut Context<Self>) {
@@ -110,10 +125,7 @@ impl FolderPicker {
             if direct.is_file() {
                 return direct.parent().map(Path::to_path_buf);
             }
-            let sessions = self
-                .workspace
-                .read_with(cx, |workspace, _| workspace.sessions.clone())
-                .unwrap_or_default();
+            let sessions = (self.host.sessions)(cx);
             ranked_folder_matches_for_sessions(&sessions, &base, &needle)
                 .into_iter()
                 .next()
@@ -192,9 +204,7 @@ impl FolderPicker {
         })();
         match result {
             Ok(directory) => {
-                let _ = self.workspace.update(cx, |workspace, _| {
-                    workspace.pinned_working_dir = Some(directory);
-                });
+                (self.host.pin)(directory, cx);
                 cx.emit(DismissEvent);
             }
             Err(error) => {
@@ -219,10 +229,7 @@ impl FolderPicker {
             return Default::default();
         }
         self.candidates.running = true;
-        let sessions = self
-            .workspace
-            .read_with(cx, |workspace, _| workspace.sessions.clone())
-            .unwrap_or_default();
+        let sessions = (self.host.sessions)(cx);
         let load = cx.background_spawn(async move {
             let candidates = if key.sets_default {
                 ranked_directories(&sessions, &key.directory, &key.query)
@@ -263,6 +270,24 @@ impl Focusable for FolderPicker {
 }
 
 impl Workspace {
+    pub(super) fn new_folder_picker(workspace: gpui::WeakEntity<Self>, sets_default: bool, dir: PathBuf, source: Option<gpui::EntityId>, cx: &mut Context<FolderPicker>) -> FolderPicker {
+        let home = workspace.clone();
+        let sessions = workspace.clone();
+        let describe = workspace.clone();
+        let pin = workspace.clone();
+        let host = FolderHost {
+            home: Box::new(move |cx| home.read_with(cx, |w, _| w.default_working_dir()).ok().flatten().map(PathBuf::from)),
+            sessions: Box::new(move |cx| sessions.read_with(cx, |w, _| w.sessions.clone()).unwrap_or_default()),
+            describe: Box::new(move |dir, sets_default, cx| describe.read_with(cx, |w, _| (w.pinned_working_dir.clone(), sets_default.then(|| w.default_directory_description(dir)))).unwrap_or_default()),
+            pin: Box::new(move |directory, cx| { let _ = pin.update(cx, |w, _| w.pinned_working_dir = Some(directory)); }),
+            retain_focus: Box::new(move |sets_default, cx| { let _ = workspace.update(cx, |w, cx| {
+                if sets_default && let Some(index) = w.default_directory_panel_index(cx) { w.set_active(index, cx); }
+                w.focus_pending = false;
+            }); }),
+        };
+        FolderPicker::new(host, sets_default, dir, source, cx)
+    }
+
     pub(super) fn default_directory_panel_index(&self, cx: &App) -> Option<usize> {
         self.slots.iter().position(|slot| {
             slot.panel
@@ -285,16 +310,7 @@ impl Render for FolderPicker {
         let directory = self.dir.clone();
         let query = self.search.read(cx).trimmed().to_lowercase();
         let entries = self.matches(query, cx);
-        let (pinned, description) = self
-            .workspace
-            .read_with(cx, |workspace, _| {
-                (
-                    workspace.pinned_working_dir.clone(),
-                    self.sets_default
-                        .then(|| workspace.default_directory_description(&directory)),
-                )
-            })
-            .unwrap_or_default();
+        let (pinned, description) = (self.host.describe)(&directory, self.sets_default, cx);
         let description = description.unwrap_or_default();
         let home = crate::platform_dirs::home_string();
         let mut list = div()
@@ -416,14 +432,7 @@ impl Render for FolderPicker {
                     window.prevent_default();
                     cx.stop_propagation();
                     let sets_default = this.sets_default;
-                    let _ = this.workspace.update(cx, |workspace, cx| {
-                        if sets_default
-                            && let Some(index) = workspace.default_directory_panel_index(cx)
-                        {
-                            workspace.set_active(index, cx);
-                        }
-                        workspace.focus_pending = false;
-                    });
+                    (this.host.retain_focus)(sets_default, cx);
                     window.focus(&this.search.read(cx).editor_focus(), cx);
                 }),
             )

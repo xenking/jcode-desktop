@@ -24,7 +24,7 @@ impl Workspace {
             .map(PathBuf::from)
             .unwrap_or_else(filesystem_root);
         let workspace = cx.weak_entity();
-        let picker = cx.new(|cx| FolderPicker::new(workspace, true, dir, None, cx));
+        let picker = cx.new(|cx| Self::new_folder_picker(workspace, true, dir, None, cx));
         let search = picker.read(cx).search.clone();
         self.adopt_default_directory_picker(picker, cx);
         let panel = cx.new(|cx| {

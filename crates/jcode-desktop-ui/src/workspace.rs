@@ -836,8 +836,10 @@ impl Workspace {
 /// without changing its model, so the sidebar can replay its last frame while
 /// the canvas moves. Real workspace, panel, global and hover changes remain
 /// dependencies of this view and rebuild it normally.
+type RenderSidebar = dyn Fn(bool, &mut App) -> gpui::AnyElement;
+
 struct SidebarChrome {
-    workspace: gpui::WeakEntity<Workspace>,
+    render_sidebar: Box<RenderSidebar>,
 }
 
 fn workspace_fullscreen(window: &Window) -> bool {
@@ -853,9 +855,7 @@ impl Render for SidebarChrome {
         let _render_scope = crate::render_stats::scope("SidebarChrome");
         // This sidebar starts below the full-window tab row on macOS.
         let fullscreen = cfg!(target_os = "macos") || window.is_fullscreen();
-        self.workspace
-            .update(cx, |workspace, cx| workspace.render_sidebar(fullscreen, cx))
-            .unwrap_or_else(|_| div().into_any_element())
+        (self.render_sidebar)(fullscreen, cx)
     }
 }
 
@@ -942,7 +942,12 @@ impl Render for Workspace {
             .sidebar_chrome
             .get_or_insert_with(|| {
                 let workspace = cx.entity().downgrade();
-                cx.new(|_| SidebarChrome { workspace })
+                cx.new(|_| SidebarChrome {
+                    render_sidebar: Box::new(move |fullscreen, app| {
+                        workspace.update(app, |workspace, cx| workspace.render_sidebar(fullscreen, cx))
+                            .unwrap_or_else(|_| div().into_any_element())
+                    }),
+                })
             })
             .clone();
         let sidebar_width = if self.show_sidebar && !compact {

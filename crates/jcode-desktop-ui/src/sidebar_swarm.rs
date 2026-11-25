@@ -178,13 +178,15 @@ pub(super) struct WorkerRowsLayout<'a> {
 
 /// Compact rows nested under a coordinator: status icon, animal, name and
 /// optional model/spend. The worker name has priority over secondary metadata.
-pub(super) fn render_workers(
+pub(super) fn render_workers<T: 'static>(
     layout: WorkerRowsLayout<'_>,
     workers: &[(usize, crate::swarm_view::Worker)],
     folded: usize,
     marks: &mut crate::swarm_glyph::Marks,
     expanded_lines: &HashSet<String>,
-    cx: &mut Context<Workspace>,
+    cx: &mut Context<T>,
+    open: fn(&mut T, &str, &mut Window, &mut Context<T>),
+    toggle: fn(&mut T, &str, &mut Context<T>),
 ) -> gpui::AnyElement {
     let WorkerRowsLayout {
         sidebar_index,
@@ -278,8 +280,7 @@ pub(super) fn render_workers(
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
-                    this.open_swarm_worker(&id, cx);
-                    this.focus_active(window, cx);
+                    open(this, &id, window, cx);
                 }))
                 .children(crate::fixture_control_targets::marker(
                     || format!("sidebar-worker:{}", worker.session_id),
@@ -328,7 +329,7 @@ pub(super) fn render_workers(
                         expanded,
                         cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
-                            expandable::Regions::flip(&mut this.expanded_lines, &key);
+                            toggle(this, &key, cx);
                             cx.notify();
                         }),
                     ))
@@ -391,7 +392,7 @@ pub(super) fn render_workers(
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        expandable::Regions::flip(&mut this.expanded_lines, &key);
+                        toggle(this, &key, cx);
                         cx.notify();
                     }))
                     .child(if expanded {

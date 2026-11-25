@@ -195,7 +195,7 @@ pub(super) fn panel_at_viewport_center(
     let mut closest_distance = f32::INFINITY;
 
     for (index, width_fraction) in panels {
-        let width = Workspace::width_for_fraction(width_fraction, viewport);
+        let width = width_for_fraction(width_fraction, viewport);
         let center = left + width / 2.0;
         let distance = (center - focal_x).abs();
         if distance < closest_distance {
@@ -206,18 +206,12 @@ pub(super) fn panel_at_viewport_center(
     }
     closest
 }
-impl Workspace {
-    pub(super) fn width_for_fraction(fraction: f32, viewport: f32) -> f32 {
-        // Narrow windows show one readable conversation without overwriting the
-        // user's width presets. Widening restores the original arrangement.
-        let fraction = if viewport < SINGLE_PANEL_BREAKPOINT {
-            1.0
-        } else {
-            fraction
-        };
-        ((viewport - STRUT * 2.0) * fraction - GAP)
-            .max(320.0_f32.min((viewport - STRUT * 2.0).max(1.0)))
-    }
+pub(super) fn width_for_fraction(fraction: f32, viewport: f32) -> f32 {
+    // Narrow windows show one readable conversation without overwriting the
+    // user's width presets. Widening restores the original arrangement.
+    let fraction = if viewport < SINGLE_PANEL_BREAKPOINT { 1.0 } else { fraction };
+    ((viewport - STRUT * 2.0) * fraction - GAP)
+        .max(320.0_f32.min((viewport - STRUT * 2.0).max(1.0)))
 }
 
 pub(super) const COMPACT_BREAKPOINT: f32 = 1100.0;

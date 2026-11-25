@@ -16,7 +16,7 @@ impl Workspace {
         // loop for a user who stays in the session view.
         updates::ensure_release_check();
         #[cfg(target_os = "macos")]
-        super::runtime_updates::install_update_dialog_host(cx);
+        super::runtime_updates::install_update_dialog_host::<Self>(cx);
         // Read the account file here so the first frame needs no disk access.
         jcode_account::JcodeAccount::prime();
         let bridge = harness::spawn();
@@ -657,6 +657,7 @@ impl Workspace {
                 workspace._stream_fixture = Some(workspace_stream_fixture::spawn(
                     "screenshot-fixture".into(),
                     cx,
+                    Self::apply,
                 ));
             }
             if let Some(count) = std::env::var("JCODE_DESKTOP_SCREENSHOT_QUEUED")

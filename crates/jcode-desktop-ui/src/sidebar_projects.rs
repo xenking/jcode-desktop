@@ -76,7 +76,7 @@ impl State {
         self.collapsed.get(key).copied().unwrap_or(default)
     }
 
-    fn toggle(&mut self, key: &str, default: bool) {
+    pub(super) fn toggle(&mut self, key: &str, default: bool) {
         let next = !self.collapsed(key, default);
         self.collapsed.insert(key.to_owned(), next);
     }
@@ -111,13 +111,13 @@ impl State {
 
     /// Probe the directories this frame asked about, off the UI thread. When
     /// the answers land the sidebar redraws if anything differs.
-    pub(super) fn probe_in_background(&mut self, cx: &mut Context<Workspace>) {
+    pub(super) fn probe_in_background<T: 'static>(&mut self, cx: &mut Context<T>, state: fn(&mut T) -> &mut Self) {
         let directories = self.probes.take_queued();
         let workspace = cx.entity().downgrade();
         crate::background_probe::run(cx, directories, probe_directory, move |answers, cx| {
             workspace
                 .update(cx, |workspace, cx| {
-                    if workspace.sidebar_projects.apply(answers) {
+                    if state(workspace).apply(answers) {
                         cx.notify();
                     }
                 })
@@ -126,6 +126,14 @@ impl State {
     }
 
     /// Store probe answers. Returns whether the sidebar would look different.
+    pub(super) fn reveal(&mut self, key: String) {
+        self.collapsed.insert(key, false);
+    }
+
+    pub(super) fn forget_collapse(&mut self, key: &str) {
+        self.collapsed.remove(key);
+    }
+
     fn apply(&mut self, answers: Vec<(String, Probe)>) -> bool {
         let mut changed = false;
         for (directory, probe) in answers {
@@ -432,7 +440,7 @@ impl Workspace {
                             cx.listener(move |this, _, window, cx| {
                                 window.prevent_default();
                                 cx.stop_propagation();
-                                this.sidebar_projects.collapsed.insert(key.clone(), false);
+                                this.sidebar_projects.reveal(key.clone());
                                 this.focus_pending = true;
                                 this.open_local_draft(Some(directory.clone()), cx);
                             }),

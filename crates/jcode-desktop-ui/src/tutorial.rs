@@ -1,13 +1,13 @@
 //! A quiet, opt-in shortcut reference with every lesson in one scrollable list.
 use super::*;
 
-type TutorialAction = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
-type Lesson = (
+type TutorialAction<T> = fn(&mut T, &mut Window, &mut Context<T>);
+type Lesson<T> = (
     &'static str,
     &'static str,
     &'static str,
     &'static str,
-    Option<TutorialAction>,
+    Option<TutorialAction<T>>,
 );
 
 impl Workspace {
@@ -56,7 +56,7 @@ impl Workspace {
         } else {
             "Super"
         };
-        let lessons: Vec<Lesson> = vec![
+        let lessons: Vec<Lesson<Self>> = vec![
             (
                 "tutorial-nav-left",
                 "←  Focus left",

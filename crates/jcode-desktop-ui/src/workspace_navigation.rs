@@ -45,7 +45,7 @@ impl Workspace {
 
     pub(super) fn slot_width(&self, index: usize, viewport: f32) -> f32 {
         let fraction = self.slots[index].width_fraction;
-        Self::width_for_fraction(fraction, viewport)
+        super::strip_geometry::width_for_fraction(fraction, viewport)
     }
 
     pub(super) fn slot_left(&self, index: usize, viewport: f32) -> f32 {

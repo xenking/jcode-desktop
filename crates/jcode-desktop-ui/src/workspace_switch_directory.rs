@@ -4,7 +4,7 @@
 //! created. An untouched session can therefore be replaced in place, keeping
 //! its panel, focus and draft. A conversation that already has history keeps
 //! its folder, and the chosen one opens beside it as a new session.
-use super::folder_picker::{Chosen, FolderPicker};
+use super::folder_picker::Chosen;
 use super::*;
 
 impl Workspace {
@@ -38,7 +38,7 @@ impl Workspace {
                 .unwrap_or_else(|| PathBuf::from("/"))
         });
         let workspace = cx.weak_entity();
-        let picker = cx.new(|cx| FolderPicker::new(workspace, false, dir, source, cx));
+        let picker = cx.new(|cx| Self::new_folder_picker(workspace, false, dir, source, cx));
         cx.subscribe(&picker, |this, _, chosen: &Chosen, cx| {
             this.open_chosen_folder(chosen, cx)
         })

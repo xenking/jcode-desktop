@@ -4,8 +4,10 @@ use gpui::DismissEvent;
 
 /// The rename dialog. It captures its target panel, not the active index,
 /// because navigation may change while editing.
+type SendTitle = dyn Fn(&Entity<Panel>, String, &mut App) -> Option<Result<(), &'static str>>;
+
 pub(super) struct Rename {
-    workspace: gpui::WeakEntity<Workspace>,
+    send_title: Box<SendTitle>,
     target: Entity<Panel>,
     input: Entity<PromptInput>,
     error: Option<String>,
@@ -24,7 +26,7 @@ fn validated_title(title: &str) -> Result<String, &'static str> {
 
 impl Rename {
     fn new(
-        workspace: gpui::WeakEntity<Workspace>,
+        send_title: Box<SendTitle>,
         target: Entity<Panel>,
         title: String,
         cx: &mut Context<Self>,
@@ -48,7 +50,7 @@ impl Rename {
             input
         });
         Self {
-            workspace,
+            send_title,
             target,
             input,
             error: None,
@@ -65,14 +67,12 @@ impl Rename {
             }
         };
         let target = self.target.clone();
-        let sent = self
-            .workspace
-            .update(cx, |workspace, cx| workspace.send_rename(&target, title, cx));
+        let sent = (self.send_title)(&target, title, cx);
         match sent {
             // SessionRenamed is authoritative and updates both tabs and history.
             // Transport failures use the existing visible session error path.
-            Ok(Ok(())) | Err(_) => cx.emit(DismissEvent),
-            Ok(Err(error)) => {
+            Some(Ok(())) | None => cx.emit(DismissEvent),
+            Some(Err(error)) => {
                 self.error = Some(error.into());
                 cx.notify();
             }
@@ -123,7 +123,9 @@ impl Workspace {
         let title = target.read(cx).folder_title();
         let workspace = cx.weak_entity();
         self.modal_layer.update(cx, |layer, cx| {
-            layer.toggle(window, cx, |_, cx| Rename::new(workspace, target, title, cx))
+            layer.toggle(window, cx, |_, cx| Rename::new(Box::new(move |target, title, app| {
+                workspace.update(app, |workspace, cx| workspace.send_rename(target, title, cx)).ok()
+            }), target, title, cx))
         });
     }
 

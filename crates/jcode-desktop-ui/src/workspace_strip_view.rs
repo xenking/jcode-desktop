@@ -298,13 +298,13 @@ impl Workspace {
             if slot.close_progress.is_animating() {
                 window.request_animation_frame();
             }
-            let width = Self::width_for_fraction(fraction, viewport_w) * close_progress;
+            let width = super::strip_geometry::width_for_fraction(fraction, viewport_w) * close_progress;
             strip_width += width;
             let progress = slot.order_offset.sample(now);
             if slot.order_offset.is_animating() {
                 window.request_animation_frame();
             }
-            let distance = Self::width_for_fraction(slot.order_distance_fraction, viewport_w) + GAP;
+            let distance = super::strip_geometry::width_for_fraction(slot.order_distance_fraction, viewport_w) + GAP;
             panels.push((index, width, progress * distance, close_progress));
         }
         let camera_x = self.camera_x[row];

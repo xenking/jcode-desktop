@@ -16,7 +16,7 @@ pub(super) fn enabled() -> bool {
 
 /// Streams the demo script into `session_id` forever, at about the cadence a
 /// provider delivers deltas.
-pub(super) fn spawn(session_id: String, cx: &mut Context<Workspace>) -> gpui::Task<()> {
+pub(super) fn spawn<T: 'static>(session_id: String, cx: &mut Context<T>, apply: fn(&mut T, Update, &mut Context<T>) -> bool) -> gpui::Task<()> {
     const CHUNK_DELAY: Duration = Duration::from_millis(30);
     // `JCODE_DESKTOP_SCREENSHOT_STREAM=steady` leaves out the pauses that a
     // real turn has, so every sampling window measures the same load.
@@ -31,7 +31,7 @@ pub(super) fn spawn(session_id: String, cx: &mut Context<Workspace>) -> gpui::Ta
         let send = |event: jcode_sdk::ApiEvent, cx: &mut gpui::AsyncApp| {
             let session_id = session_id.clone();
             this.update(cx, |workspace, cx| {
-                if workspace.apply(Update::Event { session_id, event }, cx) {
+                if apply(workspace, Update::Event { session_id, event }, cx) {
                     cx.notify();
                 }
             })

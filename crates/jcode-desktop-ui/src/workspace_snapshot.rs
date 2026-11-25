@@ -113,10 +113,10 @@ impl Workspace {
             hints_overlay: self.hints_overlay,
             folder_picker_sets_default: picker.as_ref().is_some_and(|p| p.read(cx).sets_default),
             folder_picker_dir: picker.as_ref().map(|p| p.read(cx).dir.clone()),
-            folder_picker_error: picker.as_ref().and_then(|p| p.read(cx).error.clone()),
+            folder_picker_error: picker.as_ref().and_then(|p| p.read(cx).checkpoint(cx).0),
             folder_search: picker
                 .as_ref()
-                .map(|p| p.read(cx).search.read(cx).snapshot()),
+                .map(|p| p.read(cx).checkpoint(cx).1),
             focus,
         })
     }
@@ -360,14 +360,10 @@ impl Workspace {
             let sets_default = snapshot.folder_picker_sets_default;
             let workspace = cx.weak_entity();
             let picker = cx.new(|cx| {
-                let mut picker = FolderPicker::new(workspace, sets_default, dir, None, cx);
-                picker.error = snapshot.folder_picker_error;
+                let mut picker = Self::new_folder_picker(workspace, sets_default, dir, None, cx);
+                picker.restore_checkpoint(snapshot.folder_picker_error, snapshot.folder_search, cx);
                 picker
             });
-            if let Some(search_state) = snapshot.folder_search {
-                let search = picker.read(cx).search.clone();
-                search.update(cx, |search, cx| search.restore(search_state, cx));
-            }
             if sets_default {
                 if let Some(index) = self.default_directory_panel_index(cx) {
                     let search = picker.read(cx).search.clone();

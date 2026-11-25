@@ -455,7 +455,7 @@ impl Workspace {
     ) {
         self.collection_menu.hide();
         if let Some(id) = &collection {
-            self.sidebar_projects.collapsed.insert(key(id), false);
+            self.sidebar_projects.reveal(key(id));
         }
         self.change_collections(
             Change::Assign {
@@ -571,7 +571,7 @@ impl Workspace {
         if !self.change_collections(change, cx) {
             return;
         }
-        self.sidebar_projects.collapsed.insert(key(&id), false);
+        self.sidebar_projects.reveal(key(&id));
         if let Some(session_id) = assign {
             self.assign_session_collection(&session_id, Some(id), cx);
         }
@@ -579,7 +579,7 @@ impl Workspace {
     }
 
     pub(super) fn delete_collection(&mut self, id: String, cx: &mut Context<Self>) {
-        self.sidebar_projects.collapsed.remove(&key(&id));
+        self.sidebar_projects.forget_collapse(&key(&id));
         self.change_collections(Change::Delete(id), cx);
         self.close_collection_form(cx);
     }
@@ -591,7 +591,7 @@ impl Workspace {
             .collection(&id)
             .and_then(|c| c.default_dir)
             .or_else(|| self.default_working_dir());
-        self.sidebar_projects.collapsed.insert(key(&id), false);
+        self.sidebar_projects.reveal(key(&id));
         self.pending_collection_drafts.push((String::new(), id));
         self.focus_pending = true;
         self.open_local_draft(directory, cx);
@@ -680,10 +680,7 @@ impl Workspace {
                 cx.listener(move |this, _, window, cx| {
                     window.prevent_default();
                     cx.stop_propagation();
-                    let collapsed = this.sidebar_projects.collapsed(&key, false);
-                    this.sidebar_projects
-                        .collapsed
-                        .insert(key.clone(), !collapsed);
+                    this.sidebar_projects.toggle(&key, false);
                     cx.notify();
                 }),
             )

@@ -3,13 +3,13 @@ use super::*;
 
 /// Let the updater show its blocked-update dialog in a workspace window.
 #[cfg(target_os = "macos")]
-pub(super) fn install_update_dialog_host(cx: &mut App) {
+pub(super) fn install_update_dialog_host<T: 'static>(cx: &mut App) {
     cx.set_global(updates::DialogHost(std::rc::Rc::new(
         |app, preferred, sessions| {
             let window = app
                 .windows()
                 .into_iter()
-                .filter_map(|window| window.downcast::<Workspace>())
+                .filter_map(|window| window.downcast::<T>())
                 .min_by_key(|window| window.window_id() != preferred)?;
             window
                 .update(app, |_, window, cx| {

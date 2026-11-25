@@ -690,7 +690,7 @@ impl Workspace {
             self.sidebar_sessions_list.scroll_to_reveal_item(index);
         }
         // Render read cached Git state only. Probe what it lacked off-thread.
-        self.sidebar_projects.probe_in_background(cx);
+        self.sidebar_projects.probe_in_background(cx, |workspace: &mut Self| &mut workspace.sidebar_projects);
         let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
         let folder_frame = self.folder_frame.clone();
         let workspace = cx.entity();
@@ -1152,6 +1152,11 @@ impl Workspace {
                                     &mut this.swarm_marks,
                                     &expanded_lines,
                                     cx,
+                                    |this, id, window, cx| {
+                                        this.open_swarm_worker(id, cx);
+                                        this.focus_active(window, cx);
+                                    },
+                                    |this, key, _| { crate::panel::expandable::Regions::flip(&mut this.expanded_lines, key); },
                                 ));
                             }
                             if menu_open {
