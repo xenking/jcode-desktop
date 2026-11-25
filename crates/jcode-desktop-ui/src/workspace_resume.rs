@@ -7,6 +7,7 @@
 //! listed under their session, the preview scrolls to the selected hit with
 //! the query marked, and opening a hit lands the session on that message.
 use super::*;
+use crate::components::Tooltip;
 use crate::global_search::{self, Effect, PickRow};
 use crate::panel::PreviewScroll;
 use std::time::Instant;
@@ -1142,10 +1143,7 @@ impl Workspace {
                     .bg(theme.INPUT_BG)
                     .hover(|el| el.bg(theme.PANEL_BG))
                     .cursor_pointer()
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| remotes::HeaderTooltip(action_label.into()))
-                            .into()
-                    })
+                    .tooltip(Tooltip::text(action_label).builder())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
                         this.click_resume_row(&action_row, true, window, cx);
@@ -1225,12 +1223,7 @@ impl Workspace {
                                     .min_w_0()
                                     .text_size(px(11.0))
                                     .text_color(secondary)
-                                    .tooltip(move |_, cx| {
-                                        cx.new(|_| {
-                                            remotes::HeaderTooltip(full_metadata.clone().into())
-                                        })
-                                        .into()
-                                    })
+                                    .tooltip(Tooltip::text(full_metadata.clone()).builder())
                                     .when(!runtime.is_empty(), |el| {
                                         el.child(
                                             div()
@@ -1643,7 +1636,9 @@ fn append_resume_fixture(sessions: &mut Vec<jcode_sdk::SessionInfo>) {
                     } else {
                         jcode_sdk::api::SessionOrigin::Agent
                     },
-                    last_agent_activity_at_ms: Some(now - if index == 0 { 305_000 } else { 605_000 }),
+                    last_agent_activity_at_ms: Some(
+                        now - if index == 0 { 305_000 } else { 605_000 },
+                    ),
                     last_message_at_ms: Some(Some(now - if index == 0 { 305_000 } else { 65_000 })),
                 }),
             }),
@@ -1749,8 +1744,7 @@ fn styled_matches(
         color: Some(theme.TEXT.into()),
         ..crate::markdown::search_match_style()
     };
-    gpui::StyledText::new(text)
-        .with_highlights(ranges.into_iter().map(|range| (range, style)))
+    gpui::StyledText::new(text).with_highlights(ranges.into_iter().map(|range| (range, style)))
 }
 
 fn now_ms() -> i64 {
@@ -1863,7 +1857,7 @@ fn resume_liveness_badge(
             .text_size(px(12.))
             .whitespace_nowrap()
             .text_color(ink)
-            .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(label.into())).into())
+            .tooltip(Tooltip::text(label).builder())
             .map(|el| match spinner {
                 Some(spinner) if live == Liveness::Working => el.child(spinner),
                 _ => el.child(symbol),
@@ -2629,8 +2623,14 @@ mod tests {
             Some("1m ago · 4.2k tok")
         );
         let activity = |session: &mut jcode_sdk::SessionInfo, timestamp| {
-            session.context.as_mut().unwrap().activity.as_mut().unwrap().last_message_at_ms =
-                Some(timestamp);
+            session
+                .context
+                .as_mut()
+                .unwrap()
+                .activity
+                .as_mut()
+                .unwrap()
+                .last_message_at_ms = Some(timestamp);
         };
         activity(&mut session, Some(now - 5_000));
         assert_eq!(
@@ -2652,8 +2652,20 @@ mod tests {
             w.open_startup_draft(cx);
             w.sessions = [
                 ("updated", 100, Some(10), None, SessionOrigin::User),
-                ("answered", 40, Some(30), Some(Some(30)), SessionOrigin::Agent),
-                ("unanswered", 200, None, Some(Some(40)), SessionOrigin::Agent),
+                (
+                    "answered",
+                    40,
+                    Some(30),
+                    Some(Some(30)),
+                    SessionOrigin::Agent,
+                ),
+                (
+                    "unanswered",
+                    200,
+                    None,
+                    Some(Some(40)),
+                    SessionOrigin::Agent,
+                ),
             ]
             .into_iter()
             .map(|(id, updated, replied, last_message, origin)| {

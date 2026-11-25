@@ -259,7 +259,7 @@ pub(super) fn render_about_block(
                         .flex_none()
                         .font_family(theme.FONT_MONO)
                         .text_color(theme.TEXT)
-                        .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
+                        .tooltip(crate::build_info::tooltip().builder())
                         .child(block.installed.clone()),
                 )
                 .child(
@@ -270,13 +270,12 @@ pub(super) fn render_about_block(
                         .min_w_0()
                         .truncate()
                         .text_color(theme.TEXT_DIM)
-                        .tooltip(|_, cx| {
-                            cx.new(|_| live_tabs::TabTooltip(
-                                "Checks this update channel. Betas published separately may not appear here."
-                                    .into(),
-                            ))
-                            .into()
-                        })
+                        .tooltip(
+                            live_tabs::tab_tooltip(
+                                "Checks this update channel. Betas published separately may not appear here.",
+                            )
+                            .builder(),
+                        )
                         .child(status.to_string()),
                 )
                 .child(

@@ -1,5 +1,6 @@
 //! A non-blocking startup notification with a three-second countdown.
 use super::*;
+use crate::components::Tooltip;
 use gpui::{Animation, AnimationExt};
 
 const COUNTDOWN: Duration = Duration::from_secs(3);
@@ -132,10 +133,7 @@ impl Workspace {
                     .rounded_full()
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.ACCENT.opacity(0.15)))
-                    .tooltip(|_, cx| {
-                        cx.new(|_| super::remotes::HeaderTooltip("Dismiss notification".into()))
-                            .into()
-                    })
+                    .tooltip(Tooltip::text("Dismiss notification").builder())
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.dismiss_beta_notice(window, cx);
                         cx.stop_propagation();

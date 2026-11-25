@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::theme::Theme;
-use gpui::{Context, IntoElement, Render, Window, div, prelude::*, px};
+use crate::components::Tooltip;
+use gpui::px;
 
 pub(crate) const VERSION: &str = env!("JCODE_DESKTOP_DISPLAY_VERSION");
 const BUILT_AT: &str = env!("JCODE_DESKTOP_BUILT_AT");
@@ -71,38 +71,25 @@ fn version_label(raw: &str) -> String {
     }
 }
 
-pub(crate) struct BuildTooltip;
-
-impl Render for BuildTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let _render_scope = crate::render_stats::scope("BuildTooltip");
-        let theme = Theme::global();
-        div()
-            .debug_selector(|| "panel-build-tooltip".into())
-            .flex()
-            .flex_col()
-            .gap_1()
-            .px_3()
-            .py_2()
-            .max_w(px(420.))
-            .rounded_md()
-            .bg(theme.HEADER_BG)
-            .border_1()
-            .border_color(theme.PANEL_BORDER)
-            .text_size(px(11.))
-            .text_color(theme.TEXT_DIM)
-            .child(format!(
-                "Jcode Desktop · {}",
-                if development() {
-                    "Development build"
-                } else {
-                    "Release build"
-                }
-            ))
-            .child(format!("Version: {VERSION}"))
-            .child(format!("Commit: {}", revision()))
-            .child(format!("Build ID: {BUILD_ID}"))
-    }
+/// Hover for the build stamp: which build this is and where it came from.
+pub(crate) fn tooltip() -> Tooltip {
+    Tooltip::rows(
+        format!(
+            "Jcode Desktop · {}",
+            if development() {
+                "Development build"
+            } else {
+                "Release build"
+            }
+        ),
+        [
+            format!("Version: {VERSION}"),
+            format!("Commit: {}", revision()),
+            format!("Build ID: {BUILD_ID}"),
+        ],
+    )
+    .max_width(px(420.))
+    .debug_selector("panel-build-tooltip")
 }
 
 fn format_age(seconds: u64) -> String {

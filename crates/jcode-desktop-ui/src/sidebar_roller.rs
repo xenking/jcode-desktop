@@ -1,5 +1,6 @@
 //! A section menu for the top-left navigation, not the live sessions.
 use super::*;
+use crate::components::Tooltip;
 
 const COUNT: usize = 13;
 const STEP: f32 = 48.0;
@@ -204,17 +205,12 @@ impl Workspace {
                 .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
                 .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
                 .hover(|el| el.bg(Theme::global().TOOL_BG))
-                .tooltip(move |_, cx| {
-                    cx.new(|_| {
-                        remotes::HeaderTooltip(
-                    format!(
+                .tooltip(
+                    Tooltip::text(format!(
                         "Sidebar sections · {label}. Click to open or scroll to switch sections."
-                    )
-                    .into(),
+                    ))
+                    .builder(),
                 )
-                    })
-                    .into()
-                })
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|this, _, window, cx| {
@@ -275,10 +271,7 @@ impl Workspace {
         .cursor_pointer()
         .occlude()
         .hover(|el| el.bg(Theme::global().TOOL_BG))
-        .tooltip(|_, cx| {
-            cx.new(|_| remotes::HeaderTooltip("Hide sidebar (Ctrl+B)".into()))
-                .into()
-        })
+        .tooltip(Tooltip::text("Hide sidebar").key_hint("Ctrl+B").builder())
         .child(
             gpui::svg()
                 .data(include_bytes!("../../../assets/icons/menu.svg").as_slice())
@@ -447,9 +440,11 @@ impl Workspace {
                         window.focus(this.sidebar_roller.trigger_focus.as_ref().unwrap(), cx);
                         cx.notify();
                     }))
-                    .on_action(cx.listener(|this, _: &crate::menu::SelectNext, window, cx| {
-                        this.focus_sidebar_roller_row(true, window, cx);
-                    }))
+                    .on_action(
+                        cx.listener(|this, _: &crate::menu::SelectNext, window, cx| {
+                            this.focus_sidebar_roller_row(true, window, cx);
+                        }),
+                    )
                     .on_action(
                         cx.listener(|this, _: &crate::menu::SelectPrevious, window, cx| {
                             this.focus_sidebar_roller_row(false, window, cx);
@@ -605,7 +600,9 @@ mod tests {
         vcx.run_until_parked();
         let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
         let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
-        let catalog = vcx.debug_bounds("sidebar-session-catalog-controls").unwrap();
+        let catalog = vcx
+            .debug_bounds("sidebar-session-catalog-controls")
+            .unwrap();
         assert_eq!(catalog.bottom(), body.top());
         let header = vcx.debug_bounds("sidebar-section-trigger").unwrap();
         vcx.update(|window, cx| window.simulate_mouse_move(header.center(), cx));
@@ -649,9 +646,15 @@ mod tests {
             assert_eq!(current_body.size.width, body.size.width);
             if expected == SidebarView::Sessions {
                 assert_eq!(current_body, body);
-                assert_eq!(vcx.debug_bounds("sidebar-session-catalog-controls"), Some(catalog));
+                assert_eq!(
+                    vcx.debug_bounds("sidebar-session-catalog-controls"),
+                    Some(catalog)
+                );
             } else {
-                assert!(vcx.debug_bounds("sidebar-session-catalog-controls").is_none());
+                assert!(
+                    vcx.debug_bounds("sidebar-session-catalog-controls")
+                        .is_none()
+                );
                 assert_eq!(current_body.top(), catalog.top());
             }
             // One unified sidebar: no Swarm/Worktrees mode switch in any view.

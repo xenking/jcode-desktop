@@ -1,4 +1,5 @@
 use super::*;
+use crate::components::Tooltip;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,7 +63,7 @@ fn pill(
         .text_color(if selected { theme.TEXT } else { theme.TEXT_DIM })
         .when(selected, |el| el.bg(theme.TOOL_BG))
         .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
-        .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(tooltip.into())).into())
+        .tooltip(Tooltip::text(tooltip).builder())
         .child(
             div()
                 .min_w_0()

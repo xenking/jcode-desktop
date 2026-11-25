@@ -2,6 +2,7 @@
 //! spawned in, or its working directory outside Git. Grouping is presentation
 //! only. It never closes, moves, or reorders panels.
 use super::*;
+use crate::components::Tooltip;
 use jcode_desktop_model::{fs_probe, probe_cache::ProbeCache};
 
 /// Key for sessions without any working directory.
@@ -129,7 +130,9 @@ impl State {
         let mut changed = false;
         for (directory, probe) in answers {
             let project_of = |probe: Option<&Probe>| {
-                probe.and_then(|probe| probe.root.clone()).unwrap_or_else(|| PathBuf::from(&directory))
+                probe
+                    .and_then(|probe| probe.root.clone())
+                    .unwrap_or_else(|| PathBuf::from(&directory))
             };
             let moved = project_of(self.probes.peek(&directory)) != project_of(Some(&probe));
             changed |= self.probes.fill(directory, probe);
@@ -155,12 +158,17 @@ impl State {
             .filter(|dir| !dir.is_empty());
         if let Some(host) = harness::remote_host(&session.session_id) {
             let name = if crate::remote_targets::paired_id(&host).is_some() {
-                self.paired_labels.entry(host.clone()).or_insert_with(|| {
-                    jcode_desktop_harness::paired::find(&host)
-                        .map(|destination| destination.label)
-                        .unwrap_or_else(|_| "Paired machine".into())
-                }).as_str()
-            } else { host.as_str() };
+                self.paired_labels
+                    .entry(host.clone())
+                    .or_insert_with(|| {
+                        jcode_desktop_harness::paired::find(&host)
+                            .map(|destination| destination.label)
+                            .unwrap_or_else(|_| "Paired machine".into())
+                    })
+                    .as_str()
+            } else {
+                host.as_str()
+            };
             let label = match directory {
                 Some(dir) => format!("{name} · {}", path_label(dir)),
                 None => name.to_owned(),
@@ -330,10 +338,7 @@ impl Workspace {
             .rounded_full()
             .cursor_pointer()
             .hover(|el| el.bg(theme.TOOL_BG))
-            .tooltip(move |_, cx| {
-                cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
-                    .into()
-            })
+            .tooltip(Tooltip::text(tooltip.clone()).builder())
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
@@ -481,10 +486,7 @@ impl Workspace {
             .rounded_full()
             .text_size(px(11.0))
             .text_color(theme.TEXT_DIM)
-            .tooltip(move |_, cx| {
-                cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
-                    .into()
-            })
+            .tooltip(Tooltip::text(tooltip.clone()).builder())
             .child(sidebar_worktrees::icon(
                 if checkout.is_some_and(|c| c.linked) {
                     sidebar_worktrees::BRANCH_ICON
@@ -568,8 +570,21 @@ mod tests {
         assert_eq!(fs_probe::count(), before, "a miss must not touch the disk");
         assert!(settle(&mut state));
         assert_eq!(state.root(directory), Some(temp.path().to_path_buf()));
-        assert_eq!(state.probes.peek(directory).unwrap().checkout.as_ref().unwrap().branch, "main");
-        assert!(!settle(&mut state), "nothing is queued while the answer is fresh");
+        assert_eq!(
+            state
+                .probes
+                .peek(directory)
+                .unwrap()
+                .checkout
+                .as_ref()
+                .unwrap()
+                .branch,
+            "main"
+        );
+        assert!(
+            !settle(&mut state),
+            "nothing is queued while the answer is fresh"
+        );
     }
 
     #[test]
@@ -606,7 +621,11 @@ mod tests {
         assert_eq!(state.root(directory), None);
         assert!(state.probes.take_queued().is_empty());
         fs_probe::advance_clock(CHECKOUT_TTL + Duration::from_secs(1));
-        assert_eq!(state.root(directory), None, "the old answer renders while refreshing");
+        assert_eq!(
+            state.root(directory),
+            None,
+            "the old answer renders while refreshing"
+        );
         assert!(settle(&mut state));
         assert_eq!(state.root(directory), Some(temp.path().to_path_buf()));
     }

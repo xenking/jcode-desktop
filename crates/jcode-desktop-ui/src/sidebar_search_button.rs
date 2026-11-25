@@ -6,6 +6,7 @@
 //! dispatch the same [`GlobalSearch`] action the keybinding uses.
 
 use super::*;
+use crate::components::Tooltip;
 
 /// The search glyph, shared by both button shapes.
 fn search_icon(size: f32, color: impl Into<gpui::Hsla>) -> gpui::Svg {
@@ -16,10 +17,9 @@ fn search_icon(size: f32, color: impl Into<gpui::Hsla>) -> gpui::Svg {
 }
 
 fn search_tooltip() -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
-    |_, cx| {
-        cx.new(|_| remotes::HeaderTooltip("Search all sessions (Cmd+Shift+F)".into()))
-            .into()
-    }
+    Tooltip::text("Search all sessions")
+        .key_hint("Cmd+Shift+F")
+        .builder()
 }
 
 impl Workspace {

@@ -1,5 +1,6 @@
 //! Compact chrome is a presentation of the same workspace, not a saved layout.
 use super::*;
+use crate::components::Tooltip;
 
 const COMPACT_BREAKPOINT: f32 = 1100.0;
 pub(super) const SINGLE_PANEL_BREAKPOINT: f32 = 1100.0;
@@ -155,10 +156,7 @@ impl Workspace {
         .text_size(px(15.0))
         .text_color(Theme::global().TEXT_DIM)
         .occlude()
-        .tooltip(|_, cx| {
-            cx.new(|_| super::remotes::HeaderTooltip("Show sidebar (Ctrl+B)".into()))
-                .into()
-        })
+        .tooltip(Tooltip::text("Show sidebar").key_hint("Ctrl+B").builder())
         .hover(|el| {
             el.bg(Theme::global().PANEL_BG)
                 .text_color(Theme::global().TEXT)

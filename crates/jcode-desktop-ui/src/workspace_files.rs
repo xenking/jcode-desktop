@@ -1,4 +1,5 @@
 use super::*;
+use crate::components::Tooltip;
 use gpui::{AnyElement, Div, SharedString, Task, UniformListScrollHandle};
 use jcode_desktop_model::context_files::FileIndex;
 use std::sync::Arc;
@@ -417,10 +418,7 @@ impl Workspace {
                             .text_ellipsis()
                             .text_size(px(12.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| super::remotes::HeaderTooltip(root_tooltip.clone()))
-                                    .into()
-                            })
+                            .tooltip(Tooltip::text(root_tooltip.clone()).builder())
                             .child(name.unwrap_or_else(|| "Files".into())),
                     )
                     .when(root.is_some(), |header| {
@@ -616,10 +614,7 @@ impl Workspace {
             el.bg(Theme::global().TEXT.opacity(0.10))
                 .text_color(Theme::global().TEXT)
         })
-        .tooltip(move |_, cx| {
-            cx.new(|_| super::remotes::HeaderTooltip(title.into()))
-                .into()
-        })
+        .tooltip(Tooltip::text(title).builder())
         .child(label)
     }
 

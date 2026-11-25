@@ -3,6 +3,7 @@
 //! swarm agents) running in it, share one hierarchy of
 //! project, then branch or worktree, then threads.
 use super::*;
+use crate::components::Tooltip;
 
 pub(super) const BRANCH_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="black" stroke-width="1.6"><circle cx="6" cy="5" r="2.5"/><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><path d="M6 7.5v9M18 7.5c0 6-12 2-12 8"/></g></svg>"#;
 pub(super) const FOLDER_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Zm0 3h18" fill="none" stroke="black" stroke-width="1.6" stroke-linejoin="round"/></svg>"#;
@@ -46,7 +47,7 @@ pub(super) fn header_action(
             el.bg(Theme::global().PANEL_BG)
                 .text_color(Theme::global().TEXT)
         })
-        .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(tooltip.into())).into())
+        .tooltip(Tooltip::text(tooltip).builder())
         .child(content)
 }
 
@@ -297,7 +298,7 @@ impl Workspace {
                     el.bg(Theme::global().PANEL_BG)
                         .text_color(Theme::global().TEXT)
                 })
-                .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(tip.into())).into())
+                .tooltip(Tooltip::text(tip).builder())
                 .child(glyph)
                 .child(div().min_w_0().truncate().child(label))
         };
@@ -350,14 +351,7 @@ impl Workspace {
                     .cursor_pointer()
                     .bg(Theme::global().TOOL_BG)
                     .hover(|el| el.bg(Theme::global().PANEL_BG))
-                    .tooltip(|_, cx| {
-                        cx.new(|_| {
-                            remotes::HeaderTooltip(
-                                "New collection: group chats your own way".into(),
-                            )
-                        })
-                        .into()
-                    })
+                    .tooltip(Tooltip::text("New collection: group chats your own way").builder())
                     .child(icon(sidebar_collections::COLLECTION_ICON, 13.0))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -381,10 +375,7 @@ impl Workspace {
                     .cursor_pointer()
                     .bg(Theme::global().TOOL_BG)
                     .hover(|el| el.bg(Theme::global().PANEL_BG))
-                    .tooltip(|_, cx| {
-                        cx.new(|_| remotes::HeaderTooltip("Hide sidebar (Ctrl+B)".into()))
-                            .into()
-                    })
+                    .tooltip(Tooltip::text("Hide sidebar").key_hint("Ctrl+B").builder())
                     .child(icon(HIDE_SIDEBAR_ICON, 14.0))
                     .on_mouse_down(
                         gpui::MouseButton::Left,

@@ -225,19 +225,14 @@ impl Workspace {
                                         .line_height(px(9.0))
                                         .cursor_pointer()
                                         .hover(|el| el.opacity(0.85))
-                                        .tooltip(move |_, cx| {
-                                            cx.new(|_| {
-                                                live_tabs::TabTooltip(
-                                                    format!(
-                                                        "{}\nClick to {}",
-                                                        offer.label,
-                                                        offer.action.to_lowercase()
-                                                    )
-                                                    .into(),
-                                                )
-                                            })
-                                            .into()
-                                        })
+                                        .tooltip(
+                                            live_tabs::tab_tooltip(format!(
+                                                "{}\nClick to {}",
+                                                offer.label,
+                                                offer.action.to_lowercase()
+                                            ))
+                                            .builder(),
+                                        )
                                         // The badge acts on the press and keeps
                                         // the click from opening the account
                                         // popup, so a restart is never a

@@ -7,6 +7,7 @@
 //! window and client. Changes apply to the in-memory copy at once and are
 //! written on a background thread, replayed against the file under its lock.
 use super::*;
+use crate::components::Tooltip;
 use jcode_sdk::collections::{Collection, Collections};
 
 /// Sidebar group keys for collections never collide with project keys, which
@@ -558,10 +559,7 @@ impl Workspace {
             .rounded_full()
             .cursor_pointer()
             .hover(|el| el.bg(theme.TOOL_BG))
-            .tooltip(move |_, cx| {
-                cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
-                    .into()
-            })
+            .tooltip(Tooltip::text(tooltip.clone()).builder())
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
@@ -708,15 +706,9 @@ impl Workspace {
                                 this.begin_edit_collection(right.clone(), window, cx);
                             }),
                         )
-                        .tooltip(|_, cx| {
-                            cx.new(|_| {
-                                remotes::HeaderTooltip(
-                                    "Empty collection · Click to start a chat"
-                                        .into(),
-                                )
-                            })
-                            .into()
-                        })
+                        .tooltip(
+                            Tooltip::text("Empty collection · Click to start a chat").builder(),
+                        )
                         .child(div().w(px(12.0)).flex_none())
                         .child(sidebar_worktrees::icon(COLLECTION_ICON, 11.0))
                         .child(

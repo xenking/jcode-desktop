@@ -1,5 +1,6 @@
 //! Labeled live-session folder tabs, independent of the sidebar's navigation.
 use super::*;
+use crate::components::Tooltip;
 use crate::panel::folder_session_title;
 use gpui::Div;
 
@@ -460,25 +461,13 @@ impl TabMotion {
     }
 }
 
-pub(super) struct TabTooltip(pub(super) gpui::SharedString);
-
-impl Render for TabTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let _render_scope = crate::render_stats::scope("TabTooltip");
-        div()
-            .debug_selector(|| "live-session-tab-tooltip".into())
-            .max_w(px(360.0))
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .border_1()
-            .border_color(Theme::global().PANEL_BORDER)
-            .bg(Theme::global().PANEL_BG)
-            .text_color(Theme::global().TEXT)
-            .text_size(px(12.0))
-            .child(self.0.clone())
-    }
+/// Hover text for a session tab or tab-strip control.
+pub(super) fn tab_tooltip(text: impl Into<gpui::SharedString>) -> Tooltip {
+    Tooltip::text(text)
+        .max_width(px(360.0))
+        .debug_selector("live-session-tab-tooltip")
 }
+
 impl Workspace {
     /// Workspace a pointer "next" click lands on: the next occupied workspace
     /// below (wrapping), or a fresh adjacent one when nothing else is open.
@@ -513,7 +502,7 @@ impl Workspace {
         Self::tab_action("rename-session-button", TAB_RENAME_SIZE)
             .debug_selector(|| "rename-session-button".into())
             .hover(|style| style.bg(Theme::global().PANEL_BG))
-            .tooltip(|_, cx| cx.new(|_| TabTooltip("Rename session (F2)".into())).into())
+            .tooltip(tab_tooltip("Rename session").key_hint("F2").builder())
             .on_click(cx.listener(|this, _, window, cx| {
                 cx.stop_propagation();
                 this.rename_session(&RenameSession, window, cx);
@@ -540,16 +529,15 @@ impl Workspace {
         )
         .debug_selector(move || format!("close-session-button-{index}"))
         .group("tab-close-hitbox")
-        .tooltip(|_, cx| {
-            cx.new(|_| {
-                TabTooltip(if cfg!(target_os = "macos") {
-                    "Close tab (⌘Q)".into()
+        .tooltip(
+            tab_tooltip("Close tab")
+                .key_hint(if cfg!(target_os = "macos") {
+                    "⌘Q"
                 } else {
-                    "Close tab (Super+Q)".into()
+                    "Super+Q"
                 })
-            })
-            .into()
-        })
+                .builder(),
+        )
         .on_click(cx.listener(move |this, _, window, cx| {
             cx.stop_propagation();
             this.set_active(index, cx);
@@ -594,7 +582,7 @@ impl Workspace {
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .text_color(accent)
             .hover(move |el| el.bg(accent.opacity(0.26)))
-            .tooltip(move |_, cx| cx.new(|_| TabTooltip(tooltip.clone())).into())
+            .tooltip(tab_tooltip(tooltip.clone()).builder())
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
@@ -658,7 +646,7 @@ impl Workspace {
         })
         .cursor_pointer()
         .occlude()
-        .tooltip(|_, cx| cx.new(|_| TabTooltip("Hidden session tabs".into())).into())
+        .tooltip(tab_tooltip("Hidden session tabs").builder())
         .on_click(cx.listener(move |this, _, window, cx| {
             cx.stop_propagation();
             this.live_tabs.overflow_open = !this.live_tabs.overflow_open;
@@ -1174,11 +1162,7 @@ impl Workspace {
                             }
                         }))
                     })
-                    .tooltip({
-                        let title: gpui::SharedString =
-                            format!("Workspace {} · {title}", row + 1).into();
-                        move |_, cx| cx.new(|_| TabTooltip(title.clone())).into()
-                    })
+                    .tooltip(tab_tooltip(format!("Workspace {} · {title}", row + 1)).builder())
                     .when_some(index, |el, index| {
                         let entity = cx.weak_entity();
                         crate::keyboard::press_button(el, move |window, cx| {
@@ -1223,10 +1207,7 @@ impl Workspace {
                     .text_color(accent)
                     .occlude()
                     .cursor_pointer()
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| TabTooltip(format!("Workspace {}", row + 1).into()))
-                            .into()
-                    })
+                    .tooltip(tab_tooltip(format!("Workspace {}", row + 1)).builder())
                     .child(
                         div()
                             .w(px((label_width - 4.0).max(0.0)))
@@ -1335,16 +1316,15 @@ impl Workspace {
                         el.bg(Theme::global().TEXT.opacity(0.10))
                             .text_color(Theme::global().TEXT)
                     })
-                    .tooltip(|_, cx| {
-                        cx.new(|_| {
-                            TabTooltip(if cfg!(target_os = "macos") {
-                                "New session (⌘N)".into()
+                    .tooltip(
+                        tab_tooltip("New session")
+                            .key_hint(if cfg!(target_os = "macos") {
+                                "⌘N"
                             } else {
-                                "New session (Super+N)".into()
+                                "Super+N"
                             })
-                        })
-                        .into()
-                    })
+                            .builder(),
+                    )
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
@@ -1365,7 +1345,7 @@ impl Workspace {
                             el.bg(Theme::global().ERROR.opacity(0.16))
                                 .text_color(Theme::global().ERROR)
                         })
-                        .tooltip(|_, cx| cx.new(|_| TabTooltip("Close window".into())).into())
+                        .tooltip(tab_tooltip("Close window").builder())
                         .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
                             cx.stop_propagation();
                             window.prevent_default();
@@ -2643,7 +2623,10 @@ mod tests {
                 vcx.simulate_click(item.center(), gpui::Modifiers::default());
                 vcx.run_until_parked();
                 assert_eq!(workspace.read_with(vcx, |w, _| w.active), index);
-                assert!(vcx.debug_bounds(format!("live-session-tab-{index}").leak()).is_some());
+                assert!(
+                    vcx.debug_bounds(format!("live-session-tab-{index}").leak())
+                        .is_some()
+                );
                 assert!(vcx.debug_bounds("tab-overflow-menu").is_none());
                 vcx.simulate_keystrokes("super-p");
                 vcx.run_until_parked();
