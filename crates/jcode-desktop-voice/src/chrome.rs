@@ -1,7 +1,7 @@
 //! The voice button's chrome: the platform shortcut keycap, its tooltip,
 //! short pill labels for voice outcomes, and the idle microphone/shortcut
 //! crossfade. Holds no panel state, so it is testable without a Panel.
-use crate::theme::Theme;
+use crate::theme::{Palette, Theme};
 use gpui::{
     Context, IntoElement, ParentElement, Render, Styled, Task, Window, div, prelude::*, px,
 };
@@ -24,7 +24,7 @@ const VOICE_SHORTCUT_KEYCAP: &str = "⌘⇧M";
 
 /// Linux: a small outlined keycap holding the Copilot key glyph.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn voice_shortcut_keycap(color: gpui::Hsla, _theme: &Theme) -> gpui::AnyElement {
+pub fn voice_shortcut_keycap(color: gpui::Hsla, _theme: &Palette) -> gpui::AnyElement {
     div()
         .debug_selector(|| "voice-shortcut".into())
         .flex_none()
@@ -46,7 +46,7 @@ pub fn voice_shortcut_keycap(color: gpui::Hsla, _theme: &Theme) -> gpui::AnyElem
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-pub fn voice_shortcut_keycap(color: gpui::Hsla, theme: &Theme) -> gpui::AnyElement {
+pub fn voice_shortcut_keycap(color: gpui::Hsla, theme: &Palette) -> gpui::AnyElement {
     div()
         .debug_selector(|| "voice-shortcut".into())
         .flex_none()

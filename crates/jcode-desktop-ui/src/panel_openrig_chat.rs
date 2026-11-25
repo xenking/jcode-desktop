@@ -1,5 +1,9 @@
 use super::{Panel, State};
-use crate::{input::PromptInput, theme::Theme, ui_actions::OpenFleetSession};
+use crate::{
+    input::PromptInput,
+    theme::{Palette, Theme},
+    ui_actions::OpenFleetSession,
+};
 use gpui::{Context, Entity, FontWeight, ScrollHandle, SharedString, Window, div, prelude::*, px};
 use jcode_desktop_openrig::{
     SectionKind,
@@ -67,7 +71,7 @@ fn open_action(access: &Access<'_>) -> Option<OpenFleetSession> {
     }
 }
 
-fn text(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div {
+fn text(theme: &Palette, label: impl Into<SharedString>) -> gpui::Div {
     div()
         .min_w_0()
         .text_size(px(12.))
@@ -78,7 +82,7 @@ fn text(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div {
 fn pill(
     id: impl Into<gpui::ElementId>,
     label: &'static str,
-    theme: &Theme,
+    theme: &Palette,
     primary: bool,
 ) -> gpui::Stateful<gpui::Div> {
     div()
@@ -340,7 +344,7 @@ impl Panel {
         state: &State,
         host: &str,
         seat: ChatSeat<'_>,
-        theme: &Theme,
+        theme: &Palette,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let role = seat.role.label();
@@ -503,7 +507,7 @@ impl Panel {
         &self,
         relay: &Relay,
         still_current: bool,
-        theme: &Theme,
+        theme: &Palette,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let body = div().px_3().flex().flex_col().gap_2();

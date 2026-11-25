@@ -1,6 +1,6 @@
 //! Native OpenRig mission control.
 use super::Panel;
-use crate::theme::Theme;
+use crate::theme::{Palette, Theme};
 use gpui::{Context, FontWeight, MouseButton, ScrollHandle, Task, Window, div, prelude::*, px};
 use jcode_desktop_openrig::{
     LiveEvent, Meter, SectionKind, Snapshot, Tone, default_base_url,
@@ -39,7 +39,7 @@ fn destination_base_url() -> String {
     }
 }
 
-fn tone_color(theme: &Theme, tone: Tone) -> gpui::Rgba {
+fn tone_color(theme: &Palette, tone: Tone) -> gpui::Rgba {
     match tone {
         Tone::Ok => theme.OK,
         Tone::Warn => theme.WARN,
@@ -51,7 +51,7 @@ fn tone_color(theme: &Theme, tone: Tone) -> gpui::Rgba {
 
 /// A progress pill: a fully rounded track filled to the served percentage, with the served
 /// words beside it. An unknown percentage draws an empty track, never a guessed fill.
-fn meter_pill(theme: &Theme, meter: &Meter, width: f32) -> gpui::Div {
+fn meter_pill(theme: &Palette, meter: &Meter, width: f32) -> gpui::Div {
     let color = tone_color(theme, meter.tone);
     let fill = meter.fraction().unwrap_or(0.);
     div()

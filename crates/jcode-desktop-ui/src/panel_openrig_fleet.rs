@@ -1,7 +1,10 @@
 //! Fleet outline and seat properties for the OpenRig panel.
 
 use super::{Panel, State, tone_color};
-use crate::{theme::Theme, ui_actions::OpenFleetSession};
+use crate::{
+    theme::{Palette, Theme},
+    ui_actions::OpenFleetSession,
+};
 use gpui::{Context, FontWeight, MouseButton, ScrollHandle, SharedString, div, prelude::*, px};
 use jcode_desktop_openrig::{
     Tone,
@@ -267,7 +270,7 @@ impl FleetView {
     }
 }
 
-fn status_color(theme: &Theme, status: &str) -> gpui::Rgba {
+fn status_color(theme: &Palette, status: &str) -> gpui::Rgba {
     tone_color(
         theme,
         match status {

@@ -374,7 +374,7 @@ impl Panel {
                             .flex()
                             .items_center()
                             .rounded_full()
-                            .bg(theme.ACCENT_DIM.opacity(0.5))
+                            .bg(theme.wash(Ink::AccentDim, 0.5))
                             .cursor_pointer()
                             .text_size(px(10.))
                             .text_color(theme.TEXT_DIM)

@@ -5,7 +5,7 @@ use jcode_desktop_openrig::{
     inbox::{Inbox, Item, ItemId},
 };
 
-use super::{Panel, State, Theme, default_base_url};
+use super::{Panel, State, Palette, default_base_url};
 use crate::{input::PromptInput, ui_actions::OpenFleetSession};
 
 #[derive(Default)]
@@ -149,7 +149,7 @@ impl State {
 }
 
 fn pill(
-    theme: &Theme,
+    theme: &Palette,
     id: &'static str,
     label: &'static str,
     primary: bool,
@@ -174,7 +174,7 @@ impl Panel {
     pub(super) fn render_attention_actions(
         &self,
         row: &Item,
-        theme: &Theme,
+        theme: &Palette,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let openrig = self.openrig.as_ref().expect("OpenRig panel");

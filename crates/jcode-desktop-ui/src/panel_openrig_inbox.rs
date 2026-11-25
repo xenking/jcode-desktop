@@ -1,4 +1,4 @@
-use super::{Panel, State, Theme, detail_lines};
+use super::{Panel, Palette, State, Theme, detail_lines};
 use chrono::Utc;
 use gpui::{Context, FontWeight, MouseButton, ScrollHandle, div, prelude::*, px};
 use jcode_desktop_openrig::inbox::{Inbox, Item, ItemId, Kind};
@@ -146,7 +146,7 @@ fn title(item: &Item) -> &str {
     item.title.as_deref().unwrap_or_else(|| item.kind().label())
 }
 
-fn field(theme: &Theme, name: &str, value: impl Into<gpui::SharedString>) -> gpui::Div {
+fn field(theme: &Palette, name: &str, value: impl Into<gpui::SharedString>) -> gpui::Div {
     div()
         .flex()
         .flex_col()
@@ -401,7 +401,7 @@ impl Panel {
         item: &Item,
         page: Page,
         compact: bool,
-        theme: &Theme,
+        theme: &Palette,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let mut detail = div()
