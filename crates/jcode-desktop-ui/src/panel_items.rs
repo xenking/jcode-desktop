@@ -196,7 +196,7 @@ pub(super) enum TranscriptRowSource {
 /// Everything a render derives from the transcript alone. Recomputing it
 /// walks and hashes the whole history, which dominated frames that merely
 /// move a panel, so it is reused while its key is unchanged.
-pub(super) struct TranscriptDerived {
+pub(crate) struct TranscriptDerived {
     pub(super) key: TranscriptDerivedKey,
     pub(super) rows: Arc<Vec<TranscriptRenderRow>>,
     pub(super) prompt_rows: Arc<Vec<(usize, usize)>>,
@@ -230,7 +230,7 @@ pub(super) struct TranscriptDerivedKey {
 }
 
 #[derive(Clone)]
-pub(super) struct TranscriptRenderRow {
+pub(crate) struct TranscriptRenderRow {
     pub(super) index: usize,
     pub(super) source: TranscriptRowSource,
     #[allow(dead_code)]
