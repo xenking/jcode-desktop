@@ -188,6 +188,16 @@ impl Panel {
                 }
             }
             SpecialCommand::Dictation => {
+                // One setting decides how dictation starts. A selected streaming
+                // backend records live and never runs the external command.
+                if jcode_voice::trigger_route(&jcode_base::config::config().dictation)
+                    == jcode_voice::TriggerRoute::Streaming
+                {
+                    self.toggle_voice(cx);
+                    self.stick_to_bottom = true;
+                    cx.notify();
+                    return true;
+                }
                 let task = cx.background_executor().spawn(async {
                     jcode_desktop_harness::network::run(jcode_voice::dictation::run_configured())
                         .await

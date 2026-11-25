@@ -724,7 +724,7 @@ fn shared_jcode_config_path() -> PathBuf {
         .join("config.toml")
 }
 
-/// Persist one `[dictation]` string value (`backend`, `base_url`, `command`)
+/// Persist one `[dictation]` string value (`backend`, `model`, `base_url`, `command`, `mode`)
 /// in the shared jcode config without reserializing the rest of the file.
 #[cfg(not(any(test, feature = "test-support")))]
 pub fn persist_dictation_value(key: &str, value: &str) -> std::io::Result<()> {
@@ -737,12 +737,13 @@ pub fn persist_dictation_value(_key: &str, _value: &str) -> std::io::Result<()> 
     Ok(())
 }
 
-fn persist_dictation_value_at(
+/// Same as [`persist_dictation_value`] for an explicit config file.
+pub fn persist_dictation_value_at(
     path: &std::path::Path,
     key: &str,
     value: &str,
 ) -> std::io::Result<()> {
-    if !matches!(key, "backend" | "base_url" | "command" | "mode") {
+    if !matches!(key, "backend" | "base_url" | "command" | "mode" | "model") {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("unsupported dictation key {key}"),
@@ -1145,6 +1146,7 @@ mod tests {
         persist_dictation_value_at(&path, "backend", "soniox").unwrap();
         persist_dictation_value_at(&path, "base_url", "ws://127.0.0.1:9/\"x\"").unwrap();
         persist_dictation_value_at(&path, "backend", "nari").unwrap();
+        persist_dictation_value_at(&path, "model", "stt-rt-v6").unwrap();
         let text = fs::read_to_string(&path).unwrap();
         let value: toml::Value = toml::from_str(&text).unwrap();
         let dictation = &value["dictation"];
@@ -1153,6 +1155,7 @@ mod tests {
             dictation["base_url"].as_str(),
             Some("ws://127.0.0.1:9/\"x\"")
         );
+        assert_eq!(dictation["model"].as_str(), Some("stt-rt-v6"));
         assert_eq!(dictation["mode"].as_str(), Some("send"));
         assert_eq!(value["model"].as_str(), Some("keep-me"));
         assert_eq!(text.matches("backend =").count(), 1);

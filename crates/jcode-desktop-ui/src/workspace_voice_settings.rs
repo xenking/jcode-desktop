@@ -14,7 +14,7 @@ const SUPERWHISPER_SCRIPT: &str = include_str!("../assets/superwhisper-dictate.s
 pub(super) struct VoiceSettings {
     /// Masked key entry for the selected streaming backend.
     key_input: Option<(StreamingBackend, Entity<LoginInput>)>,
-    /// Plain text entry for `base_url` (Nari/Soniox) or `command`.
+    /// Plain text entry for `model`, `base_url` (Nari/Soniox) or `command`.
     text_input: Option<(&'static str, Entity<PromptInput>)>,
 }
 
@@ -84,6 +84,16 @@ fn streaming(backend: DictationBackend) -> Option<StreamingBackend> {
     }
 }
 
+/// The model a backend will request: the saved one, else its default.
+fn model_label(backend: StreamingBackend, saved: &str) -> String {
+    let saved = saved.trim();
+    if saved.is_empty() {
+        format!("{} (default)", backend.default_model())
+    } else {
+        saved.to_owned()
+    }
+}
+
 /// Install the SuperWhisper bridge next to the jcode config and return the
 /// command line to store in `[dictation] command`.
 fn install_superwhisper_bridge() -> std::io::Result<String> {
@@ -149,7 +159,13 @@ impl Workspace {
     }
 
     fn select_voice_backend(&mut self, backend: DictationBackend, cx: &mut Context<Self>) {
+        let changed = jcode_base::config::config().dictation.backend != backend;
         if self.save_dictation("backend", backend_slug(backend), cx) {
+            // A model name belongs to one provider. Carrying it to another
+            // backend would request a model that provider does not have.
+            if changed && !self.save_dictation("model", "", cx) {
+                return;
+            }
             self.voice_settings = VoiceSettings::default();
             self.status = format!("Voice backend: {}", backend_slug(backend));
         }
@@ -190,19 +206,19 @@ impl Workspace {
 
     fn open_voice_text_input(&mut self, field: &'static str, cx: &mut Context<Self>) {
         let dictation = &jcode_base::config::config().dictation;
-        let current = if field == "command" {
-            dictation.command.clone()
-        } else {
-            dictation.base_url.clone()
+        let current = match field {
+            "command" => dictation.command.clone(),
+            "model" => dictation.model.clone(),
+            _ => dictation.base_url.clone(),
         };
         let weak = cx.weak_entity();
         let input = cx.new(|cx| {
             let mut input = PromptInput::new(
                 cx,
-                if field == "command" {
-                    "shell command that prints the transcript, then Enter"
-                } else {
-                    "wss:// endpoint override (empty = provider default), then Enter"
+                match field {
+                    "command" => "shell command that prints the transcript, then Enter",
+                    "model" => "model name (empty = backend default), then Enter",
+                    _ => "wss:// endpoint override (empty = provider default), then Enter",
                 },
                 move |text, _, _, app| {
                     let _ = weak.update(app, |this, cx| {
@@ -258,10 +274,15 @@ impl Workspace {
             ));
         }
         let detail: String = match selected {
-            DictationBackend::Auto => "Uses a Nari key if present, else a Soniox key.".into(),
+            DictationBackend::Auto => {
+                "Uses a Nari key if present, else a Soniox key. Pick one to choose its model.".into()
+            }
             DictationBackend::ElevenLabs => {
                 if StreamingBackend::ElevenLabs.api_key().is_some() {
-                    "Uses your own ElevenLabs key. SuperWhisper is not needed.".into()
+                    format!(
+                        "Uses your own ElevenLabs key. SuperWhisper is not needed. Model: {}.",
+                        model_label(StreamingBackend::ElevenLabs, &dictation.model)
+                    )
                 } else {
                     "Set an ElevenLabs API key. A SuperWhisper Pro license does not grant API access.".into()
                 }
@@ -274,7 +295,10 @@ impl Workspace {
                 } else {
                     "No key yet"
                 };
-                format!("{key}. Read from {var} or ~/.config/jcode/{file}.")
+                format!(
+                    "{key}. Read from {var} or ~/.config/jcode/{file}. Model: {}.",
+                    model_label(b, &dictation.model)
+                )
             }
             DictationBackend::Subscription => {
                 let base = jcode_base::subscription_api::configured_api_base();
@@ -308,6 +332,14 @@ impl Workspace {
             actions = actions.child(
                 pill("settings-voice-key", "Set API key", false)
                     .on_click(cx.listener(move |this, _, _, cx| this.open_voice_key_input(b, cx))),
+            );
+            actions = actions.child(
+                pill(
+                    "settings-voice-model",
+                    format!("Model: {}", model_label(b, &dictation.model)),
+                    false,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.open_voice_text_input("model", cx))),
             );
             if b != StreamingBackend::ElevenLabs {
                 actions = actions.child(
@@ -434,5 +466,57 @@ mod tests {
         assert!(SUPERWHISPER_SCRIPT.starts_with("#!/bin/sh"));
         assert!(SUPERWHISPER_SCRIPT.contains("superwhisper://record"));
         assert!(SUPERWHISPER_SCRIPT.contains("-extract result raw"));
+    }
+
+    /// A long dictation reaches the bridge's recording limit, or is interrupted
+    /// by the caller's own limit. Either way the bridge stops SuperWhisper and
+    /// still collects the transcript instead of abandoning the recording.
+    #[test]
+    fn superwhisper_bridge_stops_and_collects_instead_of_abandoning() {
+        assert!(SUPERWHISPER_SCRIPT.contains("trap finish INT TERM"));
+        assert!(SUPERWHISPER_SCRIPT.contains("superwhisper://record/stop"));
+        let limit_branch = SUPERWHISPER_SCRIPT.rsplit_once("done\n").unwrap().1;
+        assert_eq!(limit_branch.trim(), "finish");
+    }
+
+    /// The owner's choice, as written by Settings, is the backend and model
+    /// every dictation start uses. Keys exist for all providers, so any
+    /// fallback would show up as the wrong backend.
+    #[test]
+    fn saved_backend_and_model_are_the_ones_started() {
+        use jcode_voice::{StreamingBackend, plan_streaming, trigger_route, TriggerRoute};
+        let dir = tempfile::tempdir().unwrap();
+        for (backend, slug, _) in BACKENDS {
+            let path = dir.path().join(format!("{slug}.toml"));
+            crate::config::persist_dictation_value_at(&path, "command", "my-whisper").unwrap();
+            crate::config::persist_dictation_value_at(&path, "backend", slug).unwrap();
+            crate::config::persist_dictation_value_at(&path, "model", "chosen-model").unwrap();
+            let saved: jcode_base::config::Config =
+                toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(saved.dictation.backend, backend, "{slug} persisted");
+            assert_eq!(saved.dictation.model, "chosen-model");
+            let plan = plan_streaming(&saved.dictation, |b| Some(format!("key-{}", b.name())));
+            match backend {
+                DictationBackend::Auto => {
+                    assert_eq!(plan.unwrap().backend, StreamingBackend::Nari)
+                }
+                DictationBackend::Nari
+                | DictationBackend::Soniox
+                | DictationBackend::ElevenLabs => {
+                    let plan = plan.unwrap();
+                    assert_eq!(Some(plan.backend), streaming(backend), "{slug} started");
+                    assert_eq!(plan.effective_model(), "chosen-model");
+                }
+                DictationBackend::Subscription | DictationBackend::Command => {
+                    assert!(plan.is_err(), "{slug} has no live capture")
+                }
+            }
+            // A saved command must never start for a streaming backend.
+            let expected = match backend {
+                DictationBackend::Command | DictationBackend::Auto => TriggerRoute::Command,
+                _ => TriggerRoute::Streaming,
+            };
+            assert_eq!(trigger_route(&saved.dictation), expected, "{slug} trigger");
+        }
     }
 }

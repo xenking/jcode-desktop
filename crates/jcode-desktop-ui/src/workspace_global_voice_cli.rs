@@ -71,8 +71,10 @@ impl CliCapture {
 /// Short OS-pill label for a failure. Never includes transcript content.
 fn failure_label(error: &VoiceError) -> String {
     match error {
-        VoiceError::NariNotConfigured | VoiceError::SonioxNotConfigured => {
-            "Voice not configured".into()
+        VoiceError::NariNotConfigured
+        | VoiceError::SonioxNotConfigured
+        | VoiceError::ElevenLabsNotConfigured => {
+            format!("{}: no API key", jcode_voice::configured_label())
         }
         VoiceError::Timeout => "Transcription timed out".into(),
         other => crate::panel::voice::short_voice_status(&other.to_string()),

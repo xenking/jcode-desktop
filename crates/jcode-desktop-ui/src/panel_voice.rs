@@ -113,6 +113,10 @@ pub(super) struct VoiceState {
     peak: f32,
     /// The end of this attempt was already logged.
     end_logged: bool,
+    /// Provider and model this attempt started, for messages and the log.
+    provider: Option<String>,
+    /// Why the provider stream stopped early. The words so far are kept.
+    interrupted: Option<VoiceError>,
 }
 
 /// Timestamped voice lifecycle line in the Desktop log. Never transcript text.
@@ -445,8 +449,16 @@ impl Panel {
             }
             _ => {}
         }
-        // `[dictation] backend` picks Nari or Soniox (Auto: whichever key exists).
-        let result = NariRecording::start_configured(attempt.clone());
+        // `[dictation] backend` and `model` decide the provider. Only `auto`
+        // chooses (Nari, else Soniox), and the label says so.
+        let result = NariRecording::start_configured_plan(attempt.clone()).map(|(recording, plan)| {
+            self.voice.provider = Some(if plan.auto {
+                format!("auto: {}", plan.label())
+            } else {
+                plan.label()
+            });
+            recording
+        });
         self.finish_voice_startup(&attempt, result, cx);
     }
 
@@ -473,9 +485,16 @@ impl Panel {
             Phase::Transcribing
         };
         self.voice.started = Some(Instant::now());
+        // The managed bridge bounds its own recording and stops SuperWhisper at
+        // that limit, so a fixed Desktop deadline must not cut a long dictation.
+        let timeout_secs = if self.voice.superwhisper_capture {
+            0
+        } else {
+            cfg.timeout_secs
+        };
         let task = cx.background_executor().spawn(async move {
             jcode_desktop_harness::network::run(async move {
-                voice::dictation::run_command(&command, cfg.timeout_secs).await
+                voice::dictation::run_command(&command, timeout_secs).await
             })
             .await
             .map_err(anyhow::Error::msg)?
@@ -521,7 +540,8 @@ impl Panel {
         match result {
             Ok(recording) => {
                 voice_log(format_args!(
-                    "recording started ({}{})",
+                    "recording started with {} ({}{})",
+                    self.voice.provider.as_deref().unwrap_or("?"),
                     if self.voice.hold_capture {
                         "hold"
                     } else {
@@ -560,7 +580,8 @@ impl Panel {
                 }
                 self.voice.phase = Phase::Idle;
                 self.voice.hold_capture = false;
-                self.voice.error = Some(error.to_string());
+                // Name the backend and model that failed. Nothing else was tried.
+                self.voice.error = Some(format!("{}: {error}", voice::configured_label()));
             }
         }
         cx.notify();
@@ -642,6 +663,7 @@ impl Panel {
                                 }
                             }
                             voice_log(format_args!("worker exited without a result"));
+                            // finish_voice keeps any words already transcribed.
                             panel.finish_voice(Err(VoiceError::CaptureFailed), cx);
                             return false;
                         }
@@ -685,6 +707,7 @@ impl Panel {
                 }
                 cx.notify();
             }
+            NariEvent::Interrupted(error) => self.voice.interrupted = Some(error),
             NariEvent::Finished(result) => self.finish_voice(result, cx),
         }
     }
@@ -855,7 +878,41 @@ impl Panel {
         self.finish_voice_with_mode(result, mode, cx);
     }
 
+    /// Words already transcribed outlive any error: a limit or failure never
+    /// discards them. The reason is reported next to the kept text.
     fn finish_voice_with_mode(
+        &mut self,
+        result: Result<String, VoiceError>,
+        mode: jcode_base::protocol::TranscriptMode,
+        cx: &mut Context<Self>,
+    ) {
+        let result = match result {
+            Err(error)
+                if error != VoiceError::Cancelled && !self.voice.live_transcript.trim().is_empty() =>
+            {
+                self.voice.interrupted.get_or_insert(error);
+                Ok(self.voice.live_transcript.clone())
+            }
+            other => other,
+        };
+        let note = match (&result, self.voice.interrupted.take()) {
+            (Ok(text), Some(error)) if !text.trim().is_empty() => Some(format!(
+                "{} stopped early: {error}. The words captured before that were kept.",
+                self.voice.provider.as_deref().unwrap_or("Voice input")
+            )),
+            _ => None,
+        };
+        self.finish_voice_text(result, mode, cx);
+        if let Some(note) = note {
+            voice_log(format_args!("kept transcript after interruption: {note}"));
+            if self.voice.phase == Phase::Idle && self.voice.error.is_none() {
+                self.voice.error = Some(note);
+                cx.notify();
+            }
+        }
+    }
+
+    fn finish_voice_text(
         &mut self,
         result: Result<String, VoiceError>,
         mode: jcode_base::protocol::TranscriptMode,
@@ -874,7 +931,7 @@ impl Panel {
             }
             Ok(text) => self.voice.log_end(
                 false,
-                "recording ended without a stop request (5 minute cap or provider)",
+                "recording ended without a stop request (safety cap or provider)",
                 Some(text.chars().count()),
             ),
             Err(error) => self
@@ -1823,6 +1880,31 @@ mod tests {
             assert_eq!(input.content.as_ref(), "🙂 до Hello earth. после!");
             assert_eq!(input.snapshot().content, "🙂 до Hello earth. после!");
             assert_eq!(input.caret_offset(), input.content.len());
+        });
+    }
+
+    #[gpui::test]
+    fn voice_error_after_speech_keeps_the_words_and_says_why(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.voice.phase = Phase::Recording;
+            panel.voice.provider = Some("Soniox (stt-rt-v6)".into());
+            panel.input.update(cx, |input, cx| {
+                input.set_content("до после".into(), cx);
+                input.set_caret("до ".len(), cx);
+            });
+            panel.begin_inline_voice(cx);
+            panel.apply_voice_event(NariEvent::Transcript("ninety seconds of words".into()), cx);
+            // The provider ended the stream. Nothing but an error reaches the UI.
+            panel.apply_voice_event(NariEvent::Finished(Err(VoiceError::Network)), cx);
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "до ninety seconds of words после",
+                "words captured before the failure must stay in the draft"
+            );
+            let note = panel.voice.error.clone().expect("the failure is reported");
+            assert!(note.contains("Soniox (stt-rt-v6)"), "{note}");
+            assert!(note.contains("kept"), "{note}");
         });
     }
 

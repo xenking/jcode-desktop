@@ -26,7 +26,9 @@ struct Capture {
 }
 
 /// Host-delivered holds have no kernel-side deadline, so bound them here too.
-const HOST_HOLD_DEADLINE: Duration = Duration::from_secs(120);
+/// Reaching it releases the hold, like a key-up: the words spoken so far are
+/// delivered, never discarded.
+const HOST_HOLD_DEADLINE: Duration = Duration::from_secs(600);
 const IDLE_POLL: Duration = Duration::from_millis(40);
 const HELD_POLL: Duration = Duration::from_millis(8);
 
@@ -344,8 +346,9 @@ impl Workspace {
             .host_held_since
             .is_some_and(|since| since.elapsed() >= HOST_HOLD_DEADLINE)
         {
-            eprintln!("global voice: host shortcut hold exceeded its deadline");
-            self.cancel_global_voice_capture("host shortcut hold exceeded its deadline", cx);
+            eprintln!("global voice: host shortcut hold exceeded its deadline, finishing it");
+            self.global_voice.host_held_since = None;
+            self.global_voice_release(cx);
         }
         #[cfg(target_os = "linux")]
         let cli_recording = self

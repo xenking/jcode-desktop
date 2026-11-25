@@ -60,7 +60,7 @@ pub fn voice_shortcut_keycap(color: gpui::Hsla, theme: &Theme) -> gpui::AnyEleme
 
 pub fn voice_tooltip(action: &str, status: &str) -> String {
     format!(
-        "{action} · {VOICE_SHORTCUT}\nHold {VOICE_SHORTCUT} to transcribe, release to finish. {status}. Ctrl+Shift+V toggles recording in the composer. Audio streams to Nari. After transcription, Jev chooses a coding agent or a quick navigation action."
+        "{action} · {VOICE_SHORTCUT}\nHold {VOICE_SHORTCUT} to transcribe, release to finish. {status}. Ctrl+Shift+V toggles recording in the composer. Audio streams to the speech backend chosen in Settings > Voice. After transcription, Jev chooses a coding agent or a quick navigation action."
     )
 }
 

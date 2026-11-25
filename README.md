@@ -32,7 +32,7 @@ utterance. Releasing while the microphone is still connecting cancels that attem
 - **Click or composer fallback:** click the microphone or press **Ctrl+Shift+V**
   to start/stop recording without holding a key.
 
-Audio streams to Nari. After local transcription, Jev sends or queues agent work,
+Audio streams to the speech backend chosen in Settings > Voice. After local transcription, Jev sends or queues agent work,
 performs a supported navigation action, or preserves uncertain input in the draft.
 A persistent decision card shows the questions, Yes probabilities, and result.
 Existing typed text and attachments are preserved. See

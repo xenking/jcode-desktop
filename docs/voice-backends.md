@@ -20,6 +20,30 @@ or `ws://` on loopback). Scribe connects only to the official ElevenLabs endpoin
 environment. A SuperWhisper
 subscription is not an ElevenLabs API credential. Auto does not select Scribe.
 
+## Which backend and model run
+
+The backend picked here is the one that records, and `[dictation] model` (the
+**Model** pill, empty = the provider default such as Soniox `stt-rt-v6`) is the
+model it requests. Nothing else is tried:
+
+- A missing key or a failing provider is an error that names the backend and model.
+  Only **Auto** chooses (Nari first, then Soniox), and the live label says so.
+- `/dictation`, the dictation key and the TUI's `/dictate` follow the same setting.
+  A streaming backend records live. The external command runs only for
+  **External command** (or **Auto** when a command is set).
+- Picking another backend clears the saved model, since a model name belongs to
+  one provider.
+
+## Long dictation
+
+There is no recording time limit to configure. A live provider session is renewed
+about every minute of audio: the old session is finalized, the next one opens, and
+audio spoken meanwhile is queued, so the transcript joins up without gaps. A session
+the provider drops on its own is reopened. If the provider cannot be reached again,
+the words captured so far are still inserted and a note names the backend and the
+reason. The same holds for the external command: when `timeout_secs` is reached it is
+interrupted and whatever it already printed is used.
+
 In the chat composer, Nari, Soniox, and Scribe show live text at the caret in `insert`
 mode. Stop voice (square button or Ctrl+Shift+V) finishes the recording and
 keeps the result in the draft. Other delivery modes keep their existing behavior.
@@ -52,4 +76,7 @@ license. The square Stop voice button and Ctrl+Shift+V finish capture with
 `superwhisper://record/stop` (SuperWhisper 2.16.3 or newer). The bridge receives
 only the finished transcript, including when SuperWhisper uses a realtime model.
 `SUPERWHISPER_RECORDINGS` and `SUPERWHISPER_TIMEOUT` (seconds, default 300)
-override the defaults. Select **Use SuperWhisper** again to update an existing bridge.
+override the defaults. At that limit, or when interrupted, the bridge stops
+SuperWhisper and still waits (`SUPERWHISPER_STOP_GRACE`, default 45 s) for the
+transcript instead of abandoning the recording. Desktop does not impose its own
+deadline on the bridge. Select **Use SuperWhisper** again to update an existing bridge.
