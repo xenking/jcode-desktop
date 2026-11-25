@@ -651,6 +651,199 @@ mod tests {
             .unwrap();
     }
 
+    // ---- Characterization pins -------------------------------------------
+    //
+    // Pinned before the caret, selection and IME rules moved into
+    // jcode-desktop-model::text_field. They read the field through the platform
+    // input handler where possible so they survive the move.
+
+    fn login_window(cx: &mut gpui::TestAppContext) -> gpui::WindowHandle<LoginInput> {
+        let window = cx.update(|cx| {
+            cx.open_window(gpui::WindowOptions::default(), |_, cx| {
+                cx.new(|cx| LoginInput::new(cx, "API key"))
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |input, window, cx| {
+                window.focus(&input.focus_handle, cx)
+            })
+            .unwrap();
+        window
+    }
+
+    #[gpui::test]
+    fn arrow_keys_step_by_scalar_and_extend_around_the_anchor(cx: &mut gpui::TestAppContext) {
+        let window = login_window(cx);
+        // `e` + combining acute is one grapheme but two scalars.
+        cx.simulate_input(*window, "abé😀e\u{301}");
+        let mut cx = gpui::VisualTestContext::from_window(*window, cx);
+        cx.simulate_keystrokes("left");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.selection, 9..9, "left steps over one scalar");
+            })
+            .unwrap();
+        cx.simulate_keystrokes("left left");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.selection, 4..4, "emoji is one step");
+            })
+            .unwrap();
+        cx.simulate_keystrokes("shift-right shift-right");
+        window
+            .update(&mut cx, |input, window, cx| {
+                assert_eq!(input.secret.selection, 4..9);
+                let selected = input.selected_text_range(false, window, cx).unwrap();
+                assert_eq!(selected.range, 3..6);
+                assert!(!selected.reversed);
+            })
+            .unwrap();
+        cx.simulate_keystrokes("shift-left shift-left shift-left");
+        window
+            .update(&mut cx, |input, window, cx| {
+                assert_eq!(input.secret.selection, 2..4, "the anchor stays at 4");
+                let selected = input.selected_text_range(false, window, cx).unwrap();
+                assert!(selected.reversed);
+            })
+            .unwrap();
+        // A plain arrow collapses to the matching edge.
+        cx.simulate_keystrokes("right");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.selection, 4..4);
+            })
+            .unwrap();
+        cx.simulate_keystrokes("home shift-end");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.selection, 0..input.secret.text.len());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn backspace_and_delete_remove_one_scalar_or_the_selection(cx: &mut gpui::TestAppContext) {
+        let window = login_window(cx);
+        cx.simulate_input(*window, "a😀e\u{301}b");
+        let mut cx = gpui::VisualTestContext::from_window(*window, cx);
+        cx.simulate_keystrokes("left left backspace");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.text, "a😀\u{301}b", "one scalar, not the cluster");
+                assert_eq!(input.secret.selection, 5..5);
+            })
+            .unwrap();
+        cx.simulate_keystrokes("delete delete");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.text, "a😀");
+            })
+            .unwrap();
+        cx.simulate_keystrokes("delete home right shift-right backspace");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.text, "a");
+                assert_eq!(input.secret.selection, 1..1);
+            })
+            .unwrap();
+        cx.simulate_keystrokes("backspace backspace delete");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert!(input.content_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn ime_marked_text_replaces_in_place_and_selects_relative_to_it(cx: &mut gpui::TestAppContext) {
+        let window = login_window(cx);
+        window
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "你好，", window, cx);
+                let start = "你好，".len();
+                for marked in ["n", "ni", "ni h"] {
+                    let caret = marked.encode_utf16().count();
+                    input.replace_and_mark_text_in_range(
+                        None,
+                        marked,
+                        Some(caret..caret),
+                        window,
+                        cx,
+                    );
+                    assert_eq!(input.secret.text, format!("你好，{marked}"));
+                    assert_eq!(input.secret.marked, Some(start..start + marked.len()));
+                    assert_eq!(
+                        input.secret.selection,
+                        start + marked.len()..start + marked.len()
+                    );
+                    assert_eq!(
+                        input.marked_text_range(window, cx),
+                        Some(3..3 + caret),
+                        "reported in UTF-16 units"
+                    );
+                }
+                // The IME selection is relative to the new text and clamped.
+                input.replace_and_mark_text_in_range(None, "你好", Some(1..9), window, cx);
+                assert_eq!(input.secret.text, "你好，你好");
+                assert_eq!(input.secret.selection, start + 3..start + 6);
+                // Committing without a range replaces the marked text.
+                input.replace_text_in_range(None, "你好🚀", window, cx);
+                assert_eq!(input.secret.text, "你好，你好🚀");
+                assert!(input.secret.marked.is_none());
+                assert_eq!(
+                    input.secret.selection,
+                    input.secret.text.len()..input.secret.text.len()
+                );
+                // An empty marked string clears the composition.
+                input.replace_and_mark_text_in_range(None, "x", None, window, cx);
+                assert!(input.secret.marked.is_some());
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+                assert!(input.secret.marked.is_none());
+                assert_eq!(input.secret.text, "你好，你好🚀");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn platform_ranges_clamp_and_floor_inside_a_surrogate_pair(cx: &mut gpui::TestAppContext) {
+        let window = login_window(cx);
+        window
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "a😀b", window, cx);
+                let mut actual = None;
+                // Offset 2 is inside the emoji and rounds down to its start.
+                let text = input.text_for_range(0..2, &mut actual, window, cx);
+                assert_eq!(actual, Some(0..1));
+                assert_eq!(text.as_deref(), Some("•"));
+                input.text_for_range(1..99, &mut actual, window, cx);
+                assert_eq!(actual, Some(1..4));
+                // Inverted ranges are ordered rather than sliced blindly.
+                #[allow(clippy::reversed_empty_ranges)]
+                let inverted = 3..1;
+                input.replace_text_in_range(Some(inverted), "x", window, cx);
+                assert_eq!(input.secret.text, "a😀xb");
+                input.replace_text_in_range(Some(0..1), "", window, cx);
+                assert_eq!(input.secret.text, "😀xb");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn committed_text_drops_control_characters_but_marked_text_keeps_them(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let window = login_window(cx);
+        window
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "a\tb\r\nc", window, cx);
+                assert_eq!(input.secret.text, "abc");
+                input.replace_and_mark_text_in_range(None, "\t", None, window, cx);
+                assert_eq!(input.secret.text, "abc\t");
+            })
+            .unwrap();
+    }
+
     #[test]
     fn secret_is_never_display_text() {
         let mut secret = Secret::default();

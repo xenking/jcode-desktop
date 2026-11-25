@@ -7446,6 +7446,133 @@ mod tests {
         }
     }
 
+    // ---- Characterization pins -------------------------------------------
+    //
+    // Pinned before the caret, selection and IME rules moved into
+    // jcode-desktop-model::text_field. They go through the input handler and
+    // the editing actions so they survive the move. The composer steps by
+    // grapheme cluster and treats whitespace as the only word break, unlike
+    // the code editor (scalars, character classes) and the login field
+    // (scalars, no word motion).
+
+    #[test]
+    fn word_motion_breaks_on_whitespace_only() {
+        let text = "foo.bar(baz)  qux\nnext";
+        assert_eq!(next_word_boundary(text, 0), 14, "punctuation does not stop");
+        assert_eq!(next_word_boundary(text, 14), 18, "a newline is whitespace");
+        assert_eq!(next_word_boundary(text, 18), text.len());
+        assert_eq!(previous_word_boundary(text, text.len()), 18);
+        assert_eq!(previous_word_boundary(text, 18), 14);
+        assert_eq!(previous_word_boundary(text, 14), 0);
+        // Mid-word offsets move to the word's edges.
+        assert_eq!(next_word_boundary(text, 4), 14);
+        assert_eq!(previous_word_boundary(text, 4), 0);
+        assert_eq!(next_word_boundary("   ", 0), 3);
+        assert_eq!(previous_word_boundary("   ", 3), 0);
+    }
+
+    #[gpui::test]
+    fn arrows_and_deletion_step_by_grapheme_cluster(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        window
+            .update(cx, |input, window, cx| {
+                let family = "👨\u{200d}👩\u{200d}👧";
+                input.replace_text_in_range(None, &format!("ae\u{301}{family}b"), window, cx);
+                input.left(&Left, window, cx);
+                input.left(&Left, window, cx);
+                assert_eq!(&input.content[input.selected_range.start..], format!("{family}b"));
+                input.left(&Left, window, cx);
+                assert_eq!(
+                    &input.content[input.selected_range.start..],
+                    format!("e\u{301}{family}b")
+                );
+                // Backspace after the family removes the whole cluster.
+                input.right(&Right, window, cx);
+                input.right(&Right, window, cx);
+                input.backspace(&Backspace, window, cx);
+                assert_eq!(input.content.as_ref(), "ae\u{301}b");
+                input.backspace(&Backspace, window, cx);
+                assert_eq!(input.content.as_ref(), "ab", "one step removes e + accent");
+                input.delete(&Delete, window, cx);
+                assert_eq!(input.content.as_ref(), "a");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn ranges_from_the_platform_round_up_inside_a_surrogate_pair(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        window
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "a😀b", window, cx);
+                let mut actual = None;
+                let text = input.text_for_range(0..2, &mut actual, window, cx);
+                assert_eq!(text.as_deref(), Some("a😀"), "offset 2 splits the emoji");
+                assert_eq!(actual, Some(0..3));
+                let text = input.text_for_range(1..99, &mut actual, window, cx);
+                assert_eq!(text.as_deref(), Some("😀b"));
+                assert_eq!(actual, Some(1..4));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn gpui_ime_edits_report_selection_marked_text_and_reset_reversal(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        window
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "héllo wörld", window, cx);
+                input.select_word_left(&SelectWordLeft, window, cx);
+                let selection = input.selected_text_range(false, window, cx).unwrap();
+                assert_eq!(selection.range, 6..11);
+                assert!(selection.reversed);
+                input.select_right(&SelectRight, window, cx);
+                assert_eq!(input.selected_range, 8..13, "reversed selection shrinks");
+                // Marking over a selection replaces it and drops the reversal.
+                input.replace_and_mark_text_in_range(None, "ü", Some(0..1), window, cx);
+                assert_eq!(input.content.as_ref(), "héllo wü");
+                assert_eq!(input.marked_text_range(window, cx), Some(7..8));
+                let selection = input.selected_text_range(false, window, cx).unwrap();
+                assert_eq!(selection.range, 7..8);
+                assert!(!selection.reversed);
+                // An empty marked string clears the composition.
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+                assert_eq!(input.marked_text_range(window, cx), None);
+                assert_eq!(input.content.as_ref(), "héllo w");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn selection_extension_flips_and_collapsing_arrows_pick_an_edge(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        window
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "one two three", window, cx);
+                input.move_to(4, cx);
+                input.select_word_right(&SelectWordRight, window, cx);
+                assert_eq!(input.selected_range, 4..8);
+                input.select_word_left(&SelectWordLeft, window, cx);
+                input.select_word_left(&SelectWordLeft, window, cx);
+                assert_eq!(input.selected_range, 0..4);
+                assert!(input.selection_reversed);
+                input.right(&Right, window, cx);
+                assert_eq!(input.selected_range, 4..4, "right collapses to the end");
+                input.select_all(&SelectAll, window, cx);
+                assert_eq!(input.selected_range, 0..13);
+                assert!(!input.selection_reversed);
+                input.left(&Left, window, cx);
+                assert_eq!(input.selected_range, 0..0, "left collapses to the start");
+                input.move_to(99, cx);
+                assert_eq!(input.selected_range, 13..13, "offsets clamp to the text");
+                input.delete_word_back(&DeleteWordBack, window, cx);
+                assert_eq!(input.content.as_ref(), "one two ");
+                input.kill_to_start(&KillToStart, window, cx);
+                assert_eq!(input.content.as_ref(), "");
+            })
+            .unwrap();
+    }
+
     #[gpui::test]
     fn ported_editing_chords_dispatch_through_the_real_keymap(cx: &mut TestAppContext) {
         let window = input_window(cx);

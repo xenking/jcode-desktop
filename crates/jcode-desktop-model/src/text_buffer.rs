@@ -1287,6 +1287,146 @@ mod tests {
         assert_eq!(b.text(), "ab");
     }
 
+    // ---- Characterization pins -------------------------------------------
+    //
+    // The code editor, the composer and the masked login field each grew their
+    // own caret, word and IME rules. These record what the code editor does so
+    // the differences with the other two stay visible.
+
+    #[test]
+    fn word_motion_groups_by_character_class_not_by_whitespace() {
+        // Word, punctuation and space runs are separate stops. The composer
+        // instead treats everything between whitespace as one word.
+        let mut b = buffer("foo.bar(baz)  é猫_x", 0);
+        let mut stops = Vec::new();
+        for _ in 0..8 {
+            b.move_word_right(false);
+            stops.push(b.selection().head);
+        }
+        assert_eq!(stops, [3, 4, 7, 8, 11, 12, 18, 18]);
+        let mut back = Vec::new();
+        for _ in 0..8 {
+            b.move_word_left(false);
+            back.push(b.selection().head);
+        }
+        assert_eq!(back, [14, 11, 8, 7, 4, 3, 0, 0]);
+    }
+
+    #[test]
+    fn word_motion_extends_the_selection_and_keeps_the_anchor() {
+        let mut b = buffer("one two", 4);
+        b.move_word_right(true);
+        assert_eq!(b.selection(), Selection { anchor: 4, head: 7 });
+        b.move_word_left(true);
+        b.move_word_left(true);
+        assert_eq!(b.selection(), Selection { anchor: 4, head: 0 });
+        assert!(b.selection().reversed());
+        assert_eq!(b.selected_text(), "one ");
+    }
+
+    #[test]
+    fn deleting_works_per_scalar_not_per_grapheme() {
+        // Offsets are scalar values. A combining mark or a ZWJ sequence takes
+        // one backspace per scalar, unlike the composer's grapheme steps.
+        let mut b = buffer("e\u{301}", 2);
+        b.backspace();
+        assert_eq!(b.text(), "e");
+
+        let mut b = buffer("a👨\u{200d}👩b", 4);
+        b.backspace();
+        assert_eq!(b.text(), "a👨\u{200d}b");
+        b.delete_forward();
+        assert_eq!(b.text(), "a👨\u{200d}");
+
+        let mut b = buffer("a猫b", 1);
+        b.delete_forward();
+        assert_eq!(b.text(), "ab");
+        b.delete_forward();
+        b.delete_forward();
+        assert_eq!(b.text(), "a");
+    }
+
+    #[test]
+    fn word_deletion_removes_to_the_next_class_stop() {
+        let mut b = buffer("foo.bar  baz", 12);
+        b.delete_word_left();
+        assert_eq!(b.text(), "foo.bar  ");
+        b.delete_word_left();
+        assert_eq!(b.text(), "foo.");
+        let mut b = buffer("foo  bar", 0);
+        b.delete_word_right();
+        assert_eq!(b.text(), "  bar");
+        b.delete_word_right();
+        assert_eq!(b.text(), "");
+    }
+
+    #[test]
+    fn selection_extension_flips_around_the_anchor() {
+        let mut b = buffer("héllo", 2);
+        b.move_right(true);
+        b.move_right(true);
+        assert_eq!(b.selection(), Selection { anchor: 2, head: 4 });
+        b.move_left(true);
+        b.move_left(true);
+        b.move_left(true);
+        assert_eq!(b.selection(), Selection { anchor: 2, head: 1 });
+        assert_eq!(b.selection().range(), 1..2);
+        assert!(b.selection().reversed());
+        // A plain arrow collapses to the matching edge without moving further.
+        b.move_right(false);
+        assert_eq!(b.selection(), Selection::caret(2));
+        b.set_selection(Selection { anchor: 4, head: 1 });
+        b.move_left(false);
+        assert_eq!(b.selection(), Selection::caret(1));
+        b.set_selection(Selection { anchor: 4, head: 1 });
+        b.move_right(false);
+        assert_eq!(b.selection(), Selection::caret(4));
+    }
+
+    #[test]
+    fn offsets_clamp_to_the_document() {
+        let mut b = buffer("ab", 0);
+        b.set_selection(Selection { anchor: 9, head: 9 });
+        assert_eq!(b.selection(), Selection::caret(2));
+        b.move_left(false);
+        b.move_left(false);
+        b.move_left(false);
+        assert_eq!(b.selection(), Selection::caret(0));
+        b.move_doc_end(true);
+        b.move_right(true);
+        assert_eq!(b.selection(), Selection { anchor: 0, head: 2 });
+        assert_eq!(b.slice(1..99), "b");
+    }
+
+    #[test]
+    fn utf16_bridging_floors_offsets_inside_a_surrogate_pair() {
+        let b = TextBuffer::new("a😀b");
+        assert_eq!(b.offset_from_utf16(1), 1);
+        assert_eq!(b.offset_from_utf16(2), 1, "inside the pair rounds down");
+        assert_eq!(b.offset_from_utf16(3), 2);
+        assert_eq!(b.offset_to_utf16(2), 3);
+        assert_eq!(b.offset_to_utf16(99), 4);
+    }
+
+    #[test]
+    fn marked_text_replace_then_ime_selection_is_relative_to_the_new_text() {
+        // The sequence CodeEditor performs for `replace_and_mark_text_in_range`:
+        // replace the marked range, then place the IME selection inside it.
+        let mut b = buffer("你好，", 3);
+        b.replace(3..3, "ni");
+        b.set_selection(Selection::caret(5));
+        assert_eq!(b.text(), "你好，ni");
+        b.replace(3..5, "ni hao");
+        b.set_selection(Selection { anchor: 3, head: 5 });
+        assert_eq!(b.text(), "你好，ni hao");
+        assert_eq!(b.selected_text(), "ni");
+        // Committing replaces the marked range and leaves the caret after it.
+        b.replace(3..9, "你好🚀");
+        assert_eq!(b.text(), "你好，你好🚀");
+        assert_eq!(b.selection(), Selection::caret(6));
+        assert_eq!(b.offset_to_utf16(6), 7);
+    }
+
     #[test]
     fn load_and_atomic_save_round_trip() {
         let dir = tempfile::tempdir().unwrap();
