@@ -101,8 +101,30 @@ mod socket_tests {
             let server_writer = writer.clone();
             let (request_tx, requests) = channel();
             std::thread::spawn(move || {
+                // Attaching mid-turn: the first skills request is refused.
+                let mut skill_requests = 0;
                 while let Ok(frame) = read_frame::<_, ClientFrame>(&mut reader) {
                     let event = match &frame.request {
+                        ApiRequest::RuntimeCommand {
+                            session_id,
+                            command,
+                            ..
+                        } => {
+                            skill_requests += 1;
+                            if skill_requests == 1 {
+                                ApiEvent::Error {
+                                    code: jcode_sdk::api::ErrorCode::Internal,
+                                    message: "Session is busy. Retry this runtime command after the current turn.".into(),
+                                }
+                            } else {
+                                ApiEvent::RuntimeCommandResult {
+                                    session_id: session_id.clone(),
+                                    command: *command,
+                                    data: serde_json::json!({"skills": [], "pinned_skills": ["daemon"]}),
+                                    message: String::new(),
+                                }
+                            }
+                        }
                         ApiRequest::Hello { .. } => ApiEvent::HelloOk {
                             runtime_identity: None,
                             version: jcode_sdk::api::API_VERSION_MAJOR,
@@ -278,6 +300,16 @@ mod socket_tests {
     }
 
     #[test]
+    fn a_refused_skills_request_is_retried_until_the_daemon_answers() {
+        let worker = Worker::new(|_| vec![]);
+        worker.wait_for(|update| {
+            matches!(update, Update::Event {
+                event: ApiEvent::RuntimeCommandResult { command: jcode_sdk::api::RuntimeCommand::Skills, data, .. }, ..
+            } if data["pinned_skills"] == serde_json::json!(["daemon"]))
+        });
+    }
+
+    #[test]
     fn queued_prompt_rejection_identifies_input_and_reason_over_socket() {
         let worker = Worker::new(|request| {
             if matches!(request, ApiRequest::QueuePrompt { .. }) {
@@ -329,16 +361,21 @@ mod socket_tests {
     #[test]
     fn old_bridge_receives_a_fifo_prompt_as_a_follow_up() {
         let worker = Worker::new(|_| vec![]);
-        worker.commands.send(SessionCommand::QueuePrompt(jcode_sdk::api::QueuedPrompt {
-            active_skill: None,
-            client_id: "fifo-id".into(),
-            content: "keep me".into(),
-            images: vec![("image/png".into(), "aW1hZ2U=".into())],
-            attachments: vec![],
-            mode: jcode_sdk::api::QueuedPromptMode::Queue,
-            editing: false,
-        })).unwrap();
-        assert!(matches!(worker.request(), ApiRequest::QueuePrompt { mode, content, .. } if mode == jcode_sdk::api::QueuedPromptMode::AfterYield && content == "keep me"));
+        worker
+            .commands
+            .send(SessionCommand::QueuePrompt(jcode_sdk::api::QueuedPrompt {
+                active_skill: None,
+                client_id: "fifo-id".into(),
+                content: "keep me".into(),
+                images: vec![("image/png".into(), "aW1hZ2U=".into())],
+                attachments: vec![],
+                mode: jcode_sdk::api::QueuedPromptMode::Queue,
+                editing: false,
+            }))
+            .unwrap();
+        assert!(
+            matches!(worker.request(), ApiRequest::QueuePrompt { mode, content, .. } if mode == jcode_sdk::api::QueuedPromptMode::AfterYield && content == "keep me")
+        );
     }
 
     #[test]

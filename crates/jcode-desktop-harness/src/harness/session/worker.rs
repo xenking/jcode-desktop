@@ -29,6 +29,11 @@ use crate::harness::session::{
 };
 use crate::harness::updates::UpdateSender;
 
+#[cfg(not(test))]
+const SKILLS_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const SKILLS_RETRY_INTERVAL: Duration = Duration::from_millis(20);
+
 #[cfg(test)]
 pub(in crate::harness) fn session_worker(
     session_id: String,
@@ -376,6 +381,9 @@ pub(in crate::harness) fn session_worker_with_connector(
                 local_home.as_deref(),
                 &updates,
             );
+        // Right after an attach or restart the daemon can still be busy with
+        // the session, so an unanswered request is retried until it lands.
+        let mut skills_retry_at = std::time::Instant::now() + SKILLS_RETRY_INTERVAL;
         let mut history = history::HistoryRecovery::default();
         history.load(&client, real_id, &session_id, &updates);
         let _ = updates.send(Update::AskAttachment {
@@ -1432,6 +1440,11 @@ pub(in crate::harness) fn session_worker_with_connector(
             // attempts instead of silently keeping an empty transcript forever.
             if history.due(std::time::Instant::now()) && !client.is_closed() {
                 history.load(&client, real_id, &session_id, &updates);
+            }
+            if !skills_loaded && !client.is_closed() && std::time::Instant::now() >= skills_retry_at
+            {
+                skills_loaded = load_skill_catalog(&client, real_id, &session_id, None, &updates);
+                skills_retry_at = std::time::Instant::now() + SKILLS_RETRY_INTERVAL;
             }
 
             if !turn_active && tab_wait.refresh_due() {
