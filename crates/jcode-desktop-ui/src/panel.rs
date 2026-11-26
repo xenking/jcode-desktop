@@ -299,11 +299,11 @@ pub(crate) use tab_outline::{TabRing, tab_corner_radius};
 mod tool_streaming;
 #[path = "panel_usage.rs"]
 pub(crate) mod usage;
-#[path = "panel_voice_state.rs"]
+#[path = "panel/voice/panel_voice_state.rs"]
 mod voice_state;
-#[path = "panel_voice_trace.rs"]
+#[path = "panel/voice/panel_voice_trace.rs"]
 mod voice_trace;
-#[path = "panel_voice.rs"]
+#[path = "panel/voice/panel_voice.rs"]
 pub(crate) mod voice;
 pub use side_document::SideDocumentSnapshot;
 

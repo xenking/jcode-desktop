@@ -85,7 +85,7 @@ use strip_geometry::*;
 use sidebar_sessions::*;
 use working_dirs::*;
 
-#[path = "workspace_global_voice.rs"]
+#[path = "workspace/voice/workspace_global_voice.rs"]
 mod global_voice;
 
 #[path = "workspace_panel_window.rs"]
@@ -229,7 +229,7 @@ mod scroll_snap;
 #[cfg(test)]
 #[path = "super_action_behavior_tests.rs"]
 mod super_action_behavior_tests;
-#[path = "workspace_voice.rs"]
+#[path = "workspace/voice/workspace_voice.rs"]
 mod voice;
 #[path = "window_navigation.rs"]
 mod window_navigation;
@@ -1449,7 +1449,7 @@ mod pending;
 mod pending_tests;
 #[path = "workspace_sounds.rs"]
 mod sound_settings;
-#[path = "workspace_voice_settings.rs"]
+#[path = "workspace/voice/workspace_voice_settings.rs"]
 mod voice_settings;
 
 #[cfg(test)]

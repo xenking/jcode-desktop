@@ -8,7 +8,7 @@ use jcode_desktop_model::{fs_probe, probe_cache::ProbeCache};
 use jcode_voice::{DictationBackend, StreamingBackend};
 
 /// Where the SuperWhisper bridge script is installed.
-const SUPERWHISPER_SCRIPT: &str = include_str!("../assets/superwhisper-dictate.sh");
+const SUPERWHISPER_SCRIPT: &str = include_str!("../../../assets/superwhisper-dictate.sh");
 
 #[derive(Default)]
 pub(super) struct VoiceSettings {
