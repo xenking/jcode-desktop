@@ -186,9 +186,9 @@ mod tail_glide;
 use scroll_motion::WheelGlide;
 #[path = "panel_agent_message.rs"]
 mod agent_message;
-#[path = "panel_ask.rs"]
+#[path = "panel/ask/panel_ask.rs"]
 mod ask;
-#[path = "panel_ask_images.rs"]
+#[path = "panel/ask/panel_ask_images.rs"]
 mod ask_images;
 #[path = "panel_background_jobs.rs"]
 mod background_jobs;

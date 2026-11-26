@@ -945,7 +945,7 @@ fn ask_result_is_visible_and_survives_history_reload(cx: &mut gpui::TestAppConte
         history_message_index: Some(2),
         media_type: "image/png".into(),
         data: base64::engine::general_purpose::STANDARD
-            .encode(include_bytes!("../../../assets/previews/image-preview.png")),
+            .encode(include_bytes!("../../../../../assets/previews/image-preview.png")),
         label: Some("Answer image".into()),
         source: jcode_sdk::RenderedImageSource::ToolResult {
             tool_name: "ask".into(),

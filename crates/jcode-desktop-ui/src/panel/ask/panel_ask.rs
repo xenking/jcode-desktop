@@ -5,7 +5,7 @@ use super::*;
 use super::chrome::{CardActionTooltip, embedded_reply_frame};
 use jcode_sdk::{AskAnswer, AskQuestion, AskResponse};
 
-const COMMENT_ICON: &[u8] = include_bytes!("../../../assets/icons/comment.svg");
+const COMMENT_ICON: &[u8] = include_bytes!("../../../../../assets/icons/comment.svg");
 
 fn ask_action(
     id: &'static str,
@@ -1017,13 +1017,13 @@ impl Panel {
             (
                 "ask-submit",
                 if enabled { "Submit" } else { "Sending…" },
-                include_bytes!("../../../assets/icons/arrow-right-to-line.svg"),
+                include_bytes!("../../../../../assets/icons/arrow-right-to-line.svg"),
             )
         } else {
             (
                 "ask-next",
                 "Next",
-                include_bytes!("../../../assets/icons/arrow-right.svg"),
+                include_bytes!("../../../../../assets/icons/arrow-right.svg"),
             )
         };
         div()
@@ -1035,7 +1035,7 @@ impl Panel {
                     ask_action(
                         "ask-back",
                         "Back",
-                        include_bytes!("../../../assets/icons/arrow-left.svg"),
+                        include_bytes!("../../../../../assets/icons/arrow-left.svg"),
                         false,
                         enabled,
                     )
@@ -1187,7 +1187,7 @@ impl Panel {
                 ask_action(
                     "ask-decline",
                     "Discard",
-                    include_bytes!("../../../assets/icons/close.svg"),
+                    include_bytes!("../../../../../assets/icons/close.svg"),
                     false,
                     enabled,
                 )
