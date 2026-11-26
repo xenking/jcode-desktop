@@ -184,15 +184,7 @@ impl Workspace {
                                 .bg(Theme::global().wash(Ink::Accent, 0.16))
                                 .text_color(Theme::global().ACCENT)
                                 .hover(|el| el.bg(Theme::global().wash(Ink::Accent, 0.26)))
-                                .tooltip(|_, cx| {
-                                    cx.new(|_| {
-                                        remotes::HeaderTooltip(
-                                            "Review a banked usage reset. Nothing is spent until you confirm."
-                                                .into(),
-                                        )
-                                    })
-                                    .into()
-                                })
+                                .tooltip(crate::components::Tooltip::text("Review a banked usage reset. Nothing is spent until you confirm.").builder())
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
                                     this.open_usage_reset(&reset, window, cx);
@@ -335,15 +327,7 @@ impl Workspace {
                                 .bg(Theme::global().wash(Ink::Warn, 0.16))
                                 .text_color(Theme::global().WARN)
                                 .hover(|el| el.bg(Theme::global().wash(Ink::Warn, 0.26)))
-                                .tooltip(|_, cx| {
-                                    cx.new(|_| {
-                                        remotes::HeaderTooltip(
-                                            "Opens Jcode pricing in your browser. Nothing is purchased here."
-                                                .into(),
-                                        )
-                                    })
-                                    .into()
-                                })
+                                .tooltip(crate::components::Tooltip::text("Opens Jcode pricing in your browser. Nothing is purchased here.").builder())
                                 .on_click(move |_, _, cx| {
                                     cx.stop_propagation();
                                     cx.open_url(&url);

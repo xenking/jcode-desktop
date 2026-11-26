@@ -1039,12 +1039,7 @@ impl Workspace {
                                                         .rounded_full()
                                                         .cursor_pointer()
                                                         .hover(|el| el.bg(Theme::global().TOOL_BG))
-                                                        .tooltip(move |_, cx| {
-                                                            cx.new(|_| remotes::HeaderTooltip(
-                                                                if pinned { "Unpin session" } else { "Pin session" }.into(),
-                                                            ))
-                                                            .into()
-                                                        })
+                                                        .tooltip(crate::components::Tooltip::text(if pinned { "Unpin session" } else { "Pin session" }).builder())
                                                         .child(
                                                             gpui::svg()
                                                                 .data(include_bytes!("../../../../../../assets/icons/pin.svg").as_slice())
@@ -1125,7 +1120,7 @@ impl Workspace {
                                                         .when(done == total, |el| el.text_color(Theme::global().OK))
                                                         .rounded_full().pr(px(2.0)).cursor_pointer()
                                                         .hover(|el| el.bg(Theme::global().TOOL_BG))
-                                                        .tooltip(|_, cx| cx.new(|_| remotes::HeaderTooltip("Open session todos".into())).into())
+                                                        .tooltip(crate::components::Tooltip::text("Open session todos").builder())
                                                         .child(div().debug_selector(move || format!("sidebar-todos-icon-{sidebar_index}")).flex_none().child(
                                                             gpui::svg().data(include_bytes!("../../../../../../assets/icons/todo-check.svg").as_slice()).size(px(9.0)).text_color(if done == total { Theme::global().OK } else { Theme::global().TEXT_DIM })
                                                         ))

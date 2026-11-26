@@ -6,24 +6,6 @@ use crate::login_input::LoginInput;
 use crate::managed_cloud::{self, Destination, RegisteredMachine};
 use jcode_desktop_harness::paired;
 
-pub(super) struct HeaderTooltip(pub gpui::SharedString);
-
-impl Render for HeaderTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let _render_scope = crate::render_stats::scope("HeaderTooltip");
-        div()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(Theme::global().PANEL_BG)
-            .border_1()
-            .border_color(Theme::global().PANEL_BORDER)
-            .text_size(px(12.0))
-            .text_color(Theme::global().TEXT)
-            .child(self.0.clone())
-    }
-}
-
 impl Workspace {
     fn text_input(cx: &mut Context<Self>, placeholder: &'static str, content: &str) -> Entity<PromptInput> {
         let content = content.to_owned();
