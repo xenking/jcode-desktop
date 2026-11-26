@@ -72,10 +72,10 @@ pub(in crate::panel) fn questions(fixture: &str) -> Option<Vec<Value>> {
             ],
         )],
         // A swarm worker's ask reaches this session as an ordinary ask whose
-        // question names the worker.
+        // question names the worker by the label its coordinator spawned it with.
         "ask-worker" => vec![question(
             "Database",
-            "Worker \"builder\": Which database should the new web service use?",
+            "Worker \"schema migration\": Which database should the new web service use?",
             false,
             vec![
                 option("Postgres (Recommended)", "Relational, scalable, rich features"),
