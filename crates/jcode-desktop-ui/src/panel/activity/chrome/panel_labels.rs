@@ -162,11 +162,12 @@ pub(super) fn context_window_for_model(model: &str) -> Option<u64> {
 /// Match the TUI's output-token estimate and thresholds, using desktop theme
 /// colors. The tilde distinguishes the estimate from provider-billed usage.
 pub(super) fn tool_output_token_badge(output: &str) -> (String, gpui::Rgba) {
+    use jcode_base::message::{TokenFamily, estimate_text};
     use jcode_core::util::{
-        ApproxTokenSeverity, approx_tool_output_token_severity, estimate_tokens,
-        format_approx_token_count,
+        ApproxTokenSeverity, approx_tool_output_token_severity, format_approx_token_count,
     };
-    let tokens = estimate_tokens(output).max(usize::from(!output.is_empty()));
+    // Family-neutral, like the TUI badge: a result is shown before any model reads it.
+    let tokens = estimate_text(TokenFamily::default(), output).max(usize::from(!output.is_empty()));
     let theme = Theme::global();
     let color = match approx_tool_output_token_severity(tokens) {
         ApproxTokenSeverity::Normal => theme.OK,

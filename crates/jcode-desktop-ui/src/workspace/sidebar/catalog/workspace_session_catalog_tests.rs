@@ -1047,7 +1047,11 @@ fn sidebar_meta_shows_relative_age_and_estimated_tokens() {
     );
     session.transcript_bytes = Some(48_000);
     let meta = sidebar_session_meta(&session).expect("meta line");
-    assert_eq!(meta, "5m ago · 12.0k tok");
+    let tokens = jcode_base::message::TokenFamily::default().tokens_for_bytes(48_000);
+    assert_eq!(
+        meta,
+        format!("5m ago · {}", format_estimated_tokens(tokens as u64))
+    );
 }
 
 #[test]

@@ -649,9 +649,11 @@ fn resume_activity_age_ignores_creation_and_metadata_edits() {
     session.updated_at_ms = Some(now - 1_000);
     session.last_active_at_ms = Some(now - 2_000);
     session.transcript_bytes = Some(16_800);
+    let tokens = jcode_base::message::TokenFamily::default().tokens_for_bytes(16_800);
+    let kilo = format!("{:.1}k tok", tokens as f64 / 1000.0);
     assert_eq!(
         resume_usage(&session, sort, now).as_deref(),
-        Some("4.2k tok")
+        Some(kilo.as_str())
     );
     session.context = Some(SessionCatalogContext {
         activity: Some(SessionCatalogActivity {
@@ -663,7 +665,7 @@ fn resume_activity_age_ignores_creation_and_metadata_edits() {
     });
     assert_eq!(
         resume_usage(&session, sort, now).as_deref(),
-        Some("1m ago · 4.2k tok")
+        Some(format!("1m ago · {kilo}").as_str())
     );
     let activity = |session: &mut jcode_sdk::SessionInfo, timestamp| {
         session
@@ -678,12 +680,12 @@ fn resume_activity_age_ignores_creation_and_metadata_edits() {
     activity(&mut session, Some(now - 5_000));
     assert_eq!(
         resume_usage(&session, sort, now).as_deref(),
-        Some("5s ago · 4.2k tok")
+        Some(format!("5s ago · {kilo}").as_str())
     );
     activity(&mut session, None);
     assert_eq!(
         resume_usage(&session, sort, now).as_deref(),
-        Some("4.2k tok")
+        Some(kilo.as_str())
     );
 }
 

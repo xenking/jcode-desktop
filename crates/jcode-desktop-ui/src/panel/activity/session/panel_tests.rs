@@ -1747,6 +1747,16 @@ fn background_progress_updates_one_native_card(cx: &mut gpui::TestAppContext) {
     });
 }
 
+/// Text the default estimator counts as exactly `tokens` tokens.
+fn text_of_tokens(tokens: usize) -> String {
+    use jcode_base::message::{TokenFamily, estimate_text};
+    let mut text = "a ".repeat(tokens.saturating_sub(10));
+    while estimate_text(TokenFamily::default(), text.trim()) < tokens {
+        text.push_str("a ");
+    }
+    text.trim().to_string()
+}
+
 #[test]
 fn tool_token_badge_estimates_output_and_colors_severity_boundaries() {
     let theme = Theme::global();
@@ -1759,14 +1769,17 @@ fn tool_token_badge_estimates_output_and_colors_severity_boundaries() {
         (12_000, "~12k tok", theme.ERROR),
     ] {
         assert_eq!(
-            tool_output_token_badge(&"x".repeat(tokens * 4)),
+            tool_output_token_badge(&text_of_tokens(tokens)),
             (label.into(), color)
         );
     }
     assert_eq!(tool_output_token_badge("x").0, "~1 tok");
+    let lines = "xxx\n".repeat(1_900);
+    let tokens =
+        jcode_base::message::estimate_text(jcode_base::message::TokenFamily::default(), &lines);
     assert_eq!(
-        tool_output_token_badge(&"xxx\n".repeat(1_900)).0,
-        "~1.9k tok"
+        tool_output_token_badge(&lines).0,
+        format!("~{}", jcode_core::util::format_approx_token_count(tokens))
     );
 }
 
@@ -1775,7 +1788,7 @@ fn tool_token_badge_reports_the_original_size_of_trimmed_mcp_results() {
     let output = format!(
         "{}\n\n[MCP result trimmed from 46210 to 7980 tokens to fit the context budget. \
          Pass accept_large_output: true for the full result, or narrow the request.]",
-        "x".repeat(31_900)
+        text_of_tokens(7_980)
     );
     let (label, _) = tool_output_token_badge(&output);
     assert_eq!(label, "~8k tok of 46k");

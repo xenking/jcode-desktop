@@ -223,7 +223,8 @@ pub(super) fn format_time_ago(created_ms: u64, now_ms: u64) -> String {
 }
 
 /// `~1.2k tok`, matching the TUI picker's token display. The desktop only has
-/// the stored transcript size, so estimate at ~4 bytes per token.
+/// the stored transcript size, so estimate from bytes with the family-neutral
+/// ratio.
 pub(super) fn format_estimated_tokens(tokens: u64) -> String {
     if tokens < 1_000 {
         return format!("{tokens} tok");
@@ -263,7 +264,10 @@ pub(super) fn session_meta(session: &jcode_sdk::SessionInfo, age: Option<String>
     let tokens = session
         .transcript_bytes
         .filter(|bytes| *bytes > 0)
-        .map(|bytes| format_estimated_tokens(bytes / 4));
+        .map(|bytes| {
+            let tokens = jcode_base::message::TokenFamily::default().tokens_for_bytes(bytes as usize);
+            format_estimated_tokens(tokens as u64)
+        });
     match (age, tokens) {
         (Some(age), Some(tokens)) => Some(format!("{age} · {tokens}")),
         (age, tokens) => age.or(tokens),
