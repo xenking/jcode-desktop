@@ -354,7 +354,7 @@ impl Panel {
                         .text_color(theme.TEXT_DIM)
                         .child(
                             gpui::svg()
-                                .data(include_bytes!("../../../assets/icons/microphone.svg")
+                                .data(include_bytes!("../../../../../assets/icons/microphone.svg")
                                     as &'static [u8])
                                 .text_color(theme.TEXT_DIM)
                                 .size(px(10.)),

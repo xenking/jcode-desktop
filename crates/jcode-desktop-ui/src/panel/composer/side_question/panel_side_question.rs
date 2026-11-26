@@ -848,27 +848,27 @@ impl SideAction {
             Self::History => (
                 "side-question-history-open",
                 "History",
-                include_bytes!("../../../assets/icons/history.svg"),
+                include_bytes!("../../../../../../assets/icons/history.svg"),
             ),
             Self::Copy => (
                 "side-question-copy",
                 "Copy answer",
-                include_bytes!("../../../assets/icons/copy.svg"),
+                include_bytes!("../../../../../../assets/icons/copy.svg"),
             ),
             Self::Promote => (
                 "side-question-promote",
                 "Open in sidechat",
-                include_bytes!("../../../assets/icons/arrow-right.svg"),
+                include_bytes!("../../../../../../assets/icons/arrow-right.svg"),
             ),
             Self::Dismiss => (
                 "side-question-dismiss",
                 "Dismiss",
-                include_bytes!("../../../assets/icons/close.svg"),
+                include_bytes!("../../../../../../assets/icons/close.svg"),
             ),
             Self::CloseHistory => (
                 "side-question-history-close",
                 "Close history",
-                include_bytes!("../../../assets/icons/close.svg"),
+                include_bytes!("../../../../../../assets/icons/close.svg"),
             ),
         }
     }

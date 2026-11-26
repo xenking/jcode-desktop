@@ -87,9 +87,9 @@ mod construct;
 mod history_load;
 #[path = "panel_scroll.rs"]
 mod scroll;
-#[path = "panel_draft.rs"]
+#[path = "panel/composer/panel_draft.rs"]
 mod draft;
-#[path = "panel_pickers.rs"]
+#[path = "panel/composer/panel_pickers.rs"]
 mod pickers;
 #[path = "panel_status.rs"]
 mod status;
@@ -196,7 +196,7 @@ mod background_jobs;
 mod cache_miss;
 #[path = "panel_cache_timer.rs"]
 pub(crate) mod cache_timer;
-#[path = "panel_composer.rs"]
+#[path = "panel/composer/panel_composer.rs"]
 mod composer;
 #[path = "panel_context_usage.rs"]
 mod context_usage;
@@ -205,13 +205,13 @@ mod decision;
 #[path = "panel_decision_tests.rs"]
 #[cfg(test)]
 mod decision_tests;
-#[path = "panel_fork_prompt.rs"]
+#[path = "panel/composer/panel_fork_prompt.rs"]
 mod fork_prompt;
 #[path = "panel_rig_hud.rs"]
 mod rig_hud;
 #[path = "panel_routing.rs"]
 mod account_routing;
-#[path = "panel_side_question.rs"]
+#[path = "panel/composer/side_question/panel_side_question.rs"]
 mod side_question;
 #[path = "panel_session_status.rs"]
 mod session_status;
@@ -251,7 +251,7 @@ mod latest;
 mod login;
 #[path = "panel_preview.rs"]
 mod preview;
-#[path = "panel_prompt.rs"]
+#[path = "panel/composer/panel_prompt.rs"]
 mod prompt;
 #[path = "panel/queue/panel_queue.rs"]
 mod queue;
