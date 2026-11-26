@@ -29,7 +29,8 @@ JCODE_ACCEPT = importlib.util.spec_from_file_location(
 TYPED = importlib.util.module_from_spec(JCODE_ACCEPT)
 JCODE_ACCEPT.loader.exec_module(TYPED)
 
-ALLOW, DENY = 1, 0  # option order of the card: Deny, Allow once
+ALLOW, DENY = 1, 0  # option order of the card: Deny, Allow once, Always allow this tool, Always allow every tool on this server
+CARD_OPTIONS = ["Deny", "Allow once", "Always allow this tool", "Always allow every tool on this server"]
 
 
 class Fixture(VERIFY.Instance):
@@ -76,7 +77,8 @@ class Fixture(VERIFY.Instance):
         question = ask["questions"][0]
         assert question.get("header") == "MCP approval", question
         assert '"write-item"' in question["question"] and '"fixture"' in question["question"], question
-        assert [o["label"] for o in question["options"]] == ["Deny", "Allow once"], question["options"]
+        assert [o["label"] for o in question["options"]] == CARD_OPTIONS, question["options"]
+        assert len(ask["option_selectors"]) == len(CARD_OPTIONS), ask["option_selectors"]
         self.screenshot(f"approval-{index}-{label}.png")
         self.drive("click", {"selector": ask["option_selectors"][option]})
         chosen = self.drive("state")["panel"]["ask"]["chosen"]
