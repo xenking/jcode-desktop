@@ -17,32 +17,40 @@ fn icon(account: &str) -> String {
 }
 
 #[test]
-fn chip_label_leads_with_the_icon_then_adds_the_warning_and_the_pending_move() {
+fn chip_parts_lead_with_the_icon_then_add_the_warning_and_the_pending_move() {
     let team = icon("claude:team");
     let spare = icon("claude:spare");
-    assert_eq!(chip(&[], None).label(), format!("{team} claude:team"));
+    let parts = |chip: RoutingChip| {
+        (
+            chip.account_text(),
+            chip.warning_marker(),
+            chip.pending_text(),
+        )
+    };
     assert_eq!(
-        chip(&["budget hf 90 of 100"], None).label(),
-        format!("{team} claude:team ⚠")
+        parts(chip(&[], None)),
+        (format!("{team} claude:team"), None, None)
     );
     assert_eq!(
-        chip(&["a", "b", "c"], None).label(),
-        format!("{team} claude:team ⚠3")
+        parts(chip(&["budget hf 90 of 100"], None)).1.as_deref(),
+        Some("⚠")
     );
+    assert_eq!(parts(chip(&["a", "b", "c"], None)).1.as_deref(), Some("⚠3"));
     assert_eq!(
-        chip(&["a"], Some("claude:spare")).label(),
-        format!("{team} claude:team ⚠ → {spare} claude:spare")
+        parts(chip(&["a"], Some("claude:spare"))).2,
+        Some(format!("{spare} claude:spare"))
     );
 }
 
 #[test]
-fn a_configured_icon_replaces_the_default_in_the_label() {
+fn a_configured_icon_replaces_the_default_in_the_account_and_the_pending_move() {
     let chip = chip(&[], Some("claude:spare"))
         .with_icons(|account| (account == "claude:spare").then(|| "🚀".to_owned()));
     assert_eq!(
-        chip.label(),
-        format!("{} claude:team → 🚀 claude:spare", icon("claude:team"))
+        chip.account_text(),
+        format!("{} claude:team", icon("claude:team"))
     );
+    assert_eq!(chip.pending_text().as_deref(), Some("🚀 claude:spare"));
 }
 
 #[test]

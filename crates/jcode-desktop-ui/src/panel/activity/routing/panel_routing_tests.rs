@@ -235,13 +235,21 @@ fn the_chip_names_the_account_with_a_warning_marker_and_a_pending_move(
     assert!(vcx.debug_bounds("composer-routing-warning").is_some());
     assert!(vcx.debug_bounds("composer-routing-pending").is_some());
     panel.read_with(vcx, |panel, _| {
+        let chip = panel.routing_chip.as_ref().unwrap();
         assert_eq!(
-            panel.routing_chip.as_ref().unwrap().label(),
+            chip.account_text(),
             format!(
-                "{} claude:team ⚠ → {} claude:spare",
-                jcode_session_types::account_icon::account_icon("claude:team", None),
-                jcode_session_types::account_icon::account_icon("claude:spare", None),
+                "{} claude:team",
+                jcode_session_types::account_icon::account_icon("claude:team", None)
             )
+        );
+        assert_eq!(chip.warning_marker().as_deref(), Some("⚠"));
+        assert_eq!(
+            chip.pending_text(),
+            Some(format!(
+                "{} claude:spare",
+                jcode_session_types::account_icon::account_icon("claude:spare", None)
+            ))
         );
         assert!(
             !panel

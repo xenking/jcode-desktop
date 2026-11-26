@@ -16,6 +16,17 @@ pub struct Row {
     pub tone: Tone,
 }
 
+impl RoutingChip {
+    /// Why the daemon chose this account, or a plain note when it gave none.
+    pub fn reason_text(&self) -> &str {
+        if self.reason.is_empty() {
+            "no reason given"
+        } else {
+            &self.reason
+        }
+    }
+}
+
 /// The popover's content. `waiting` is true from a click until the daemon answers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RoutingPopover {

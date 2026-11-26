@@ -42,11 +42,7 @@ impl Panel {
             self.items.push(Item::SwarmWorkerNotice(format!(
                 "Account: {previous} → {} ({})",
                 chip.account_text(),
-                if chip.reason.is_empty() {
-                    "no reason given"
-                } else {
-                    &chip.reason
-                }
+                chip.reason_text()
             )));
         }
         let account = chip.account.clone();

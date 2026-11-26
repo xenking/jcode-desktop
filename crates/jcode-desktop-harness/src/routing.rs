@@ -84,20 +84,6 @@ impl RoutingChip {
         }
     }
 
-    /// The chip's one-line text: account, warning marker, then `→ target`.
-    pub fn label(&self) -> String {
-        let mut label = self.account_text();
-        if let Some(marker) = self.warning_marker() {
-            label.push(' ');
-            label.push_str(&marker);
-        }
-        if let Some(pending) = self.pending_text() {
-            label.push_str(" → ");
-            label.push_str(&pending);
-        }
-        label
-    }
-
     /// The hover text, one entry per line.
     pub fn tooltip(&self) -> Vec<String> {
         let mut lines = vec![format!("Running on {}", self.account_text())];

@@ -227,7 +227,6 @@ impl Panel {
                 "reason": chip.reason,
                 "warnings": chip.warnings,
                 "pending": chip.pending,
-                "label": chip.label(),
             })),
             "popover": self.routing_popover.as_ref().map(|popover| {
                 popover
