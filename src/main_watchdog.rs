@@ -4,7 +4,6 @@ use dispatch2::DispatchQueue;
 use std::fs::{self, DirBuilder, File};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::DirBuilderExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -88,27 +87,22 @@ fn capture(dir: &Path, lag: Duration) -> io::Result<PathBuf> {
 }
 
 fn sample(pid: u32, path: &Path) -> io::Result<()> {
-    let mut command = Command::new("/usr/bin/sample");
+    // Keep pre_exec out of the Desktop process: it forces fork, whose malloc
+    // locks can block the main thread we are trying to diagnose. The shell
+    // sets its own file limit and replaces itself with sample.
+    let mut command = Command::new("/bin/sh");
     command
+        .args([
+            "-c",
+            "ulimit -f \"$1\" || exit 1; shift; exec /usr/bin/sample \"$@\"",
+            "watchdog-sample",
+        ])
+        .arg((MAX_RAW_BYTES / 1024).to_string())
         .args([pid.to_string().as_str(), "3", "10", "-file"])
         .arg(path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    // SAFETY: the post-fork hook only calls the async-signal-safe setrlimit.
-    unsafe {
-        command.pre_exec(|| {
-            let limit = libc::rlimit {
-                rlim_cur: MAX_RAW_BYTES,
-                rlim_max: MAX_RAW_BYTES,
-            };
-            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        });
-    }
     let mut child = command.spawn()?;
     let started = Instant::now();
     loop {

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Native macOS check: a hidden Desktop writes its actual blocked main stack."""
 
+import json
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -41,6 +43,10 @@ def check(binary, *, block):
         if block:
             env["JCODE_DESKTOP_TEST_MAIN_HANG"] = "1"
         reports = root / "jcode/logs/desktop-hangs"
+        if block:
+            reports.mkdir(parents=True, mode=0o700)
+            for i in range(9):
+                (reports / f"{i:013}-1-desktop-hang.txt").write_text("old")
         with subprocess.Popen(
             [binary, "--single-panel", "--new-process", "--no-hot-reload"],
             env=env,
@@ -54,7 +60,7 @@ def check(binary, *, block):
                     assert proc.poll() is None
                     assert not list(reports.glob("*.txt")), "healthy main produced a report"
                     return
-                report, = wait_for(proc, lambda: list(reports.glob("*.txt")), 18)
+                report, = wait_for(proc, lambda: list(reports.glob(f"*-{proc.pid}-desktop-hang.txt")), 18)
                 assert report.stat().st_size <= 2 * 1024 * 1024, "unbounded report"
                 assert report.stat().st_mode & 0o777 == 0o600, "report is not private"
                 text = report.read_text(errors="replace")
@@ -62,7 +68,16 @@ def check(binary, *, block):
                 # Frame records start with '+'; the next real thread is a plain count.
                 main = re.split(r"\n    \d+ Thread_", main, maxsplit=1)[0]
                 assert "block_main_for_test" in main, main[:2000]
-                assert list(reports.glob("*.txt")) == [report], "duplicate report"
+                wait_for(proc, lambda: len(list(reports.glob("*.txt"))) == 8, 2)
+                endpoint, = list((root / "control").glob("*.sock"))
+                with socket.socket(socket.AF_UNIX) as conn:
+                    conn.settimeout(12)
+                    conn.connect(str(endpoint))
+                    conn.sendall(b'{"v":1,"action":"list"}\n')
+                    with conn.makefile("rb") as stream:
+                        response = json.loads(stream.readline())
+                assert response["status"] == "ok", response
+                assert list(reports.glob(f"*-{proc.pid}-desktop-hang.txt")) == [report], "duplicate report"
                 print(f"main stall captured from pid {proc.pid}: {report.stat().st_size} bytes")
             finally:
                 if proc.poll() is None:
