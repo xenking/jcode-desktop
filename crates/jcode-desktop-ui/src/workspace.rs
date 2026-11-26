@@ -50,7 +50,7 @@ mod window_launch;
 mod remotes_fixtures;
 #[path = "workspace_boot.rs"]
 mod boot;
-#[path = "workspace_snapshot.rs"]
+#[path = "workspace/recovery/workspace_snapshot.rs"]
 mod snapshot;
 #[path = "workspace_updates.rs"]
 mod runtime_updates;
@@ -182,7 +182,7 @@ use crate::theme::{Ink, Palette, Theme, ThemePreset};
 use crate::transition::{self, AnimatedValue, Transition};
 use crate::updates;
 
-#[path = "workspace_recovery.rs"]
+#[path = "workspace/recovery/workspace_recovery.rs"]
 pub(crate) mod recovery;
 #[path = "workspace_restart.rs"]
 pub(crate) mod restart;

@@ -32,7 +32,7 @@ pub(crate) mod workspace_commands;
 #[path = "panel_special_commands.rs"]
 mod special_commands;
 
-#[path = "panel_command_recovery.rs"]
+#[path = "panel/recovery/panel_command_recovery.rs"]
 mod command_recovery;
 
 #[path = "panel_runtime_commands.rs"]
@@ -151,7 +151,7 @@ pub(crate) use reveal::PreviewScroll;
 #[path = "panel_text_document.rs"]
 mod text_document;
 
-#[path = "panel_snapshot.rs"]
+#[path = "panel/recovery/panel_snapshot.rs"]
 mod snapshot;
 pub use snapshot::TranscriptSnapshot;
 
@@ -255,7 +255,7 @@ mod preview;
 mod prompt;
 #[path = "panel/queue/panel_queue.rs"]
 mod queue;
-#[path = "panel_recovery.rs"]
+#[path = "panel/recovery/panel_recovery.rs"]
 mod recovery;
 #[cfg(test)]
 #[path = "panel_scroll_momentum_tests.rs"]
