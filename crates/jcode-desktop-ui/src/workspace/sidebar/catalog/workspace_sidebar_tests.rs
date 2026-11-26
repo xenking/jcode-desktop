@@ -1291,6 +1291,15 @@ fn accounts_oauth_history_renders_named_periods_and_unavailable_state(
     assert!(vcx.debug_bounds("account-openai-estimate-note").is_none());
     assert!(first.size.height <= px(14.0), "{first:?}");
     assert!(first.bottom() <= second.top());
+    for line in [first, second] {
+        let index = usize::from(line == second);
+        let icon = vcx
+            .debug_bounds(Box::leak(
+                format!("account-openai-history-report-{index}-icon").into_boxed_str(),
+            ))
+            .expect("a named login's line leads with its icon");
+        assert!(icon.left() <= line.left() + px(1.0) && icon.right() <= line.right());
+    }
     assert!(
         second.bottom() <= row.bottom(),
         "history must not be clipped by compact row height"

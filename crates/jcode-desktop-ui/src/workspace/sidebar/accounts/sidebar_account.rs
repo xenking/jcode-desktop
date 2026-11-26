@@ -188,7 +188,13 @@ impl Workspace {
                         .iter()
                         .find(|account| account.id == chip.logo && account.status == "available")
                         .expect("quota chip has a matching account");
-                    let tooltip = crate::panel::usage::quota_card(account, &chip);
+                    let mut tooltip = crate::panel::usage::quota_card(account, &chip);
+                    // The daemon's icon for the login wins over the default.
+                    let icon = chip
+                        .account
+                        .as_deref()
+                        .map(|label| self.account_icon(&account.id, label));
+                    tooltip.icon.clone_from(&icon);
                     let color = match chip.percent {
                         Some(percent) if percent >= 70. => {
                             crate::account_status::usage_color(percent, theme)
@@ -235,6 +241,14 @@ impl Workspace {
                                     cx.notify();
                                 }
                             }
+                        }))
+                        .children(icon.map(|icon| {
+                            let selector = format!("sidebar-quota-{}-icon", chip.logo);
+                            div()
+                                .debug_selector(move || selector.clone())
+                                .flex_none()
+                                .text_size(px(10.0))
+                                .child(icon)
                         }))
                         .children(logo)
                         .child(chip.label())
@@ -391,6 +405,41 @@ mod tests {
         assert!(
             vcx.debug_bounds("sidebar-quota").is_none(),
             "no separate quota row above the block"
+        );
+    }
+
+    /// A quota figure belongs to one login. When the provider names it, the
+    /// login's icon leads the chip and the hover card.
+    #[gpui::test]
+    fn a_named_logins_icon_leads_its_chip_and_its_card(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut accounts =
+                crate::accounts::parse(r#"{"providers":[{"id":"claude","status":"available"}]}"#)
+                    .unwrap();
+            crate::accounts::merge_usage_for_tests(
+                &mut accounts,
+                r#"{"providers":[{"provider_name":"Anthropic (Claude)","limits":[{"name":"7-day window","usage_percent":41.0,"reset_in":"1d 11h"}],"extra_info":[["Account label","claude-otter"]],"error":null}]}"#,
+            );
+            cx.set_global(crate::account_status::StatusAccounts(accounts));
+        });
+        let (_workspace, vcx) = cx.add_window_view(|_, cx| {
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx)
+        });
+        vcx.run_until_parked();
+        let chip = vcx.debug_bounds("sidebar-quota-claude").expect("chip");
+        let icon = vcx
+            .debug_bounds("sidebar-quota-claude-icon")
+            .expect("the login's icon on the chip");
+        assert!(icon.left() >= chip.left() && icon.right() <= chip.right());
+        let figure_start = chip.left() + (chip.size.width - icon.size.width) / 2.0;
+        assert!(icon.left() < figure_start, "the icon comes first: {icon:?} in {chip:?}");
+        vcx.update(|window, cx| window.simulate_mouse_move(chip.center(), cx));
+        vcx.run_until_parked();
+        vcx.executor().advance_clock(std::time::Duration::from_secs(1));
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("panel-limits-tooltip-icon").is_some(),
+            "the hover card names the login with its icon first"
         );
     }
 

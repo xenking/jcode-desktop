@@ -298,12 +298,18 @@ impl Workspace {
                             .iter()
                             .find(|report| report.banked_reset.as_ref() == Some(&reset))
                             .and_then(|report| report.identity.as_ref())
-                            .map(|identity| identity.display_name.clone())
+                            .map(|identity| (None, identity.display_name.clone()))
                     } else {
-                        reset.account_label.clone().filter(|_| many)
+                        reset.account_label.as_deref().filter(|_| many).map(|label| {
+                            (Some(self.account_icon(&account.id, label)), label.to_owned())
+                        })
                     };
                     let label = match owner {
-                        Some(login) => format!("{} · {login}", reset.pill_label()),
+                        // The login's icon leads the whole pill.
+                        Some((Some(icon), login)) => {
+                            format!("{icon} {} · {login}", reset.pill_label())
+                        }
+                        Some((None, login)) => format!("{} · {login}", reset.pill_label()),
                         None => reset.pill_label(),
                     };
                     pills = pills.child(make_pill(reset_index, reset, label));
@@ -364,8 +370,16 @@ impl Workspace {
                 for (report_index, report) in account.usage_reports.iter().enumerate() {
                     let amount =
                         |period| report.period_amount(period).unwrap_or_else(|| "n/a".into());
+                    let icon = report
+                        .account_label
+                        .as_deref()
+                        .map(|label| self.account_icon(&account.id, label));
                     let tooltip = crate::panel::meter::RowsTooltip {
-                        title: format!("{} · API estimate, not a bill", report.title()),
+                        title: format!(
+                            "{}{} · API estimate, not a bill",
+                            icon.as_deref().map(|icon| format!("{icon} ")).unwrap_or_default(),
+                            report.title()
+                        ),
                         rows: ["Today", "Lifetime"]
                             .into_iter()
                             .map(|period| format!("{period}: {}", amount(period)))
@@ -391,7 +405,16 @@ impl Workspace {
                                 .into()
                             })
                             .when_some(label, |el, label| {
-                                el.child(
+                                // The login's icon leads its line.
+                                el.children(icon.clone().map(|icon| {
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("account-openai-history-report-{report_index}-icon")
+                                        })
+                                        .flex_none()
+                                        .child(icon)
+                                }))
+                                .child(
                                     div()
                                         .flex_shrink(1.0)
                                         .min_w(px(24.0))

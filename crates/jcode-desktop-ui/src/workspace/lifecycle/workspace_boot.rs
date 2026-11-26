@@ -701,6 +701,11 @@ impl Workspace {
             }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_SIDEBAR").as_deref() == Ok("accounts") {
                 workspace.sidebar_view = SidebarView::Accounts;
+                // The routing section below the logins: labelled API keys with
+                // their icons, and budgets.
+                workspace.routing_view = Some(crate::routing::fixture());
+                // Past the end: the list clamps it, so the routing rows show.
+                workspace.accounts_scroll.set_offset(gpui::point(px(0.0), px(-4000.0)));
             }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNTS").as_deref() == Ok("1")
                 && let Some(slot) = workspace.slots.first()

@@ -18,6 +18,8 @@ pub(crate) enum LimitsSummary {
 #[allow(dead_code)] // see LimitsSummary
 #[derive(Clone)]
 pub(crate) struct LimitsTooltip {
+    /// The login's icon, first on the card, when the card names a login.
+    pub(crate) icon: Option<String>,
     pub(crate) method: String,
     pub(crate) summary: LimitsSummary,
     pub(crate) notes: Vec<String>,
@@ -54,8 +56,16 @@ impl Render for LimitsTooltip {
             .debug_selector(|| "panel-limits-tooltip".into())
             .child(
                 div()
+                    .flex()
+                    .gap_1()
                     .text_color(theme.TEXT)
                     .font_weight(gpui::FontWeight::MEDIUM)
+                    .children(self.icon.clone().map(|icon| {
+                        div()
+                            .debug_selector(|| "panel-limits-tooltip-icon".into())
+                            .flex_none()
+                            .child(icon)
+                    }))
                     .child(self.method.clone()),
             )
             .children(body)
@@ -126,6 +136,8 @@ pub(crate) struct QuotaChip {
     pub(crate) cached: bool,
     /// One hover-card line per reported fact.
     pub(crate) detail: Vec<String>,
+    /// The login the figure belongs to, when the provider has named it.
+    pub(crate) account: Option<String>,
 }
 
 /// Build the original limits card from the exact login represented by the chip.
@@ -202,6 +214,10 @@ pub(crate) fn quota_card(account: &Account, chip: &QuotaChip) -> LimitsTooltip {
         notes.push("Cached usage".into());
     }
     LimitsTooltip {
+        icon: chip
+            .account
+            .as_deref()
+            .map(|label| jcode_session_types::account_icon::account_icon(label, None)),
         method,
         summary,
         notes,
@@ -275,6 +291,7 @@ pub(crate) fn quota_chips(accounts: &[Account]) -> Vec<QuotaChip> {
                 percent: Some(percent),
                 cached,
                 detail,
+                account: report.and_then(|report| report.account_label.clone()),
             });
             continue;
         }
@@ -307,6 +324,7 @@ pub(crate) fn quota_chips(accounts: &[Account]) -> Vec<QuotaChip> {
             percent: None,
             cached,
             detail,
+            account: report.and_then(|report| report.account_label.clone()),
         });
     }
     chips
@@ -766,6 +784,7 @@ mod tests {
         let chip = quota_chips(&accounts).remove(0);
         let card = quota_card(&accounts[0], &chip);
         assert_eq!(card.method, "Anthropic · OAuth · claude-otter");
+        assert_eq!(card.icon.as_deref(), Some("🦦"), "the login's icon leads the card");
         assert!(
             card.notes
                 .iter()
