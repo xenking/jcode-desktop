@@ -859,6 +859,31 @@ impl Render for SidebarChrome {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RootSurface {
+    OnboardingError,
+    AccountSignIn,
+    Resume,
+    SinglePanel,
+    Canvas,
+}
+
+impl Workspace {
+    fn root_surface(&self) -> RootSurface {
+        if self.onboarding_launch.error.is_some() {
+            RootSurface::OnboardingError
+        } else if self.account_sign_in_visible {
+            RootSurface::AccountSignIn
+        } else if self.resume.is_some() {
+            RootSurface::Resume
+        } else if self.single_panel {
+            RootSurface::SinglePanel
+        } else {
+            RootSurface::Canvas
+        }
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _no_blocking_sdk_read = jcode_sdk::forbid_blocking_local_io();
@@ -874,30 +899,33 @@ impl Render for Workspace {
         {
             self.last_voice_chat = Some(slot.panel.entity_id());
         }
-        if self.onboarding_launch.error.is_some() {
-            window.focus(&self.focus_handle, cx);
-            return crate::window_caption::wrap(
-                self.render_onboarding_launch_error(cx),
-                window,
-                true,
-            );
-        }
-        if self.account_sign_in_visible {
-            self.dump_state(window, cx);
-            let content = self.render_account_sign_in(window, cx);
-            let root = self.voice_modal_root(content, cx);
-            return crate::window_caption::wrap(root, window, true);
-        }
-        if self.resume.is_some() {
-            self.dump_state(window, cx);
-            let root = self.render_resume(window, cx);
-            return crate::window_caption::wrap(root, window, true);
-        }
-        if self.single_panel {
-            let root = self.render_single_panel(window, cx);
-            #[cfg(target_os = "macos")]
-            let root = root.children(updates::render_pair_dialog(window, cx));
-            return crate::window_caption::wrap(root, window, true);
+        match self.root_surface() {
+            RootSurface::OnboardingError => {
+                window.focus(&self.focus_handle, cx);
+                return crate::window_caption::wrap(
+                    self.render_onboarding_launch_error(cx),
+                    window,
+                    true,
+                );
+            }
+            RootSurface::AccountSignIn => {
+                self.dump_state(window, cx);
+                let content = self.render_account_sign_in(window, cx);
+                let root = self.voice_modal_root(content, cx);
+                return crate::window_caption::wrap(root, window, true);
+            }
+            RootSurface::Resume => {
+                self.dump_state(window, cx);
+                let root = self.render_resume(window, cx);
+                return crate::window_caption::wrap(root, window, true);
+            }
+            RootSurface::SinglePanel => {
+                let root = self.render_single_panel(window, cx);
+                #[cfg(target_os = "macos")]
+                let root = root.children(updates::render_pair_dialog(window, cx));
+                return crate::window_caption::wrap(root, window, true);
+            }
+            RootSurface::Canvas => {}
         }
         self.sidebar_applets = self.render_sidebar_applets(window, cx);
         self.restore_hidden_machine_focus(window, cx);
@@ -1180,8 +1208,7 @@ impl Render for Workspace {
                 if this.focus_handle.is_focused(window)
                     && !this.overview
                     && !this.overview_progress.is_animating()
-                    && !this.account_sign_in_visible
-                    && this.onboarding_launch.error.is_none()
+                    && this.root_surface() == RootSurface::Canvas
                     && !this.modal_layer.read(cx).has_active()
                     && this.default_directory_picker.is_none()
                     && !this.compact_sidebar_open

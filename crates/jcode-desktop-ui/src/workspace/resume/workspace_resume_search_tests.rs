@@ -10,6 +10,48 @@
 use super::*;
 
 #[gpui::test]
+fn root_surface_precedence_preserves_hidden_resume(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.push_test_panel("chat", cx);
+        w
+    });
+    workspace.update_in(vcx, |w, window, cx| {
+        assert_eq!(w.root_surface(), RootSurface::Canvas);
+        w.open_session_search(&GlobalSearch, window, cx);
+    });
+    vcx.run_until_parked();
+    vcx.simulate_input("keep this query");
+    workspace.update_in(vcx, |w, window, cx| {
+        w.open_account_sign_in(window, cx);
+        assert_eq!(w.root_surface(), RootSurface::AccountSignIn);
+        w.onboarding_launch.error = Some("Launch failed".into());
+        assert_eq!(w.root_surface(), RootSurface::OnboardingError);
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("onboarding-launch-error").is_some());
+    assert!(vcx.debug_bounds("resume-panel").is_none());
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    workspace.update(vcx, |w, cx| {
+        assert!(w.onboarding_launch.error.is_none());
+        assert_eq!(w.root_surface(), RootSurface::AccountSignIn);
+        w.account_sign_in_visible = false;
+        assert_eq!(w.root_surface(), RootSurface::Resume);
+        assert!(w.resume_open());
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("resume-panel").is_some());
+    assert_eq!(search_query(&workspace, vcx), "keep this query");
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("workspace-canvas").is_some());
+}
+
+#[gpui::test]
 fn search_screen_takes_the_whole_window_and_escape_restores_the_workspace(
     cx: &mut gpui::TestAppContext,
 ) {
