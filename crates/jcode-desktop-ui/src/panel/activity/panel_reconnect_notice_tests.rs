@@ -211,6 +211,7 @@ fn reconnect_notice_tests_real_output_and_new_user_are_boundaries(cx: &mut gpui:
                 output: "New result".into(),
                 done: true,
                 error: None,
+                ask: None,
             },
             Item::User("New turn".into()),
         ] {

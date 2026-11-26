@@ -72,6 +72,7 @@ fn state_returns_visible_applet_without_adding_it_to_history(cx: &mut gpui::Test
                     output: "Applet `review` revision 1.".into(),
                     error: None,
                     codemode: None,
+                    ask: None,
                 },
                 cx,
             );

@@ -552,6 +552,7 @@ pub(super) fn fixture_items() -> Vec<super::Item> {
             output: read_output.into(),
             done: true,
             error: None,
+            ask: None,
         },
         Item::Assistant("Sam sent the Q3 report and wants your review before Thursday.".into()),
         Item::User("And catch me up on the demo thread.".into()),
@@ -562,6 +563,7 @@ pub(super) fn fixture_items() -> Vec<super::Item> {
             output: thread_output.into(),
             done: true,
             error: None,
+            ask: None,
         },
         Item::Assistant("The demo is Friday 2 to 3pm in Room 4. Priya shared slides and Sam will close with Q3.".into()),
     ]

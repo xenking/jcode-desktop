@@ -337,7 +337,7 @@ impl Panel {
             }
             if clean_chat {
                 if !clean_chat::conversation_item(item)
-                    && !matches!(item, Item::Tool { name, input, output, call_id, done: true, error }
+                    && !matches!(item, Item::Tool { name, input, output, call_id, done: true, error, .. }
                         if error.is_none() && swarm_card::is_external_send(name, input, output)
                             || self.codemode_summaries.get(call_id).is_some_and(|summary|
                                 Self::external_codemode_messages(summary).next().is_some()))
@@ -952,11 +952,13 @@ impl Panel {
                 output,
                 done,
                 error,
+                ask,
             } => {
                 if name == "ask" && *done {
                     return self.render_decision(
                         index,
                         call_id,
+                        ask.as_deref(),
                         input,
                         output,
                         error.as_deref(),
@@ -1160,18 +1162,7 @@ impl Panel {
                             .clone();
                         let applet_instance = crate::applet_runtime::get(cx)
                             .tool_card_instance_id(&self.session_id, &call_id);
-                        let mut supplement = if name == "ask" && *done {
-                            Some(
-                                div()
-                                    .debug_selector(|| "ask-result".into())
-                                    .child(self.render_ask_answer(
-                                        call_id.as_str(),
-                                        ask::result_text(input, output, error.as_deref()),
-                                        cx,
-                                    ))
-                                    .into_any_element(),
-                            )
-                        } else if let Some(response) = error
+                        let mut supplement = if let Some(response) = error
                             .is_none()
                             .then(|| user_response::parse(name, input))
                             .flatten()

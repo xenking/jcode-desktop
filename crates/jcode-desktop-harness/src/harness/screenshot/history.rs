@@ -59,6 +59,7 @@ pub(super) fn session() -> Session {
         tool_duration_ms: None,
         token_usage: None,
         codemode: None,
+        ask: None,
     });
     session
 }

@@ -147,6 +147,7 @@ fn tools_selection_and_recovery_still_invalidate_existing_rows(cx: &mut gpui::Te
             output: String::new(),
             done: false,
             error: None,
+            ask: None,
         });
         panel
     });
@@ -163,6 +164,7 @@ fn tools_selection_and_recovery_still_invalidate_existing_rows(cx: &mut gpui::Te
                 output: "result".into(),
                 error: Some("Failure detail".into()),
                 codemode: None,
+                ask: None,
             },
             cx,
         );

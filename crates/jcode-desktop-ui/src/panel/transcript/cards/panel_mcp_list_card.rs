@@ -342,6 +342,7 @@ pub(super) fn fixture_items() -> Vec<super::Item> {
             output: output.into(),
             done: true,
             error: None,
+            ask: None,
         },
         Item::Assistant("Three servers are connected: GitHub, Sheets and Cloudflare docs.".into()),
     ]

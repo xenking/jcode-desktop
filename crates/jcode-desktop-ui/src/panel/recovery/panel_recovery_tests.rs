@@ -53,7 +53,7 @@ fn tool_output_timeout_does_not_create_a_recovery_card(cx: &mut gpui::TestAppCon
     panel.update(vcx, |panel, cx| {
         panel.load_history(vec![], vec![], cx);
         panel.apply(&ApiEvent::ToolStart { session_id: "tool-test".into(), call_id: "call".into(), name: "bg".into() }, cx);
-        panel.apply(&ApiEvent::ToolDone { session_id: "tool-test".into(), call_id: "call".into(), name: "bg".into(), output: "grep: previous request timed out".into(), error: None, codemode: None }, cx);
+        panel.apply(&ApiEvent::ToolDone { session_id: "tool-test".into(), call_id: "call".into(), name: "bg".into(), output: "grep: previous request timed out".into(), error: None, codemode: None, ask: None }, cx);
         assert!(panel.items.iter().any(|item| matches!(item, Item::Tool { output, error: None, done: true, .. } if output.contains("timed out"))));
         assert!(!panel.items.iter().any(|item| matches!(item, Item::Error(_) | Item::RuntimeError { .. } | Item::Stopped(_))));
     });
@@ -127,7 +127,7 @@ fn failed_tool_stays_in_its_row(cx: &mut gpui::TestAppContext) {
         cx.add_window_view(|_, cx| Panel::new("tool-failure".into(), None, None, bridge, cx));
     panel.update(vcx, |panel, cx| {
         panel.load_history(vec![], vec![], cx);
-        panel.apply(&ApiEvent::ToolDone { session_id: "tool-failure".into(), call_id: "call".into(), name: "bash".into(), output: "output".into(), error: Some("command timed out".into()), codemode: None }, cx);
+        panel.apply(&ApiEvent::ToolDone { session_id: "tool-failure".into(), call_id: "call".into(), name: "bash".into(), output: "output".into(), error: Some("command timed out".into()), codemode: None, ask: None }, cx);
         assert!(matches!(panel.items.last(), Some(Item::Tool { error: Some(error), .. }) if error == "command timed out"));
         assert!(!panel.items.iter().any(|item| matches!(item, Item::Error(_) | Item::RuntimeError { .. } | Item::Stopped(_))));
     });

@@ -338,6 +338,7 @@ mod tests {
                 output: String::new(),
                 done: true,
                 error: None,
+                ask: None,
             },
             Item::Error("boom".into()),
             Item::BackgroundTask {
@@ -375,6 +376,7 @@ mod tests {
             output: String::new(),
             done: true,
             error: None,
+            ask: None,
         };
         let mut regions = HashSet::new();
         assert_eq!(

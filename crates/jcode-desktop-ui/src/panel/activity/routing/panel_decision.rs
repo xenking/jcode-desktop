@@ -1,142 +1,130 @@
 //! Completed ask results are user decisions, not tool output.
-use super::*;
 use super::classify::answered;
+use super::*;
+use jcode_session_types::{AskAnswer, AskRecord};
 
 struct DecisionQuestion {
     title: String,
     answer: String,
-    choices: Vec<String>,
 }
 
-
-fn questions(input: &str, output: &str, error: Option<&str>) -> Vec<DecisionQuestion> {
-    let parsed = serde_json::from_str::<serde_json::Value>(input).ok();
-    let list = parsed
-        .as_ref()
-        .and_then(|v| v.get("questions"))
-        .and_then(|v| v.as_array());
-    let shown = ask::result_text(input, output, error);
-    let Some(list) = list else {
+fn questions(
+    ask: Option<&AskRecord>,
+    input: &str,
+    output: &str,
+    error: Option<&str>,
+) -> Vec<DecisionQuestion> {
+    if let Some(record) = ask.filter(|record| !record.declined()) {
+        let answers = record.response.answers.as_deref().unwrap_or_default();
+        let skipped = AskAnswer::default();
+        return record
+            .questions
+            .iter()
+            .enumerate()
+            .map(|(i, question)| DecisionQuestion {
+                title: question.question.clone(),
+                answer: answer_text(answers.get(i).unwrap_or(&skipped)),
+            })
+            .collect();
+    }
+    // Nothing was answered: every question shows how the ask ended.
+    let status = terminal_status(ask, output, error);
+    let asked: Vec<String> = match ask.filter(|record| !record.questions.is_empty()) {
+        Some(record) => record
+            .questions
+            .iter()
+            .map(|q| q.question.clone())
+            .collect(),
+        None => serde_json::from_str::<serde_json::Value>(input)
+            .ok()
+            .and_then(|v| v.get("questions")?.as_array().cloned())
+            .into_iter()
+            .flatten()
+            .filter_map(|q| Some(q.get("question")?.as_str()?.to_owned()))
+            .collect(),
+    };
+    if asked.is_empty() {
         return vec![DecisionQuestion {
             title: "Decision".into(),
-            answer: shown,
-            choices: Vec::new(),
+            answer: status,
         }];
-    };
-    list.iter()
-        .enumerate()
-        .map(|(i, q)| {
-            let full = q
-                .get("question")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Question");
-            let title = full;
-            let prefix = format!("{}. {} -> ", i + 1, full);
-            let answer = shown
-                .find(&prefix)
-                .map(|start| {
-                    let rest = &shown[start + prefix.len()..];
-                    let next = list
-                        .get(i + 1)
-                        .and_then(|q| q.get("question"))
-                        .and_then(|q| q.as_str())
-                        .map(|question| format!("\n{}. {} -> ", i + 2, question));
-                    next.and_then(|next| rest.find(&next))
-                        .map_or(rest, |end| &rest[..end])
-                        .trim()
-                        .to_owned()
-                })
-                .unwrap_or_else(|| shown.clone());
-            let choices = q
-                .get("options")
-                .and_then(|v| v.as_array())
-                .into_iter()
-                .flatten()
-                .filter_map(|v| v.get("label").and_then(|v| v.as_str()))
-                .map(str::to_owned)
-                .collect();
-            DecisionQuestion {
-                title: title.into(),
-                answer,
-                choices,
-            }
+    }
+    asked
+        .into_iter()
+        .map(|title| DecisionQuestion {
+            title,
+            answer: status.clone(),
         })
         .collect()
 }
 
+fn terminal_status(ask: Option<&AskRecord>, output: &str, error: Option<&str>) -> String {
+    let result = error
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(output)
+        .trim();
+    if ask.is_some_and(AskRecord::declined) || result.to_lowercase().contains("declin") {
+        "declined".into()
+    } else if result.to_lowercase().contains("cancel") {
+        "cancelled".into()
+    } else if result.is_empty() {
+        "no answer".into()
+    } else {
+        result.to_owned()
+    }
+}
+
 pub(super) fn selection_segments(
     index: usize,
+    ask: Option<&AskRecord>,
     input: &str,
     output: &str,
     error: Option<&str>,
 ) -> Vec<(String, String)> {
-    let is_answered = answered(output, error);
-    questions(input, output, error)
+    questions(ask, input, output, error)
         .into_iter()
         .enumerate()
         .flat_map(|(i, entry)| {
-            let answer = marked_answer(&entry, is_answered);
             [
                 (format!("decision-question-{index}-{i}"), entry.title),
-                (format!("decision-answer-{index}-{i}"), answer),
+                (format!("decision-answer-{index}-{i}"), entry.answer),
             ]
         })
         .collect()
 }
 
-// The stored model-facing result predates structured decision metadata. Split
-// only top-level separators so comments containing semicolons remain intact.
-fn marked_answer(entry: &DecisionQuestion, answered: bool) -> String {
-    if !answered {
-        return entry.answer.clone();
-    }
-    if matches!(
-        entry.answer.as_str(),
-        "(no answer)" | "unanswered (user skipped)"
-    ) {
-        return "Unanswered (user skipped)".into();
-    }
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let mut depth = 0usize;
-    for (index, ch) in entry.answer.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            ';' if depth == 0 && entry.answer[index..].starts_with("; ") => {
-                parts.push(&entry.answer[start..index]);
-                start = index + 2;
-            }
-            _ => {}
+/// One question's answer as shown on the card: chosen options marked, their
+/// comments and the free text labelled, or a skip.
+fn answer_text(answer: &AskAnswer) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for label in &answer.selected {
+        lines.push(format!("✓ {label}"));
+        if let Some(comment) = answer
+            .comments
+            .get(label)
+            .map(|c| c.trim())
+            .filter(|c| !c.is_empty())
+        {
+            lines.push(format!("User comment: {comment}"));
         }
     }
-    parts.push(&entry.answer[start..]);
-    parts
-        .into_iter()
-        .map(|part| {
-            let selected = entry.choices.iter().any(|label| {
-                part == label
-                    || part
-                        .strip_prefix(label)
-                        .is_some_and(|tail| tail.starts_with(" (comment: "))
-            });
-            if selected {
-                if let Some((label, comment)) = part.split_once(" (comment: ") {
-                    format!(
-                        "✓ {label}\nUser comment: {}",
-                        comment.strip_suffix(')').unwrap_or(comment)
-                    )
-                } else {
-                    format!("✓ {part}")
-                }
-            } else if let Some(other) = part.strip_prefix("Other: ") {
-                format!("User answer: {other}")
-            } else {
-                part.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    match answer
+        .other
+        .as_deref()
+        .map(str::trim)
+        .filter(|o| !o.is_empty())
+    {
+        Some(other) => lines.push(format!("User answer: {other}")),
+        None if !answer.other_images.is_empty() => {
+            lines.push("User answer: (image attached)".into())
+        }
+        None => {}
+    }
+    if lines.is_empty() {
+        "Unanswered (user skipped)".into()
+    } else {
+        lines.join("\n")
+    }
 }
 
 impl Panel {
@@ -148,14 +136,15 @@ impl Panel {
         &self,
         index: usize,
         call_id: &str,
+        ask: Option<&AskRecord>,
         input: &str,
         output: &str,
         error: Option<&str>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let entries = questions(input, output, error);
-        let answered = answered(output, error);
+        let entries = questions(ask, input, output, error);
+        let answered = answered(ask, error);
         let summary = if answered {
             ""
         } else if error.unwrap_or(output).to_lowercase().contains("declin") {
@@ -202,7 +191,7 @@ impl Panel {
             let mut image_offset = 0;
             for (i, entry) in entries.into_iter().enumerate() {
                 let marker_count = crate::image_chip::image_marker_ranges(&entry.answer).len();
-                let answer = marked_answer(&entry, answered);
+                let answer = entry.answer;
                 let question_selector = format!("decision-question-{}", entry.title);
                 let answer_selector = format!("decision-answer-{answer}");
                 let question = text_selection::plain(
@@ -292,24 +281,102 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jcode_session_types::{AskOption, AskQuestion, AskResponse};
+
+    fn question(text: &str, labels: &[&str]) -> AskQuestion {
+        AskQuestion {
+            question: text.into(),
+            header: None,
+            options: labels
+                .iter()
+                .map(|label| AskOption {
+                    label: (*label).into(),
+                    description: None,
+                })
+                .collect(),
+            multi_select: true,
+            allow_other: true,
+        }
+    }
+
+    fn typed_record() -> AskRecord {
+        let first = AskAnswer {
+            selected: vec!["A".into(), "B".into()],
+            other: Some("custom".into()),
+            comments: [("A".to_owned(), "first; second\nthird".to_owned())].into(),
+            ..Default::default()
+        };
+        let second = AskAnswer {
+            selected: vec!["Later".into()],
+            ..Default::default()
+        };
+        AskRecord::new(
+            vec![
+                question("Which?", &["A", "B"]),
+                question("When?", &["Now", "Later"]),
+            ],
+            AskResponse {
+                answers: Some(vec![first, second]),
+            },
+        )
+    }
 
     #[test]
-    fn formats_selected_options_and_preserves_multiline_comments() {
-        let input = r#"{"questions":[{"header":"Storage","question":"Which?","options":[{"label":"A"},{"label":"B"}]},{"question":"When?","options":[{"label":"Now"},{"label":"Later"}]}]}"#;
-        let output = "User answers:\n1. Which? -> A (comment: first; second\nthird); B; Other: custom\n2. When? -> Later\n";
-        let entries = questions(input, output, None);
+    fn typed_answer_marks_choices_and_keeps_multiline_comments() {
+        let record = typed_record();
+        let entries = questions(Some(&record), "", "", None);
         assert_eq!(entries[0].title, "Which?");
         assert_eq!(
-            marked_answer(&entries[0], true),
+            entries[0].answer,
             "✓ A\nUser comment: first; second\nthird\n✓ B\nUser answer: custom"
         );
-        assert_eq!(marked_answer(&entries[1], true), "✓ Later");
-        assert!(
-            !marked_answer(
-                &questions(input, "User declined to answer the questions.", None)[0],
-                false
-            )
-            .contains('✓')
+        assert_eq!(entries[1].answer, "✓ Later");
+    }
+
+    #[test]
+    fn session_saved_before_records_renders_like_its_typed_twin() {
+        // The prose a session stored before answers were typed.
+        let prose = "User answers:\n1. Which? -> A (comment: first; second\nthird); B; Other: custom\n2. When? -> Later\n";
+        let legacy = ask::resolve_record("ask", None, prose).expect("legacy prose resolves");
+        let typed = typed_record();
+        assert_eq!(
+            questions(Some(&legacy), "", prose, None)
+                .into_iter()
+                .map(|e| (e.title, e.answer))
+                .collect::<Vec<_>>(),
+            questions(Some(&typed), "", "", None)
+                .into_iter()
+                .map(|e| (e.title, e.answer))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn declined_and_unanswered_asks_show_how_they_ended_not_a_choice() {
+        let input = r#"{"questions":[{"question":"Which?"}]}"#;
+        let declined = ask::resolve_record("ask", None, jcode_session_types::ASK_DECLINED_MESSAGE);
+        let entries = questions(
+            declined.as_deref(),
+            input,
+            jcode_session_types::ASK_DECLINED_MESSAGE,
+            None,
+        );
+        assert_eq!(
+            (entries[0].title.as_str(), entries[0].answer.as_str()),
+            ("Which?", "declined")
+        );
+        assert!(!answered(declined.as_deref(), None));
+        let cancelled = questions(None, input, "", Some("cancelled by the user"));
+        assert_eq!(cancelled[0].answer, "cancelled");
+        let skipped = AskRecord::new(
+            vec![question("Which?", &["A", "B"])],
+            AskResponse {
+                answers: Some(vec![AskAnswer::default()]),
+            },
+        );
+        assert_eq!(
+            questions(Some(&skipped), "", "", None)[0].answer,
+            "Unanswered (user skipped)"
         );
     }
 }

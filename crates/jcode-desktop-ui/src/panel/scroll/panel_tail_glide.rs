@@ -615,6 +615,7 @@ mod tests {
                             output: "one\ntwo\nthree\nfour".into(),
                             error: None,
                             codemode: None,
+                            ask: None,
                         },
                         _ => ApiEvent::TextDelta {
                             message_id: None,
@@ -712,6 +713,7 @@ mod pinned_header_tests {
                     output: output.into(),
                     error: None,
                     codemode: None,
+                    ask: None,
                 },
             ];
             for event in events {

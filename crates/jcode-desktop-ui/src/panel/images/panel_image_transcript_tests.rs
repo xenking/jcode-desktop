@@ -518,9 +518,10 @@ fn completed_ask_replaces_inline_marker_with_image_chip(cx: &mut gpui::TestAppCo
         let mut image = image_preview::fixture_image();
         image.source = jcode_sdk::RenderedImageSource::ToolResult { tool_name: "ask".into() };
         image.anchor = Some(jcode_sdk::RenderedImageAnchor::ToolCall { id: "ask-inline".into() });
+        let output = "User answers:\n1. Which? -> Look [#image 1] here";
         *panel.items = vec![Item::Tool {
             call_id: "ask-inline".into(), name: "ask".into(), input: "{}".into(),
-            output: "User answers:\n1. Which? -> Look [#image 1] here".into(), done: true, error: None,
+            output: output.into(), done: true, error: None, ask: ask::resolve_record("ask", None, output),
         }, Item::Image(image)];
         cx.notify();
     });
@@ -549,9 +550,10 @@ fn ask_chip_fetches_matching_session_id_even_when_image_order_differs(cx: &mut g
             image.anchor = Some(jcode_sdk::RenderedImageAnchor::ToolCall { id: "ask-inline".into() });
             image
         };
+        let output = format!("User answers:\n1. Which? -> B (comment: reason [#{comment}])");
         *panel.items = vec![
             Item::Tool { call_id: "ask-inline".into(), name: "ask".into(), input: "{}".into(),
-                output: format!("User answers:\n1. Which? -> B (comment: reason [#{comment}])"), done: true, error: None },
+                ask: ask::resolve_record("ask", None, &output), output, done: true, error: None },
             Item::Image(make_image(other)), Item::Image(make_image(comment)),
         ];
         cx.notify();
@@ -794,6 +796,7 @@ fn tool(call: &str) -> Item {
         output: "Image loaded".into(),
         done: true,
         error: None,
+        ask: None,
     }
 }
 

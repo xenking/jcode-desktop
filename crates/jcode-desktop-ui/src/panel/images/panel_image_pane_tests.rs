@@ -538,6 +538,7 @@ fn image_pane_selection_tracks_image_when_earlier_tool_result_arrives(
             output: "Image loaded".into(),
             done: true,
             error: None,
+            ask: None,
         };
         panel.set_image_pane_open(true, cx);
         panel.image_pane_selected = Some(3);

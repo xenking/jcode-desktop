@@ -552,12 +552,6 @@ impl Workspace {
                         allow_user_window,
                     }
                 } else if let Some(ask) = selector.strip_prefix("ask:") {
-                    if ask.starts_with("ask-cold-wake-") {
-                        return error(
-                            "human_approval_required",
-                            "answer the cold-session wake confirmation directly in the chat",
-                        );
-                    }
                     if !allow_user_window {
                         return error(
                             "user_window_protected",
@@ -568,6 +562,12 @@ impl Workspace {
                         Ok(panel) => panel,
                         Err(error) => return error,
                     };
+                    if panel.read(cx).ask_needs_human(ask) {
+                        return error(
+                            "human_approval_required",
+                            "this approval can only be answered by a person directly in the chat",
+                        );
+                    }
                     return if panel.update(cx, |panel, cx| panel.control_click_ask(ask, window, cx))
                     {
                         ok(json!({"selector": selector}))

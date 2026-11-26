@@ -154,6 +154,7 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
                     call_id: "geometry-todo".into(), name: "todo".into(), input: "{}".into(),
                     output: r#"[{"id":"check","content":"Verify tutorial layout without covering this text","status":"in_progress","priority":"high"}]"#.into(),
                     done: true, error: None,
+                    ask: None,
                 },
             ];
             cx.notify();

@@ -23,6 +23,7 @@ mod tests {
                 session_id: "session".into(), call_id: "call".into(), name: name.into(),
                 output: String::new(), error: Some("Partial patch failure".into()),
                 codemode: None,
+                ask: None,
             };
             assert!(super::refresh_after(&event));
         }

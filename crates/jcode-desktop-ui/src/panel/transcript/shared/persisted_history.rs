@@ -54,6 +54,7 @@ pub(crate) fn render(session: &jcode_base::session::Session) -> History {
                     id: call.id,
                     name: call.name,
                     input: call.input,
+                    ask: message.ask,
                 }),
             role: message.role,
             content: message.content,

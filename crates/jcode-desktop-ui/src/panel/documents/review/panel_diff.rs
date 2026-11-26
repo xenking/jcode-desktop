@@ -741,7 +741,7 @@ pub(super) fn fixture_items() -> Vec<Item> {
         Item::Tool {
             call_id: "diff-fixture".into(), name: "apply_patch".into(),
             input: serde_json::json!({"intent": "Improve navigation labels", "patch_text": "*** Begin Patch\n*** Update File: src/navigation.rs\n@@\n fn label() -> &'static str {\n-    \"Go\"\n+    \"Continue\"\n }\n*** Add File: tests/navigation.rs\n+#[test]\n+fn navigation_label_is_clear() {\n+    assert_eq!(label(), \"Continue\");\n+}\n*** End Patch"}).to_string(),
-            output: "Updated src/navigation.rs and added tests/navigation.rs\n\nFile diff:\n```diff\n--- a/src/navigation.rs\n+++ b/src/navigation.rs\n@@ -42,3 +42,3 @@\n fn label() -> &'static str {\n-    \"Go\"\n+    \"Continue\"\n }\n--- /dev/null\n+++ b/tests/navigation.rs\n@@ -0,0 +1,4 @@\n+#[test]\n+fn navigation_label_is_clear() {\n+    assert_eq!(label(), \"Continue\");\n+}\n```\n".into(), done: true, error: None,
+            output: "Updated src/navigation.rs and added tests/navigation.rs\n\nFile diff:\n```diff\n--- a/src/navigation.rs\n+++ b/src/navigation.rs\n@@ -42,3 +42,3 @@\n fn label() -> &'static str {\n-    \"Go\"\n+    \"Continue\"\n }\n--- /dev/null\n+++ b/tests/navigation.rs\n@@ -0,0 +1,4 @@\n+#[test]\n+fn navigation_label_is_clear() {\n+    assert_eq!(label(), \"Continue\");\n+}\n```\n".into(), done: true, error: None, ask: None,
         },
     ]
 }
@@ -769,6 +769,7 @@ mod tests {
             output: "Invisible tool output must not be copied".into(),
             done: true,
             error: None,
+            ask: None,
         }
     }
 
@@ -1081,6 +1082,7 @@ mod tests {
                     "new_string": (0..30).map(|n| format!("new {n} {}\n", "界".repeat(400))).collect::<String>(),
                 }).to_string(),
                 output: String::new(), done: true, error: None,
+                ask: None,
             }];
             panel.expanded_regions.insert("balanced".into());
             cx.notify();
@@ -1152,6 +1154,7 @@ mod tests {
                 call_id: "large".into(), name: "write".into(),
                 input: serde_json::json!({"file_path": "src/large.rs", "content": (0..500).map(|n| format!("line {n}\n")).collect::<String>()}).to_string(),
                 output: String::new(), done: true, error: None,
+                ask: None,
             }];
             panel.expanded_regions.insert("large".into());
             cx.notify();

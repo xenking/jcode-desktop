@@ -165,6 +165,7 @@ mod tests {
                 output: String::new(),
                 done: true,
                 error: None,
+                ask: None,
             }];
             panel.input.update(cx, |input, cx| {
                 input.set_content("draft remains here".into(), cx)

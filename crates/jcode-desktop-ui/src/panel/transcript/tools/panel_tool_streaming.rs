@@ -127,6 +127,7 @@ pub(super) fn fixture_items() -> Vec<super::Item> {
             output: String::new(),
             done: false,
             error: None,
+            ask: None,
         },
         Item::Tool {
             call_id: "partial-intent".into(),
@@ -135,6 +136,7 @@ pub(super) fn fixture_items() -> Vec<super::Item> {
             output: String::new(),
             done: false,
             error: None,
+            ask: None,
         },
     ]
 }
@@ -242,6 +244,7 @@ mod tests {
                     output: "passed".into(),
                     error: None,
                     codemode: None,
+                    ask: None,
                 },
                 cx,
             );
@@ -369,6 +372,7 @@ mod tests {
                         output: format!("finished {call_id}"),
                         error: None,
                         codemode: None,
+                        ask: None,
                     },
                     cx,
                 );

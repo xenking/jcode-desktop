@@ -15,6 +15,7 @@ fn screenshot_selection_excludes_tool_metadata_but_keeps_user_content() {
         output: "private-output".into(),
         done: true,
         error: None,
+        ask: None,
     };
     let mut display = crate::config::DisplayConfig::default();
     assert!(!text_document::segments_with_display(&item, 0, CARD, &display).is_empty());

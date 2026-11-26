@@ -14,6 +14,15 @@ macro_rules! state_object {
 }
 
 impl Panel {
+    /// Whether the card an `<request>:<question>:<option>` selector names is an
+    /// approval only a person may answer, never automation.
+    pub(crate) fn ask_needs_human(&self, selector: &str) -> bool {
+        let request = selector.rsplitn(3, ':').nth(2);
+        self.ask_card.as_ref().is_some_and(|card| {
+            Some(card.request_id.as_str()) == request && card.kind.is_human_approval()
+        })
+    }
+
     pub(crate) fn control_click_ask(
         &mut self,
         selector: &str,
@@ -126,6 +135,7 @@ impl Panel {
             output: "result".into(),
             done: true,
             error: None,
+            ask: None,
         }];
     }
     pub(crate) fn control_toggle_tool(&mut self, call_id: &str, cx: &mut Context<Self>) -> bool {

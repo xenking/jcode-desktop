@@ -52,10 +52,10 @@ pub(super) fn message_heading(item: &Item, previous: Option<&Item>) -> Option<gp
         Item::Tool {
             name,
             done: true,
-            output,
+            ask,
             error,
             ..
-        } if name == "ask" && classify::answered(output, error.as_deref()) => {
+        } if name == "ask" && classify::answered(ask.as_deref(), error.as_deref()) => {
             ("You", "clean-chat-user", previous.is_some(), true)
         }
         Item::AssistantOutput {
@@ -371,7 +371,8 @@ mod tests {
                 Item::User("First".into()),
                 Item::Tool { call_id: "ask-1".into(), name: "ask".into(),
                     input: r#"{"questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]}"#.into(),
-                    output: "User answers:\n1. Which? -> B".into(), done: true, error: None },
+                    output: "User answers:\n1. Which? -> B".into(), done: true, error: None,
+                    ask: ask::resolve_record("ask", None, "User answers:\n1. Which? -> B") },
                 Item::User("Next".into()),
             ];
             panel

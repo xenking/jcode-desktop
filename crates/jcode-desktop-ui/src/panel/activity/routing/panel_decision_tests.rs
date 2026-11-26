@@ -17,6 +17,7 @@ fn answered_ask_is_a_user_decision_not_a_tool_row(cx: &mut gpui::TestAppContext)
             input: r#"{"questions":[{"header":"Database","question":"Which database?","options":[{"label":"Postgres"},{"label":"SQLite"}]}]}"#.into(),
             output: "User answers:\n1. Which database? -> Postgres (comment: reliable)".into(),
             done: true, error: None,
+            ask: ask::resolve_record("ask", None, "User answers:\n1. Which database? -> Postgres (comment: reliable)"),
         }];
         cx.notify();
     });
@@ -79,6 +80,7 @@ fn long_answered_question_wraps_inside_card(cx: &mut gpui::TestAppContext) {
         *panel.items = vec![Item::Tool {
             call_id: "wrap".into(), name: "ask".into(),
             input: serde_json::json!({"questions":[{"question":question,"options":[{"label":"Postgres"}]}]}).to_string(),
+            ask: ask::resolve_record("ask", None, &format!("User answers:\n1. {question} -> Postgres")),
             output: format!("User answers:\n1. {question} -> Postgres"),
             done: true, error: None,
         }];

@@ -61,10 +61,11 @@ impl Panel {
                 request_id,
                 tool_call_id,
                 questions,
+                kind,
                 ..
             } => {
                 self.continuing_after_reload = false;
-                self.show_live_ask(request_id, tool_call_id, questions, cx);
+                self.show_live_ask(request_id, tool_call_id, questions, *kind, cx);
             }
             ApiEvent::RoutingDecision {
                 account,
@@ -282,6 +283,7 @@ impl Panel {
                     output: String::new(),
                     done: false,
                     error: None,
+                    ask: None,
                 });
             }
             ApiEvent::ToolInputDelta { call_id, delta, .. } => {
@@ -317,8 +319,10 @@ impl Panel {
                 output,
                 error,
                 codemode,
+                ask: record,
                 ..
             } => {
+                let record = ask::resolve_record(name, record.as_deref(), output);
                 if classify::is_codemode(name) && let Some(summary) = codemode {
                     self.codemode_summaries
                         .insert(call_id.clone(), summary.clone());
@@ -352,12 +356,14 @@ impl Panel {
                     done,
                     error: slot,
                     output: output_slot,
+                    ask: record_slot,
                     ..
                 }) = self.find_tool(call_id)
                 {
                     *done = true;
                     *slot = error.clone();
                     *output_slot = output.clone();
+                    *record_slot = record;
                     if input.is_empty()
                         && let Some(ask_input) = &ask_input
                     {
@@ -381,6 +387,7 @@ impl Panel {
                         output: output.clone(),
                         done: true,
                         error: error.clone(),
+                        ask: record,
                     });
                 }
                 // Any finished tool retires the questions it was waiting on,

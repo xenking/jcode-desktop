@@ -27,6 +27,7 @@ fn tool_token_badge_paints_for_empty_and_single_line_results(cx: &mut gpui::Test
                 output: output.into(),
                 done,
                 error: failed.then(|| "Tool failed".into()),
+                ask: None,
             }];
             cx.notify();
         });
@@ -127,6 +128,7 @@ fn whole_tool_row_toggles_the_tool_output_card(cx: &mut gpui::TestAppContext) {
             output,
             done: true,
             error: None,
+            ask: None,
         });
         cx.notify();
     });
@@ -256,6 +258,7 @@ fn inline_tool_rows_keep_status_errors_and_edit_previews(cx: &mut gpui::TestAppC
                 output: String::new(),
                 done: true,
                 error: error.map(str::to_owned),
+                ask: None,
             }];
             panel.expanded_regions.clear();
             panel.tool_detail_motion.clear();
@@ -342,6 +345,7 @@ fn consecutive_tool_rows_use_compact_spacing(cx: &mut gpui::TestAppContext) {
                 output: "hello".into(),
                 done: true,
                 error: None,
+                ask: None,
             })
             .collect();
         cx.notify();
@@ -388,6 +392,7 @@ fn tool_rows_do_not_shrink_when_the_transcript_overflows(cx: &mut gpui::TestAppC
             output: "done".into(),
             done: true,
             error: None,
+            ask: None,
         }];
         cx.notify();
     });
@@ -406,6 +411,7 @@ fn tool_rows_do_not_shrink_when_the_transcript_overflows(cx: &mut gpui::TestAppC
             output: "done".into(),
             done: true,
             error: None,
+            ask: None,
         }));
         cx.notify();
     });
@@ -766,6 +772,7 @@ fn model_read_images_are_anchored_and_deduplicated_in_the_transcript(
             output: "image loaded".into(),
             done: true,
             error: None,
+            ask: None,
         }];
         let event = ApiEvent::SidePaneImages {
             session_id: "session-a".into(),
@@ -1678,6 +1685,7 @@ fn completed_todo_tool_paints_as_a_native_card(cx: &mut gpui::TestAppContext) {
                 output: r#"[{"id":"one","content":"Render rich rows","status":"completed","priority":"high","completion_confidence":"verified","blocked_by":[]},{"id":"two","content":"Test the card","status":"in_progress","priority":"medium","group":"Validation","confidence":"validated","blocked_by":[]}] Plan: {"user_intention":"See progress visually","understands_user_intent":"clear"} Goals: []"#.into(),
                 done: true,
                 error: None,
+                ask: None,
             },
         ];
         cx.notify();

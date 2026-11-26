@@ -149,6 +149,7 @@ fn completed_public_answer_does_not_send_another_final_request(cx: &mut gpui::Te
                 output: String::new(),
                 error: None,
                 codemode: None,
+                ask: None,
             },
             ApiEvent::TextDelta {
                 session_id: p.session_id.clone(),
@@ -208,6 +209,7 @@ fn tool_commentary_is_not_a_delivered_final_answer(cx: &mut gpui::TestAppContext
                 output: String::new(),
                 error: None,
                 codemode: None,
+                ask: None,
             },
         ] {
             p.apply(&event, cx);

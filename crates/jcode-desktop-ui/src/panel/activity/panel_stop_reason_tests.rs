@@ -22,6 +22,7 @@ fn active_panel(cx: &mut Context<Panel>) -> Panel {
             output: "Partial tool output".into(),
             done: false,
             error: None,
+            ask: None,
         },
     ];
     panel.streaming_text = "Unfinished answer".into();
@@ -460,6 +461,7 @@ fn stop_settles_only_current_turn_tools_and_preserves_detached_background_work(
                 output: "Historical output".into(),
                 done: false,
                 error: None,
+                ask: None,
             },
         );
         panel.items.push(Item::BackgroundTask {

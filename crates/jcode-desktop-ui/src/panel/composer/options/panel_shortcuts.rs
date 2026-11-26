@@ -242,6 +242,7 @@ mod tests {
                 output: String::new(),
                 done: false,
                 error: None,
+                ask: None,
             });
             cx.notify();
         });

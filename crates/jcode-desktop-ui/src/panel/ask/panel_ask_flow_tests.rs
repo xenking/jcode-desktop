@@ -263,6 +263,7 @@ fn ask_recovery_after_snapshot_ignores_only_expired_tools(cx: &mut gpui::TestApp
         output: String::new(),
         done: false,
         error: None,
+        ask: None,
     };
     panel.update(vcx, |panel, cx| {
         panel.items.push(fallback_tool("expired"));
@@ -297,8 +298,8 @@ fn reconnect_retires_missing_asks_and_late_ack_cannot_close_the_current_attempt(
         let live = "ask-cold-wake-live";
         let live_pending = [live.into()];
         panel.reconcile_asks(1, None, cx);
-        panel.show_live_ask(expired, expired, &[question(false)], cx);
-        panel.show_live_ask(live, live, &[question(true)], cx);
+        panel.show_live_ask(expired, expired, &[question(false)], AskKind::Question, cx);
+        panel.show_live_ask(live, live, &[question(true)], AskKind::Question, cx);
         panel.answer_ask(AskResponse::declined(), cx);
         let expired_attempt = panel.ask_card.as_ref().unwrap().attempt_id.unwrap();
         panel.reconcile_asks(2, Some(&live_pending), cx);

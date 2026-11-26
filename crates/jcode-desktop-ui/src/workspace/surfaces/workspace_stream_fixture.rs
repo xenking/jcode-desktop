@@ -114,6 +114,7 @@ pub(super) fn spawn<T: 'static>(session_id: String, cx: &mut Context<T>, apply: 
                                 output,
                                 error: None,
                                 codemode: None,
+                                ask: None,
                             },
                             cx,
                         )

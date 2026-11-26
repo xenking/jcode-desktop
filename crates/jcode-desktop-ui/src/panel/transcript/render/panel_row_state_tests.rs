@@ -8,6 +8,7 @@ fn tool(call_id: &str) -> Item {
         output: "test".into(),
         done: true,
         error: None,
+        ask: None,
     }
 }
 

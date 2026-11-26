@@ -662,6 +662,7 @@ pub(super) fn fixture_items() -> Vec<super::Item> {
             output: "Draft created successfully.\nDraft ID: r-812345\nTo: sam@example.com\nSubject: Re: Q3 report\nAttachments (1):\n  - /home/jeremy/reports/q3-notes.pdf\n\nTo send this draft, use action 'send_draft' with draft_id 'r-812345' and confirmed: true.".into(),
             done: true,
             error: None,
+            ask: None,
         },
         Item::User("Make it shorter and drop the attachment mention.".into()),
         Item::Tool {
@@ -677,6 +678,7 @@ pub(super) fn fixture_items() -> Vec<super::Item> {
             output: "Draft updated in place.\nDraft ID: r-812345\nTo: sam@example.com\nSubject: Re: Q3 report\nBody:\nHi Sam,\n\nThe Q3 numbers look solid. One fix: the churn figure on page 3 uses August, not September. Could you also add Desktop beta signups?\n\nBest,\nJeremy\n\nTo send this draft, use action 'send_draft' with draft_id 'r-812345' and confirmed: true.".into(),
             done: true,
             error: None,
+            ask: None,
         },
         Item::User("Also start one to the team about Friday's demo.".into()),
         Item::Tool {
@@ -686,6 +688,7 @@ pub(super) fn fixture_items() -> Vec<super::Item> {
             output: String::new(),
             done: false,
             error: None,
+            ask: None,
         },
     ]
 }

@@ -911,28 +911,6 @@ fn large_card_scrolls_without_moving_footer(cx: &mut gpui::TestAppContext) {
     });
 }
 
-#[test]
-fn completed_ask_result_preserves_answers_and_terminal_status() {
-    let input = r#"{"questions":[{"question":"Which?"}]}"#;
-    assert_eq!(
-        result_text(
-            input,
-            "User answers:\n1. Which? -> B (comment: why); Other: text\n",
-            None
-        ),
-        "1. Which? -> B (comment: why); Other: text"
-    );
-    assert_eq!(
-        result_text(input, "User declined to answer the questions.", None),
-        "1. Which? -> declined"
-    );
-    assert_eq!(
-        result_text(input, "", Some("cancelled by the user")),
-        "1. Which? -> cancelled"
-    );
-    assert_eq!(result_text(input, "", None), "1. Which? -> no answer");
-}
-
 #[gpui::test]
 fn ask_result_is_visible_and_survives_history_reload(cx: &mut gpui::TestAppContext) {
     cx.update(crate::bind_workspace_keys);
@@ -1219,11 +1197,13 @@ fn decline_sends_empty_response_and_renders_question_status(cx: &mut gpui::TestA
             session_id: "session-a".into(), call_id: "toolu_01J29QR2NCg12HueHJkMWtZU".into(),
             name: "ask".into(), output: "User declined to answer the questions.".into(), error: None,
             codemode: None,
+            ask: None,
         }, cx);
         assert!(panel.ask_card.is_none());
-        let Item::Tool { input, output, error, .. } = panel.items.iter().find(|item| matches!(item, Item::Tool { call_id, .. } if call_id == "toolu_01J29QR2NCg12HueHJkMWtZU")).unwrap() else { unreachable!() };
-        let text = result_text(input, output, error.as_deref());
-        assert!(text.contains("Which database") && text.contains("declined"), "{text}");
+        let Item::Tool { input, output, error, ask, .. } = panel.items.iter().find(|item| matches!(item, Item::Tool { call_id, .. } if call_id == "toolu_01J29QR2NCg12HueHJkMWtZU")).unwrap() else { unreachable!() };
+        let text = super::decision::selection_segments(0, ask.as_deref(), input, output, error.as_deref());
+        let text: Vec<_> = text.iter().map(|(_, text)| text.as_str()).collect();
+        assert!(text.iter().any(|t| t.contains("Which database")) && text.contains(&"declined"), "{text:?}");
     });
 }
 
@@ -1241,12 +1221,14 @@ fn cancelled_ask_closes_and_renders_questions_and_status(cx: &mut gpui::TestAppC
     let event: jcode_sdk::ApiEvent = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
     panel.update(vcx, |panel, cx| {
         panel.apply(&event, cx);
-        panel.apply(&jcode_sdk::ApiEvent::ToolDone { session_id: "session-a".into(), call_id: "unrelated".into(), name: "ask".into(), output: "cancelled".into(), error: Some("cancelled".into()), codemode: None }, cx);
+        panel.apply(&jcode_sdk::ApiEvent::ToolDone { session_id: "session-a".into(), call_id: "unrelated".into(), name: "ask".into(), output: "cancelled".into(), error: Some("cancelled".into()), codemode: None, ask: None }, cx);
         assert!(panel.ask_card.is_some());
-        panel.apply(&jcode_sdk::ApiEvent::ToolDone { session_id: "session-a".into(), call_id: "toolu_01J29QR2NCg12HueHJkMWtZU".into(), name: "ask".into(), output: "cancelled by the user".into(), error: Some("cancelled by the user".into()), codemode: None }, cx);
+        panel.apply(&jcode_sdk::ApiEvent::ToolDone { session_id: "session-a".into(), call_id: "toolu_01J29QR2NCg12HueHJkMWtZU".into(), name: "ask".into(), output: "cancelled by the user".into(), error: Some("cancelled by the user".into()), codemode: None, ask: None }, cx);
         assert!(panel.ask_card.is_none(), "completed tool must close its card");
-        let Item::Tool { input, output, error, .. } = panel.items.iter().find(|item| matches!(item, Item::Tool { call_id, .. } if call_id == "toolu_01J29QR2NCg12HueHJkMWtZU")).unwrap() else { unreachable!() };
-        assert!(result_text(input, output, error.as_deref()).contains("Which database"));
+        let Item::Tool { input, output, error, ask, .. } = panel.items.iter().find(|item| matches!(item, Item::Tool { call_id, .. } if call_id == "toolu_01J29QR2NCg12HueHJkMWtZU")).unwrap() else { unreachable!() };
+        let text = super::decision::selection_segments(0, ask.as_deref(), input, output, error.as_deref());
+        let text: Vec<_> = text.iter().map(|(_, text)| text.as_str()).collect();
+        assert!(text.iter().any(|t| t.contains("Which database")) && text.contains(&"cancelled"), "{text:?}");
     });
 }
 
@@ -1488,3 +1470,6 @@ fn ask_editor_receives_space_and_printable_shortcuts(cx: &mut gpui::TestAppConte
 
 #[path = "panel_ask_flow_tests.rs"]
 mod flow;
+
+#[path = "panel_ask_record_tests.rs"]
+mod record;

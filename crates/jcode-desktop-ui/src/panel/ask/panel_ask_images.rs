@@ -3,15 +3,6 @@ use super::*;
 use gpui::{HighlightStyle, InteractiveText, StyledText};
 
 impl Panel {
-    pub(super) fn render_ask_answer(
-        &self,
-        call_id: &str,
-        shown: String,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        self.render_ask_answer_part(call_id, shown, 0, true, None, cx)
-    }
-
     pub(super) fn render_ask_answer_part(
         &self,
         call_id: &str,

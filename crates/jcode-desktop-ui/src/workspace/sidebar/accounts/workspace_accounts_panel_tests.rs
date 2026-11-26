@@ -181,6 +181,7 @@ fn transcript_file_mentions_open_native_previews(cx: &mut gpui::TestAppContext) 
                 output: String::new(),
                 done: true,
                 error: None,
+                ask: None,
             },
             "markdown-link:docs/details.md:12",
             "docs/details.md",

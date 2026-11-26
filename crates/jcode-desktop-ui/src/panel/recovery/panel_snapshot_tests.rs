@@ -78,6 +78,7 @@ fn reload_snapshot_roundtrips_rich_transcript_without_checkpoint_payload(
                 output: "".into(),
                 done: false,
                 error: None,
+                ask: None,
             },
             Item::Stopped(turn::StopNotice::cancel_requested()),
         ];

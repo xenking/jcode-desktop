@@ -18,6 +18,7 @@ fn duplicate_background_completion_keeps_only_matching_full_result(cx: &mut gpui
     let bg = Item::Tool {
         call_id: "bg-call".into(), name: "bg".into(), input: r#"{"action":"wait","task_id":"abc"}"#.into(),
         output: "Background task finished.\n\nTask: abc\nStatus: completed\nDuration: 2s\nExit code: 0\n\nOutput preview:\n```text\nhello\n```".into(), done: true, error: None,
+        ask: None,
     };
     let (panel, vcx) = panel_with(
         cx,
@@ -56,6 +57,7 @@ fn edit_arguments_are_formatted_without_raw_tool_call(cx: &mut gpui::TestAppCont
             output: "Changed file".into(),
             done: true,
             error: None,
+            ask: None,
         }],
     );
     click(vcx, "tool-header");
@@ -77,6 +79,7 @@ fn expanded_arguments_render_after_an_omitted_null(cx: &mut gpui::TestAppContext
             output: "привет".into(),
             done: true,
             error: None,
+            ask: None,
         }],
     );
     click(vcx, "tool-header");
@@ -97,6 +100,7 @@ fn json_tool_output_collapses_nested_values(cx: &mut gpui::TestAppContext) {
             output: r#"{"outer":{"child":"secret"},"other":7}"#.into(),
             done: true,
             error: None,
+            ask: None,
         }],
     );
     click(vcx, "tool-header");
@@ -120,6 +124,7 @@ fn markdown_tool_output_is_rendered_and_selectable(cx: &mut gpui::TestAppContext
             output: "# Report\n\nA **useful** result.".into(),
             done: true,
             error: None,
+            ask: None,
         }],
     );
     click(vcx, "tool-header");
@@ -140,6 +145,7 @@ fn bash_result_displays_exit_badge(cx: &mut gpui::TestAppContext) {
             output: "failed\n\n--- Command finished with exit code: 1 ---\n".into(),
             done: true,
             error: None,
+            ask: None,
         }],
     );
     click(vcx, "tool-header");
@@ -175,6 +181,7 @@ fn read_and_diff_use_selectable_syntax_rendering(cx: &mut gpui::TestAppContext) 
                 output: output.into(),
                 done: true,
                 error: None,
+                ask: None,
             }],
         );
         click(vcx, "tool-header");
@@ -294,6 +301,7 @@ fn bg_result_shows_structured_details(cx: &mut gpui::TestAppContext) {
         input: r#"{"action":"wait","task_id":"abc"}"#.into(),
         output: "Background task finished.\n\nTask: abc\nName: build\nStatus: completed\nDuration: 2s\nExit code: 0\n\nOutput preview:\n```text\nhello\n```".into(),
         done: true, error: None,
+        ask: None,
     }]);
     click(vcx, "tool-header");
     assert!(vcx.debug_bounds("tool-bg-output-code").is_some());
@@ -315,6 +323,7 @@ fn bg_failed_row_loads_complete_output_without_metadata(cx: &mut gpui::TestAppCo
         input: r#"{"action":"wait","task_id":"abc"}"#.into(),
         output: "Background task finished.\n\nTask: abc\nStatus: failed\nDuration: 2s\nExit code: 101\n\nOutput preview:\n```text\ntruncated...\n```".into(),
         done: true, error: None,
+        ask: None,
     }]);
     assert!(vcx.debug_bounds("tool-bg-exit-code").is_some());
     click(vcx, "tool-header");
@@ -350,6 +359,7 @@ fn tool_row_click_and_full_output_scroll(cx: &mut gpui::TestAppContext) {
             output,
             done: true,
             error: None,
+            ask: None,
         }],
     );
     click(vcx, "tool-header");
@@ -472,6 +482,7 @@ fn tool_wheel_and_momentum_at_edge_do_not_scroll_transcript(cx: &mut gpui::TestA
         output: "output line\n".repeat(200),
         done: true,
         error: None,
+        ask: None,
     }];
     items.extend((0..40).map(|n| Item::Assistant(format!("Response {n}"))));
     let (panel, vcx) = panel_with(cx, items);
@@ -559,6 +570,7 @@ fn a_tool_without_scroll_range_passes_wheel_to_the_transcript(cx: &mut gpui::Tes
         output: "fixture".into(),
         done: true,
         error: None,
+        ask: None,
     }];
     items.extend((0..40).map(|n| Item::Assistant(format!("Response {n}"))));
     let (panel, vcx) = panel_with(cx, items);
@@ -626,6 +638,7 @@ fn tool_error_is_available_in_expanded_detail(cx: &mut gpui::TestAppContext) {
             output: String::new(),
             done: true,
             error: Some(message),
+            ask: None,
         }],
     );
     assert!(!document_text(&panel, vcx).contains("justification field"));
@@ -650,6 +663,7 @@ fn expanded_tool_failure_shows_the_error_once_and_keeps_distinct_output(
         output: message.into(),
         done: true,
         error: Some(message.into()),
+        ask: None,
     }];
     let (panel, vcx) = panel_with(cx, items);
     click(vcx, "tool-swarm-header");
@@ -682,6 +696,7 @@ fn tool_output_expands_past_the_old_clip_and_scrolls(cx: &mut gpui::TestAppConte
             output,
             done: true,
             error: None,
+            ask: None,
         }],
     );
     assert!(vcx.debug_bounds("tool-detail").is_none());
@@ -709,6 +724,7 @@ fn tool_title_stays_one_line_when_expanded(cx: &mut gpui::TestAppContext) {
             output: "ok".into(),
             done: true,
             error: None,
+            ask: None,
         }],
     );
     let compact = vcx.debug_bounds("tool-header").unwrap().size;

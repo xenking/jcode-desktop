@@ -425,6 +425,7 @@ impl Panel {
                     output,
                     done,
                     error,
+                    ..
                 } => Some((
                     call_id.as_str(),
                     name.as_str(),

@@ -100,6 +100,7 @@ pub(super) fn fixture_items() -> Vec<super::Item> {
         output: String::new(),
         done: true,
         error: None,
+        ask: None,
     })
     .collect()
 }

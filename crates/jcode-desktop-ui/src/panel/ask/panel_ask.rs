@@ -8,48 +8,21 @@ use crate::choice_keys::{
 };
 use gpui::{FontWeight, StyledText};
 use jcode_sdk::{AskAnswer, AskQuestion, AskResponse};
+use jcode_session_types::{AskKind, AskRecord};
 use std::{cell::Cell, rc::Rc};
 
-/// Completed asks remain readable in the transcript, including after history reload.
-pub(super) fn result_text(input: &str, output: &str, error: Option<&str>) -> String {
-    let result = error
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(output)
-        .trim();
-    if let Some(answers) = result.strip_prefix("User answers:\n") {
-        return answers.to_string();
-    }
-    if result.contains(" -> ") {
-        return result.to_string();
-    }
-    let status = if result.to_lowercase().contains("declin") {
-        "declined"
-    } else if result.to_lowercase().contains("cancel") {
-        "cancelled"
-    } else if result.is_empty() {
-        "no answer"
-    } else {
-        result
-    };
-    let questions = serde_json::from_str::<serde_json::Value>(input).ok();
-    let lines: Vec<String> = questions
-        .as_ref()
-        .and_then(|v| v.get("questions"))
-        .and_then(|v| v.as_array())
-        .into_iter()
+/// The typed record of a finished ask, as the daemon sent it, else rebuilt from
+/// the prose of a session saved before records existed. `None` for other tools
+/// and for asks that ended without an answer or a decline (cancelled, failed).
+pub(crate) fn resolve_record(
+    tool: &str,
+    stored: Option<&AskRecord>,
+    output: &str,
+) -> Option<Box<AskRecord>> {
+    jcode_session_types::is_ask_tool(tool)
+        .then(|| AskRecord::resolve(stored, output))
         .flatten()
-        .enumerate()
-        .filter_map(|(i, q)| {
-            q.get("question")
-                .and_then(|q| q.as_str())
-                .map(|q| format!("{}. {} -> {}", i + 1, q, status))
-        })
-        .collect();
-    if lines.is_empty() {
-        status.to_string()
-    } else {
-        lines.join("\n")
-    }
+        .map(Box::new)
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -75,6 +48,8 @@ impl AskDraft {
 pub(crate) struct AskCard {
     pub request_id: String,
     pub tool_call_id: String,
+    /// Who may answer; only a plain question may be answered by automation.
+    pub kind: AskKind,
     pub questions: Vec<AskQuestion>,
     pub chosen: Vec<Vec<usize>>,
     pub other: Vec<Option<String>>,
@@ -131,6 +106,7 @@ impl AskCard {
         let mut card = Self {
             request_id,
             tool_call_id: String::new(),
+            kind: AskKind::default(),
             comments: questions
                 .iter()
                 .map(|q| vec![String::new(); q.options.len()])
@@ -380,6 +356,7 @@ fn question_without_header<'a>(question: &'a str, header: Option<&str>) -> &'a s
 pub(super) struct QueuedAsk {
     request_id: String,
     tool_call_id: String,
+    kind: AskKind,
     questions: Vec<AskQuestion>,
 }
 
@@ -397,6 +374,7 @@ impl Panel {
         request_id: &str,
         tool_call_id: &str,
         questions: &[AskQuestion],
+        kind: AskKind,
         cx: &mut Context<Self>,
     ) {
         if self
@@ -406,7 +384,7 @@ impl Panel {
         {
             self.unavailable_asks.remove(request_id);
         }
-        self.show_ask(request_id, tool_call_id, questions, cx);
+        self.show_ask(request_id, tool_call_id, questions, kind, cx);
     }
 
     pub(super) fn dismiss_stopped_asks(&mut self, cx: &mut Context<Self>) {
@@ -428,6 +406,7 @@ impl Panel {
         request_id: &str,
         tool_call_id: &str,
         questions: &[AskQuestion],
+        kind: AskKind,
         cx: &mut Context<Self>,
     ) {
         if self.answered_asks.contains(request_id) || self.unavailable_asks.contains_key(request_id)
@@ -455,6 +434,7 @@ impl Panel {
             let queued = QueuedAsk {
                 request_id: request_id.to_owned(),
                 tool_call_id: tool_call_id.to_owned(),
+                kind,
                 questions: questions.to_vec(),
             };
             match self
@@ -470,6 +450,7 @@ impl Panel {
         }
         let mut card = AskCard::new(request_id.to_owned(), questions.to_vec());
         tool_call_id.clone_into(&mut card.tool_call_id);
+        card.kind = kind;
         self.ask_card = Some(card);
         self.prepare_ask_inputs(cx);
         if self
@@ -504,7 +485,9 @@ impl Panel {
                 return None;
             }
             let request_id = format!("ask-{call_id}");
-            if self.answered_asks.contains(&request_id) || self.unavailable_asks.contains_key(&request_id) {
+            if self.answered_asks.contains(&request_id)
+                || self.unavailable_asks.contains_key(&request_id)
+            {
                 return None;
             }
             let AskToolInput { questions } = serde_json::from_str(input).ok()?;
@@ -530,7 +513,13 @@ impl Panel {
                 }
                 match panel.recoverable_ask() {
                     Some((current, questions)) if current == call_id => {
-                        panel.show_ask(&format!("ask-{call_id}"), &call_id, &questions, cx);
+                        panel.show_ask(
+                            &format!("ask-{call_id}"),
+                            &call_id,
+                            &questions,
+                            AskKind::Question,
+                            cx,
+                        );
                     }
                     Some(_) => panel.schedule_ask_recovery(cx),
                     None => {}
@@ -788,7 +777,10 @@ impl Panel {
             self.unavailable_asks.retain(|id, _| !pending.contains(id));
             for item in &self.items {
                 if let super::Item::Tool {
-                    name, call_id, done: false, ..
+                    name,
+                    call_id,
+                    done: false,
+                    ..
                 } = item
                     && name == "ask"
                     && !call_id.is_empty()
@@ -839,7 +831,13 @@ impl Panel {
             let Some(next) = self.queued_asks.pop_front() else {
                 return;
             };
-            self.show_ask(&next.request_id, &next.tool_call_id, &next.questions, cx);
+            self.show_ask(
+                &next.request_id,
+                &next.tool_call_id,
+                &next.questions,
+                next.kind,
+                cx,
+            );
         }
     }
 }

@@ -29,7 +29,7 @@ NATIVE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(NATIVE)
 ACTIONS = ("list", "state", "open_session", "set_composer", "send", "press_key", "search", "click", "expand_tool", "wait_for", "focus", "reveal")
 SWARM_JOURNEYS = ("swarm-sidebar", "swarm-status")
-ASK_FIXTURES = ("ask", "ask-single", "ask-multi", "ask-rich", "ask-applet", "ask-many", "ask-mcp")
+ASK_FIXTURES = ("ask", "ask-single", "ask-multi", "ask-rich", "ask-applet", "ask-many", "ask-mcp", "ask-worker")
 SWARM_WORKER = "swarm-fixture-0"
 SCHEMA = 1
 
@@ -1724,7 +1724,7 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "reasoning", *ASK_FIXTURES, "swarm-worktree", "image-prompt", "gallery-preload", "gallery-navigation", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "side-question-history", "cache-card", "resume-preview", "voice-rt", "openrig", "openrig-live", "openrig-live-split", "files-panel"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "reasoning", *ASK_FIXTURES, "decision", "decision-legacy", "swarm-worktree", "image-prompt", "gallery-preload", "gallery-navigation", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "side-question-history", "cache-card", "resume-preview", "voice-rt", "openrig", "openrig-live", "openrig-live-split", "files-panel"), default="expandable")
             child.add_argument("--fullscreen-layout", action="store_true",
                                help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
             child.add_argument("--no-sidebar", action="store_true",

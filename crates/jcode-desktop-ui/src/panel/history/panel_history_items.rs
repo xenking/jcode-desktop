@@ -113,6 +113,7 @@ pub(super) fn build(
                         user_times.insert(items.len(), at);
                     }
                     items.push(Item::Tool {
+                        ask: ask::resolve_record(&tool.name, tool.ask.as_deref(), &message.content),
                         call_id: tool.id,
                         name: tool.name,
                         input: tool.input.to_string(),

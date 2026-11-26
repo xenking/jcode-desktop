@@ -51,6 +51,7 @@ pub(super) fn screenshot_fixture() -> Vec<Item> {
             output: "External DM sent to turtle: I’ll check both modes and send the results.".into(),
             done: true,
             error: None,
+            ask: None,
         },
         Item::Assistant("I’ll start by checking clean chat in a narrow panel.".into()),
     ]

@@ -76,6 +76,7 @@ fn tab_from_selected_transcript_text_reaches_the_first_tool(cx: &mut gpui::TestA
                 output: "hello".into(),
                 done: true,
                 error: None,
+                ask: None,
             },
             Item::Assistant("A later paragraph".into()),
         ];
@@ -179,6 +180,7 @@ fn answered_decision_question_and_answer_are_selectable(cx: &mut gpui::TestAppCo
             output: "User answers:\n1. Which database? -> Postgres (comment: reliable)".into(),
             done: true,
             error: None,
+            ask: ask::resolve_record("ask", None, "User answers:\n1. Which database? -> Postgres (comment: reliable)"),
         }];
         panel
     });
@@ -247,6 +249,7 @@ fn tool_text_drag_copies_summary_output_and_error(cx: &mut gpui::TestAppContext)
             output: output.into(),
             done: true,
             error: Some("A useful error".into()),
+            ask: None,
         }];
         panel.expanded_regions.insert("call".into());
         panel
@@ -352,6 +355,7 @@ fn markdown_tool_output_copies_rendered_text(cx: &mut gpui::TestAppContext) {
             output: "# Report\n\nA **useful** result.".into(),
             done: true,
             error: None,
+            ask: None,
         }];
         panel.expanded_regions.insert("md".into());
         panel
@@ -571,6 +575,7 @@ fn continuous_selection_spans_prompt_response_tool_and_final_answer(cx: &mut gpu
                 output: "hidden output".into(),
                 done: true,
                 error: None,
+                ask: None,
             },
             Item::Assistant("Final answer.".into()),
         ];
@@ -634,6 +639,7 @@ fn continuous_selection_includes_expanded_tool_output_and_code(cx: &mut gpui::Te
                 output: "Finished".into(),
                 done: true,
                 error: None,
+                ask: None,
             },
             Item::Assistant("```rust\nlet βeta = 1;\n```\n\nDone.".into()),
         ];

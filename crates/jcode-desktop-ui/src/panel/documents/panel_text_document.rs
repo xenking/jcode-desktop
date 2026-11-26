@@ -105,9 +105,11 @@ fn fingerprint(item: &Item, open: Open) -> u64 {
     std::mem::discriminant(item).hash(&mut state);
     open.bits().hash(&mut state);
     match item {
-        Item::User(text) | Item::Assistant(text) | Item::AssistantOutput { text, .. } | Item::Reasoning(text) | Item::Error(text) => {
-            text.hash(&mut state)
-        }
+        Item::User(text)
+        | Item::Assistant(text)
+        | Item::AssistantOutput { text, .. }
+        | Item::Reasoning(text)
+        | Item::Error(text) => text.hash(&mut state),
         Item::RuntimeError { message, .. } | Item::AgentMessage { message, .. } => {
             message.hash(&mut state)
         }
@@ -216,7 +218,9 @@ fn segments_with_regions(
             let (text, _) = super::voice::tag::strip(text);
             return markdown::selection_segments(&text, index, false, true);
         }
-        Item::Assistant(text) | Item::AssistantOutput { text, .. } => return markdown::selection_segments(text, index, false, false),
+        Item::Assistant(text) | Item::AssistantOutput { text, .. } => {
+            return markdown::selection_segments(text, index, false, false);
+        }
         Item::AgentMessage { message, .. } if open.details => {
             return markdown::selection_segments(
                 agent_message::dm_body(message),
@@ -238,13 +242,20 @@ fn segments_with_regions(
             output,
             error,
             done,
+            ask,
             ..
         } => {
             if name == "ask" && *done {
-                return super::decision::selection_segments(index, input, output, error.as_deref())
-                    .into_iter()
-                    .map(|(key, text)| (key.into(), text.into()))
-                    .collect();
+                return super::decision::selection_segments(
+                    index,
+                    ask.as_deref(),
+                    input,
+                    output,
+                    error.as_deref(),
+                )
+                .into_iter()
+                .map(|(key, text)| (key.into(), text.into()))
+                .collect();
             }
             push(format!("tool-name-{index}"), name.clone());
             push(
@@ -327,7 +338,8 @@ fn segments_with_regions(
                 } else {
                     push(
                         format!("tool-detail-{index}"),
-                        tool_output::ToolDetail::new(name, input, output, error.as_deref()).into_text(),
+                        tool_output::ToolDetail::new(name, input, output, error.as_deref())
+                            .into_text(),
                     );
                 }
             }
@@ -478,6 +490,7 @@ mod tests {
             output: "hidden output".into(),
             done: true,
             error: None,
+            ask: None,
         }
     }
 
@@ -562,6 +575,7 @@ mod tests {
             output: "Applied".into(),
             done: true,
             error: None,
+            ask: None,
         };
         let closed = segments(&edit, 5, Open::default());
         assert!(!closed.iter().any(|(_, text)| text.contains("Applied")));

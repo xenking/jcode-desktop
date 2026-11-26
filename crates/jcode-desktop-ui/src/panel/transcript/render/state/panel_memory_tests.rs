@@ -55,7 +55,7 @@ fn stored_memory_tool_calls_survive_a_reload() {
             codemode: None,
             id: "call-memory".into(),
             name: "memory".into(),
-            input: serde_json::json!({"action": "remember", "content": "keep replies terse"}),
+            input: serde_json::json!({"action": "remember", "content": "keep replies terse"}), ask: None,
         }),
     };
     let (items, _) = crate::panel::history_items::build(vec![message], Vec::new());

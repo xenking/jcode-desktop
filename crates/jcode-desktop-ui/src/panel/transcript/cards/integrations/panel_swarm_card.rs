@@ -645,6 +645,7 @@ mod tests {
                 output: "ok".into(),
                 done: true,
                 error: None,
+                ask: None,
             });
             cx.notify();
         });
@@ -706,7 +707,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.items.push(Item::Tool { call_id: "compact-dm".into(), name: "swarm".into(),
                 input: format!(r#"{{"action":"message","to_session":"{FOX}","message":"Hello worker\nSecond line","intent":"hidden intent"}}"#),
-                output: format!("Direct message sent to {FOX}: Hello worker\nSecond line"), done: true, error: None });
+                output: format!("Direct message sent to {FOX}: Hello worker\nSecond line"), done: true, error: None, ask: None });
             cx.notify();
         });
         vcx.run_until_parked();
@@ -744,6 +745,7 @@ mod tests {
                 output: String::new(),
                 done: true,
                 error: None,
+                ask: None,
             });
             cx.notify();
         });

@@ -289,6 +289,7 @@ fn connection_scoped_ask_with_empty_identity_is_not_filtered_out() {
         request_id: "ask-call".into(),
         tool_call_id: "call".into(),
         questions: vec![],
+        kind: Default::default(),
     };
     assert_eq!(event_session_id(&event), None);
 }

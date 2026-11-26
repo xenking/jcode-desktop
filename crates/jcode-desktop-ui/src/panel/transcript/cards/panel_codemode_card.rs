@@ -524,6 +524,7 @@ mod tests {
                     output: output.clone(),
                     error: None,
                     codemode: Some(summary.clone()),
+                    ask: None,
                 },
                 cx,
             )

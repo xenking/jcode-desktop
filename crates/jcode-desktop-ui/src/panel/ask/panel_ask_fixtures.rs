@@ -71,6 +71,17 @@ pub(in crate::panel) fn questions(fixture: &str) -> Option<Vec<Value>> {
                 option("Roll back", "Return staging to the previous build"),
             ],
         )],
+        // A swarm worker's ask reaches this session as an ordinary ask whose
+        // question names the worker.
+        "ask-worker" => vec![question(
+            "Database",
+            "Worker \"builder\": Which database should the new web service use?",
+            false,
+            vec![
+                option("Postgres (Recommended)", "Relational, scalable, rich features"),
+                option("SQLite", "Embedded, zero-ops, single node"),
+            ],
+        )],
         "ask-mcp" => vec![question(
             "MCP approval",
             "Allow MCP tool \"write-item\" on server \"fixture\" with arguments {\"n\":1}?",
@@ -111,4 +122,24 @@ pub(in crate::panel) fn applet(session_id: &str) -> jcode_applet_types::AgentApp
                  "rows": [["us-east", "0.02%", "118 ms"], ["eu-west", "0.01%", "131 ms"], ["ap-south", "0.04%", "204 ms"]]}
             ]}}
     }]})).expect("fixture applet snapshot")
+}
+
+/// An answered ask as history delivers it: with its typed record, or, for
+/// `legacy`, only the prose a session saved before records existed.
+pub(in crate::panel) fn answered(legacy: bool) -> Vec<super::Item> {
+    let questions = vec![
+        json!({"question": "Which database should we use for this long-term project, and why?", "options": [{"label": "Postgres (Recommended)"}, {"label": "SQLite"}]}),
+        json!({"question": "When should we migrate?", "options": [{"label": "Now"}, {"label": "Later"}]}),
+    ];
+    let record = json!({"questions": questions, "response": {"answers": [
+        {"selected": ["Postgres (Recommended)"], "other": "Keep a backup", "comments": {"Postgres (Recommended)": "Reliable and familiar"}},
+        {"selected": ["Later"]},
+    ]}});
+    let prose = "User answers:\n1. Which database should we use for this long-term project, and why? -> Postgres (Recommended) (comment: Reliable and familiar); Other: Keep a backup\n2. When should we migrate? -> Later\n";
+    let message = json!({"role": "tool", "content": prose, "tool": {
+        "id": "decision-fixture", "name": "ask", "input": {"questions": questions},
+        "ask": if legacy { serde_json::Value::Null } else { record },
+    }});
+    let messages = serde_json::from_value(message).into_iter().collect();
+    super::history_items::build(messages, Vec::new()).0
 }

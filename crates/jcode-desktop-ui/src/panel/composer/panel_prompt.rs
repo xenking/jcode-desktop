@@ -949,6 +949,7 @@ mod tests {
             output: "Done".into(),
             done: true,
             error: None,
+            ask: None,
         });
         for notice in BACKGROUND_NOTICES {
             items.push(Item::User(notice.into()));

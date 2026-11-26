@@ -143,6 +143,9 @@ pub enum Item {
         output: String,
         done: bool,
         error: Option<String>,
+        /// The typed answer of a finished `ask`; the card renders from it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ask: Option<Box<jcode_session_types::AskRecord>>,
     },
     /// Live state for work detached by a tool call. Unlike the originating
     /// `bg`/`bash` row, this continues to change while the agent waits.

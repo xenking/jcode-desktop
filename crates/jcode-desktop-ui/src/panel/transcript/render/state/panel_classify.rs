@@ -11,8 +11,8 @@ pub(super) fn is_external(message: &str) -> bool {
     message.starts_with(EXTERNAL_DM)
 }
 
-pub(super) fn answered(output: &str, error: Option<&str>) -> bool {
-    error.is_none() && (output.starts_with("User answers:") || output.contains(" -> "))
+pub(super) fn answered(ask: Option<&jcode_session_types::AskRecord>, error: Option<&str>) -> bool {
+    error.is_none() && ask.is_some_and(|record| !record.declined())
 }
 
 pub(super) fn is_pinnable_prompt(item: &Item) -> bool {
@@ -37,8 +37,8 @@ pub(super) fn is_pinnable_prompt(item: &Item) -> bool {
 
 
 pub(super) fn is_user_turn(item: &Item) -> bool {
-    is_pinnable_prompt(item) || matches!(item, Item::Tool { name, done: true, output, error, .. }
-        if name == "ask" && (super::classify::answered(output, error.as_deref()) || output.contains("declined")))
+    is_pinnable_prompt(item)
+        || matches!(item, Item::Tool { name, done: true, ask: Some(_), error: None, .. } if name == "ask")
 }
 
 pub(super) fn is_swarm(name: &str) -> bool {

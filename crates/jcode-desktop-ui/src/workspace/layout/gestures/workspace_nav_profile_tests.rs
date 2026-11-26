@@ -22,6 +22,7 @@ fn conversation(panel: usize) -> Vec<crate::panel::Item> {
                 output: "ok".into(),
                 done: true,
                 error: None,
+                ask: None,
             },
             _ => Item::Assistant(format!(
                 "Result {n}: **formatted** text with `inline code` and a list.\n\n- first point about layout\n- second point about paint\n\n```rust\nfn frame_{n}() -> u32 {{ {n} }}\n```\n\nA closing paragraph long enough to wrap across more than one line in a half-width panel."

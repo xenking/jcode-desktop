@@ -131,18 +131,14 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
         items.extend((1..=4).map(|number| Item::Assistant(format!("Offline reply {number}"))));
         return items;
     }
-    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("decision") {
-        return vec![Item::Tool {
-            call_id: "decision-fixture".into(),
-            name: "ask".into(),
-            input: serde_json::json!({"questions": [
-                {"question": "Which database should we use for this long-term project, and why?", "options": [{"label": "Postgres (Recommended)"}, {"label": "SQLite"}]},
-                {"question": "When should we migrate?", "options": [{"label": "Now"}, {"label": "Later"}]}
-            ]}).to_string(),
-            output: "User answers:\n1. Which database should we use for this long-term project, and why? -> Postgres (Recommended) (comment: Reliable and familiar); Other: Keep a backup\n2. When should we migrate? -> Later\n".into(),
-            done: true,
-            error: None,
-        }];
+    if crate::harness::screenshot_mode()
+        && let Some(legacy) = match fixture.as_deref() {
+            Some("decision") => Some(false),
+            Some("decision-legacy") => Some(true),
+            _ => None,
+        }
+    {
+        return ask_fixtures::answered(legacy);
     }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("background-tasks") {
         return vec![
@@ -190,6 +186,7 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
             output: String::new(),
             done: true,
             error: None,
+            ask: None,
         };
         return vec![
             Item::User("Wait for the footer and swarm workers".into()),
@@ -200,6 +197,7 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 output: "Direct message sent to session_fox_1794718668160_87674d9271df588d: Please check the compact swarm row and report back.".into(),
                 done: true,
                 error: None,
+                ask: None,
             },
             call(
                 "session_rose_1794717290730_574aea8d9f6adcc3",
@@ -284,6 +282,7 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 output: String::new(),
                 done: true,
                 error: None,
+                ask: None,
             },
         ];
     }
@@ -329,6 +328,7 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
             output: "Done".into(),
             done: index != 5,
             error: (index == 11).then(|| "Example error".into()),
+            ask: None,
         })
         .collect();
     }
@@ -341,6 +341,7 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 output: (0..150).map(|n| format!("Fixture output {n}\n")).collect(),
                 done: true,
                 error: None,
+                ask: None,
             },
             Item::User(
                 (0..100)
@@ -374,6 +375,7 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                     .join("\n"),
                 done: true,
                 error: None,
+                ask: None,
             },
             Item::Tool {
                 call_id: "expandable-error".into(),
@@ -392,6 +394,7 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                      `justification` field explaining which request it serves."
                         .into(),
                 ),
+                ask: None,
             },
         ];
     }
@@ -465,6 +468,7 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 output: "data".repeat(tokens),
                 done: true,
                 error: None,
+                ask: None,
             });
         }
         items.push(Item::Assistant("The response is complete. Its totals appear below, separate from the context and account meters.".into()));
@@ -488,6 +492,7 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 output: "Image loaded".into(),
                 done: true,
                 error: None,
+                ask: None,
             },
             Item::Image(image),
             Item::Assistant(
@@ -576,6 +581,7 @@ pub(super) fn demo_item_fixtures() -> Vec<Item> {
             output: "test result: ok. 61 passed".into(),
             done: true,
             error: None,
+            ask: None,
         },
         Item::Tool {
             call_id: "2".into(),
@@ -584,6 +590,7 @@ pub(super) fn demo_item_fixtures() -> Vec<Item> {
             output: String::new(),
             done: false,
             error: None,
+            ask: None,
         },
         // Long ANSI-colored output: exercises the size hint on the collapsed
         // row and the stripped, head-and-tail detail when expanded.
@@ -596,6 +603,7 @@ pub(super) fn demo_item_fixtures() -> Vec<Item> {
                 .collect(),
             done: true,
             error: None,
+            ask: None,
         },
         Item::Todos(TodoCardPayload {
             todos: vec![

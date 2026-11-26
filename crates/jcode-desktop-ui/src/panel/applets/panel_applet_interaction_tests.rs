@@ -28,6 +28,7 @@ fn mount_call(id: &str) -> Item {
         output: format!("Applet `{id}` revision 1."),
         done: true,
         error: None,
+        ask: None,
     }
 }
 
@@ -72,6 +73,7 @@ fn old_applets_stay_at_mount_when_one_is_updated(cx: &mut gpui::TestAppContext) 
                 output: format!("Applet `{id}` revision {rev}."),
                 done: true,
                 error: None,
+                ask: None,
             });
             panel.items.push(Item::Assistant("Next message".into()));
         }
@@ -160,6 +162,7 @@ fn session_tasks_follow_todo_events_without_applet_revision(cx: &mut gpui::TestA
                     output: output.into(),
                     error: None,
                     codemode: None,
+                    ask: None,
                 },
                 cx,
             )
@@ -272,6 +275,7 @@ fn clean_chat_paints_applet_and_answer_without_tool_log(cx: &mut gpui::TestAppCo
             output: "Selected: B".into(),
             done: true,
             error: None,
+            ask: None,
         });
         panel
     });
