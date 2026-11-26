@@ -1199,7 +1199,7 @@ fn login_method_icon(method: LoginMethod) -> gpui::AnyElement {
         .text_color(Theme::global().TEXT_DIM)
         .child(if method == LoginMethod::ApiKey {
             gpui::svg()
-                .data(include_bytes!("../../../assets/icons/key.svg") as &'static [u8])
+                .data(include_bytes!("../../../../../assets/icons/key.svg") as &'static [u8])
                 .size(px(14.))
                 .text_color(Theme::global().TEXT_DIM)
                 .into_any_element()

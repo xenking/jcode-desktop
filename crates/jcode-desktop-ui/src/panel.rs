@@ -247,7 +247,7 @@ mod image_pane_tests;
 mod image_preview;
 #[path = "panel_latest.rs"]
 mod latest;
-#[path = "panel_login.rs"]
+#[path = "panel/login/panel_login.rs"]
 mod login;
 #[path = "panel_preview.rs"]
 mod preview;
