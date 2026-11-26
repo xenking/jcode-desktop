@@ -573,6 +573,62 @@ mod tests {
         assert_eq!(limit_branch.trim(), "finish");
     }
 
+    /// A SuperWhisper stand-in: `open superwhisper://record/stop` finishes the
+    /// recording `after` seconds later by writing the next recording folder.
+    #[cfg(target_os = "macos")]
+    fn bridge_command(root: &std::path::Path, result: &str, after: u32) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let (bin, recordings) = (root.join("bin"), root.join("recordings"));
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(recordings.join("100")).unwrap();
+        let fake_open = format!(
+            "#!/bin/sh\ncase \"$*\" in *record/stop*) ( sleep {after}; mkdir -p '{r}/200'; \
+             printf '{{\"result\":\"%s\"}}' '{result}' > '{r}/200/meta.json' ) >/dev/null 2>&1 & ;; esac\n",
+            r = recordings.display(),
+        );
+        std::fs::write(bin.join("open"), fake_open).unwrap();
+        std::fs::set_permissions(bin.join("open"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = root.join("bridge.sh");
+        std::fs::write(&script, SUPERWHISPER_SCRIPT).unwrap();
+        format!(
+            "PATH='{bin}':$PATH SUPERWHISPER_APP='{app}' SUPERWHISPER_RECORDINGS='{rec}' \
+             SUPERWHISPER_STOP_GRACE=3 sh '{script}'",
+            bin = bin.display(),
+            app = root.display(),
+            rec = recordings.display(),
+            script = script.display(),
+        )
+    }
+
+    /// The whole server-side path: the configured command runs under the
+    /// dictation limit, SuperWhisper is told to stop, and a transcript that
+    /// arrives seconds after the stop is the dictation, not a timeout error.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn superwhisper_bridge_delivers_a_transcript_that_arrives_after_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let command = bridge_command(dir.path(), "everything I said", 2);
+        let text = jcode_voice::dictation::run_command(&command, 1)
+            .await
+            .expect("transcript after the stop is delivered");
+        assert_eq!(text, "everything I said");
+    }
+
+    /// When SuperWhisper saves the audio but no text, the error names the
+    /// recording so the words can be recovered from it.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn superwhisper_bridge_failure_names_the_kept_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let command = bridge_command(dir.path(), "", 1);
+        let error = jcode_voice::dictation::run_command(&command, 1)
+            .await
+            .unwrap_err()
+            .to_string();
+        let kept = dir.path().join("recordings/200");
+        assert!(error.contains(&kept.display().to_string()), "{error}");
+    }
+
     /// The owner's choice, as written by Settings, is the backend and model
     /// every dictation start uses. Keys exist for all providers, so any
     /// fallback would show up as the wrong backend.

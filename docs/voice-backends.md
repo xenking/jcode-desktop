@@ -42,7 +42,11 @@ audio spoken meanwhile is queued, so the transcript joins up without gaps. A ses
 the provider drops on its own is reopened. If the provider cannot be reached again,
 the words captured so far are still inserted and a note names the backend and the
 reason. The same holds for the external command: when `timeout_secs` is reached it is
-interrupted and whatever it already printed is used.
+interrupted (and given a minute to finish transcribing) and whatever it already printed
+is used. A config that still carries the old 90 s `timeout_secs` default is raised to 300
+once. If a live dictation fails, the microphone audio is kept as a WAV in
+`~/.jcode/voice-recovery/` and the error names the file; a dictation that succeeds
+deletes it, and unrecovered files are removed after two weeks.
 
 In the chat composer, Nari, Soniox, and Scribe show live text at the caret in `insert`
 mode. Stop voice (square button or Ctrl+Shift+V) finishes the recording and
@@ -75,8 +79,11 @@ folder in `~/Documents/superwhisper/recordings/`, and prints `meta.json`'s
 license. The square Stop voice button and Ctrl+Shift+V finish capture with
 `superwhisper://record/stop` (SuperWhisper 2.16.3 or newer). The bridge receives
 only the finished transcript, including when SuperWhisper uses a realtime model.
+The bridge finds the recordings folder from SuperWhisper's own setting
+(`~/superwhisper` on new installs, `~/Documents/superwhisper` on older ones).
 `SUPERWHISPER_RECORDINGS` and `SUPERWHISPER_TIMEOUT` (seconds, default 300)
-override the defaults. At that limit, or when interrupted, the bridge stops
+override the defaults. SuperWhisper keeps every recording's audio, so when it
+produces no text the error names the recording folder. At that limit, or when interrupted, the bridge stops
 SuperWhisper and still waits (`SUPERWHISPER_STOP_GRACE`, default 45 s) for the
 transcript instead of abandoning the recording. Desktop does not impose its own
 deadline on the bridge. Select **Use SuperWhisper** again to update an existing bridge.

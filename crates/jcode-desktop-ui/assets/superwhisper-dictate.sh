@@ -10,10 +10,19 @@
 # dictation is delivered instead of abandoned.
 # No credentials are read and nothing is sent anywhere by this script.
 set -eu
-dir="${SUPERWHISPER_RECORDINGS:-$HOME/Documents/superwhisper/recordings}"
+# SuperWhisper keeps its recordings (audio and meta.json) in the folder chosen in
+# its settings, `~/superwhisper` on new installs and `~/Documents/superwhisper`
+# on older ones.
+app_folder="$(defaults read com.superduper.superwhisper appFolderDirectory 2>/dev/null || true)"
+dir="${SUPERWHISPER_RECORDINGS:-}"
+if [ -z "$dir" ]; then
+  for candidate in "$app_folder/superwhisper/recordings" "$HOME/superwhisper/recordings" "$HOME/Documents/superwhisper/recordings"; do
+    if [ -d "$candidate" ]; then dir="$candidate"; break; fi
+  done
+fi
 timeout="${SUPERWHISPER_TIMEOUT:-300}"
 grace="${SUPERWHISPER_STOP_GRACE:-45}"
-[ -d /Applications/superwhisper.app ] || { echo "SuperWhisper is not installed" >&2; exit 1; }
+[ -d "${SUPERWHISPER_APP:-/Applications/superwhisper.app}" ] || { echo "SuperWhisper is not installed" >&2; exit 1; }
 [ -d "$dir" ] || { echo "SuperWhisper recordings folder not found: $dir" >&2; exit 1; }
 latest() { ls -1 "$dir" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1; }
 before="$(latest || true)"
@@ -37,7 +46,13 @@ finish() {
     waited=$((waited + 1))
     emit
   done
-  echo "SuperWhisper produced no transcript" >&2
+  # The audio stays in SuperWhisper's recording folder; say where, so nothing said is lost.
+  now="$(latest || true)"
+  if [ -n "$now" ] && [ "$now" != "$before" ]; then
+    echo "SuperWhisper produced no transcript. The recording is kept at $dir/$now" >&2
+  else
+    echo "SuperWhisper produced no transcript and saved no recording in $dir" >&2
+  fi
   exit 1
 }
 trap finish INT TERM
