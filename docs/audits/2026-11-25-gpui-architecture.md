@@ -20,9 +20,9 @@
 | 2. Шов `PanelItem` | частично: терминал | `bc3c83c9` | проверок вида 60 → 50; остальные виды пока внутри `Panel` |
 | 3. Дельты стрима мимо Workspace | сделано | `fbde3a50` | 12 батчей `TextDelta`: сборок Workspace и SidebarChrome 12 → 0 |
 | 4. Keymap один раз и actions | сделано | `762569b1`, `2e91a840` | тест на N активаций; сырых `keystroke.key` 49 → 27, остальные объяснены |
-| 5. `ModalLayer` | частично: 4 режима | `42a25e9e` | вход в аккаунт, resume и ошибка онбординга пока флаги |
+| 5. `ModalLayer` | частично: 4 наложения | `42a25e9e`, сверено на `8911eb50` | `/resume`, вход и ошибка онбординга замещают корень окна. Типизация корневых режимов остаётся открытой |
 | 6. Одно текстовое ядро | частично | `7c6288e9` | композер и логин на `text_field`; `CodeEditor` отдельно |
-| 7, 8. Компоненты и a11y | частично | `62467b2a` | `Pill`, `Tooltip`; мест с ролью или `aria_*` 22 → 40 |
+| 7, 8. Компоненты и a11y | частично | `62467b2a`, `fbc67e73`, `8911eb50` | Общие `Pill` и `Tooltip`; `WorkersTooltip` сохраняет составные строки. Исторический замер роли или `aria_*`: 22 → 40 |
 | 9. Файловая система вне render | сделано | `ad59d0d3` | счётчик проб ФС на кадр в тесте |
 | 10. Тема и display как globals | отменено | | смена темы редкая и уже перерисовывает все окна; 980 вызовов `Theme::global()` не окупаются |
 | 11. Общий сетевой runtime | сделано | `e7cb59e0` | один runtime на процесс вместо runtime на запрос |
@@ -198,25 +198,33 @@ Keymap это JSON-данные (136 контекстных блоков), по�
 **Проверка.** Тест: N активаций подряд не увеличивают `cx.key_bindings().borrow().bindings().len()`.
 Существующие keyboard-тесты из `KEYBOARD_AUDIT.md` должны пройти без изменений поведения.
 
-### 5. Режимы Workspace как булевы флаги, нужен ModalLayer
+### 5. Наложения и корневые режимы Workspace
 
-**Файлы:** `workspace.rs:9851-9900` (ветки render), `workspace.rs:10167-10207` (охранные условия),
-`panel.rs:1002-1004`, `panel.rs:984`, `panel.rs:7207-7228`.
+**Состояние на `8911eb50`.** Rename, folder picker, usage reset и beta notice уже используют
+`ModalLayer`. Его `show`, `hide` и `render` в `workspace/layout/chrome/modal_layer.rs` управляют
+активным view, закрытием и возвратом фокуса. `Workspace::render` в `workspace.rs` добавляет слой
+как дочерний элемент холста, но раньше возвращает один из трёх отдельных корней. Пути ниже
+относительны к `crates/jcode-desktop-ui/src/`.
 
-**Проблема.** Онбординг-ошибка, sign-in, resume, single panel, rename, folder picker, usage reset,
-beta notice, compact sidebar, overview закодированы булевыми полями и `Option`. Корневой обработчик
-клавиш проверяет восемь условий подряд. В `Panel` popover-фокус восстанавливается вручную через
-`ask_focus_return`, `composer_popover_watch`, `composer_popover_trigger`, `focus_pending`, и
-применяется внутри render.
+| Корневая поверхность | Состояние и точки входа |
+| --- | --- |
+| Ошибка запуска онбординга | `Workspace::onboarding_launch: screens::LaunchState` содержит `pending: bool` и `error: Option<String>` (`workspace/surfaces/workspace_screens.rs`). `Workspace::launch_onboarding` выставляет ошибку по завершении фонового запуска. `Workspace::render` фокусирует корень и возвращает `render_onboarding_launch_error` (`workspace/onboarding/onboarding_simulator.rs`). Ошибка блокирует прочие клавиши. Escape и кнопка возврата очищают ошибку и вызывают `focus_active`. |
+| Вход в аккаунт | `account_sign_in_visible: bool` отдельно от `account_sign_in: account_sign_in::State`. `open_account_sign_in`, `render_account_sign_in` и `finish_account_sign_in` находятся в `workspace/sidebar/accounts/workspace_account_sign_in.rs`. Ранний возврат через `voice_modal_root` (`workspace/voice/workspace_voice.rs`) сохраняет свой маршрут голосовых действий. Это не панель Accounts, которую `Panel::render` показывает через `render_login_picker`. |
+| `/resume` | Не булево поле: `resume: Option<screens::State>`. `open_resume` и `close_resume` находятся в `workspace/resume/workspace_resume.rs`, `render_resume` в `workspace_resume_view.rs` там же. Тест `search_screen_takes_the_whole_window_and_escape_restores_the_workspace` в `workspace_resume_search_tests.rs` фиксирует замещение холста и возврат по Escape. |
 
 **Как в Zed.** `workspace/src/modal_layer.rs`: `ModalView: ManagedView`, `toggle_modal::<V>()`,
 закрытие через `DismissEvent`, `on_before_dismiss`, предыдущий фокус восстанавливается слоем.
 Popover через `PopoverMenu`/`ContextMenu` из `crates/ui`, пример `examples/popover.rs`
 (`deferred` + `anchored`).
 
-**Решение.** `ModalLayer`-entity в Workspace и `PopoverLayer`-хелпер для панели. Каждый режим
-это отдельный view со своим key context и focus handle, Escape это `menu::Cancel` внутри него.
-Охранные условия корня исчезают, потому что dispatch уже ограничен фокусом.
+**Открыто.** Выделить типизированное состояние корневой поверхности вместо независимого
+флага входа и неявного приоритета веток `ошибка → вход → resume → холст`. Сохранить состояние
+скрытых поверхностей там, где они должны возобновляться, и отдельно проверить клавиатурные и
+голосовые маршруты, закрытие и восстановление фокуса. `single_panel: bool` описывает раскладку
+холста, а `LaunchState::pending` описывает фоновую операцию, не видимость окна. Последний можно
+объединить с `error` в тип результата запуска, если миграция потребует явных переходов.
+Переносить эти поверхности в слой наложений без сохранения их поведения не следует.
+Popup-фокус Panel остаётся отдельной задачей. Чистый `deslop-please` этот контракт не проверяет.
 
 **Выгода.** Locality: каждый режим целиком в своём модуле. Меньше логики фокуса в render.
 
@@ -263,6 +271,19 @@ Accessibility и подсказки клавиш нельзя добавить �
 role и aria label, keybinding hint. Переводить экраны постепенно.
 
 **Выгода.** Leverage для дизайн-правил и accessibility. Меньше кода в 130k-строчном крейте.
+
+**Миграции на `8911eb50`.** `fbc67e73` удалил `HeaderTooltip`: действия закрепления и открытия
+задач в `workspace/sidebar/chrome/sidebar_view.rs`, а также подсказки сброса лимита и перехода к
+ценам в `workspace/controls/workspace_settings_view.rs` используют `Tooltip::text`. `8911eb50`
+удалил `VoiceTooltip` и `SpeedTooltip`, сохранив их оформление через `Tooltip::header_text`
+в `jcode-desktop-ui-core/src/components/tooltip.rs`. Голосовые вызовы сохраняют селектор
+`voice-shortcut-tooltip`, а подсказка скорости в `panel/composer/panel_composer.rs` по-прежнему
+вычисляет актуальный текст при наведении.
+
+`WorkersTooltip` в `workspace/sidebar/chrome/sidebar_header.rs` оставлен специализированным:
+строка отдельно раскладывает имя, подпись модели и цветной индикатор. `Tooltip::rows` принимает
+плоские текстовые строки и не воспроизводит такую разметку. Другие специализированные
+подсказки и миграция компонентов остаются открытыми.
 
 ### 8. Accessibility практически отсутствует
 
