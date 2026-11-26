@@ -21,7 +21,7 @@ pub(super) fn fixture_image() -> TranscriptImage {
     TranscriptImage::new(
         "image/png".into(),
         base64::engine::general_purpose::STANDARD
-            .encode(include_bytes!("../../../assets/previews/image-preview.png")),
+            .encode(include_bytes!("../../../../../assets/previews/image-preview.png")),
         Some("Image preview test chart".into()),
     )
 }

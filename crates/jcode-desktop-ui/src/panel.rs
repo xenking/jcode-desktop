@@ -236,14 +236,14 @@ mod mode_switch;
 pub(crate) mod expandable;
 #[path = "panel_flicker.rs"]
 mod flicker;
-#[path = "panel_gallery.rs"]
+#[path = "panel/images/panel_gallery.rs"]
 mod gallery;
-#[path = "panel_image_pane.rs"]
+#[path = "panel/images/panel_image_pane.rs"]
 mod image_pane;
 #[cfg(test)]
-#[path = "panel_image_pane_tests.rs"]
+#[path = "panel/images/panel_image_pane_tests.rs"]
 mod image_pane_tests;
-#[path = "panel_image_preview.rs"]
+#[path = "panel/images/panel_image_preview.rs"]
 mod image_preview;
 #[path = "panel_latest.rs"]
 mod latest;
@@ -1785,10 +1785,10 @@ mod row_state_tests;
 #[path = "panel_fresh_session_tests.rs"]
 mod fresh_session_tests;
 #[cfg(test)]
-#[path = "panel_image_flicker_tests.rs"]
+#[path = "panel/images/panel_image_flicker_tests.rs"]
 mod image_flicker_tests;
 #[cfg(test)]
-#[path = "panel_image_transcript_tests.rs"]
+#[path = "panel/images/panel_image_transcript_tests.rs"]
 mod image_transcript_tests;
 #[cfg(test)]
 #[path = "panel_startup_lifecycle_tests.rs"]
