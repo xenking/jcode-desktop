@@ -83,9 +83,9 @@ mod events;
 mod rows;
 #[path = "panel_construct.rs"]
 mod construct;
-#[path = "panel_history_load.rs"]
+#[path = "panel/history/panel_history_load.rs"]
 mod history_load;
-#[path = "panel_scroll.rs"]
+#[path = "panel/scroll/panel_scroll.rs"]
 mod scroll;
 #[path = "panel/composer/panel_draft.rs"]
 mod draft;
@@ -95,7 +95,7 @@ mod pickers;
 mod status;
 #[path = "panel_focus.rs"]
 mod focus;
-#[path = "panel_live.rs"]
+#[path = "panel/activity/panel_live.rs"]
 pub(crate) mod live;
 use live::Live;
 #[path = "panel_clean_chat.rs"]
@@ -141,7 +141,7 @@ mod file_drop_tests;
 mod memory_tests;
 
 #[cfg(test)]
-#[path = "panel_provisional_history_tests.rs"]
+#[path = "panel/history/panel_provisional_history_tests.rs"]
 mod provisional_history_tests;
 
 #[path = "panel_reveal.rs"]
@@ -163,25 +163,25 @@ mod tool_output;
 #[path = "panel/transcript/cards/panel_codemode_card.rs"]
 mod codemode_card;
 
-#[path = "panel_compaction.rs"]
+#[path = "panel/history/panel_compaction.rs"]
 pub(crate) mod compaction;
 
-#[path = "panel_compaction_render.rs"]
+#[path = "panel/history/panel_compaction_render.rs"]
 mod compaction_render;
-#[path = "panel_history_paging.rs"]
+#[path = "panel/history/panel_history_paging.rs"]
 mod history_paging;
-#[path = "panel_history_items.rs"]
+#[path = "panel/history/panel_history_items.rs"]
 mod history_items;
 
-#[path = "panel_activity.rs"]
+#[path = "panel/activity/panel_activity.rs"]
 mod activity;
-#[path = "panel_activity_state.rs"]
+#[path = "panel/activity/panel_activity_state.rs"]
 mod activity_state;
-#[path = "panel_scroll_motion.rs"]
+#[path = "panel/scroll/panel_scroll_motion.rs"]
 mod scroll_motion;
-#[path = "panel_steady_activity.rs"]
+#[path = "panel/activity/panel_steady_activity.rs"]
 mod steady_activity;
-#[path = "panel_tail_glide.rs"]
+#[path = "panel/scroll/panel_tail_glide.rs"]
 mod tail_glide;
 use scroll_motion::WheelGlide;
 #[path = "panel/transcript/cards/panel_agent_message.rs"]
@@ -192,9 +192,9 @@ mod ask;
 mod ask_images;
 #[path = "panel/transcript/cards/panel_background_jobs.rs"]
 mod background_jobs;
-#[path = "panel_cache_miss.rs"]
+#[path = "panel/activity/panel_cache_miss.rs"]
 mod cache_miss;
-#[path = "panel_cache_timer.rs"]
+#[path = "panel/activity/panel_cache_timer.rs"]
 pub(crate) mod cache_timer;
 #[path = "panel/composer/panel_composer.rs"]
 mod composer;
@@ -234,7 +234,7 @@ mod mode_switch;
 // prompts, notices, background tasks and swarm lines.
 #[path = "panel/transcript/tools/expandable.rs"]
 pub(crate) mod expandable;
-#[path = "panel_flicker.rs"]
+#[path = "panel/scroll/panel_flicker.rs"]
 mod flicker;
 #[path = "panel/images/panel_gallery.rs"]
 mod gallery;
@@ -245,7 +245,7 @@ mod image_pane;
 mod image_pane_tests;
 #[path = "panel/images/panel_image_preview.rs"]
 mod image_preview;
-#[path = "panel_latest.rs"]
+#[path = "panel/history/panel_latest.rs"]
 mod latest;
 #[path = "panel/login/panel_login.rs"]
 mod login;
@@ -258,18 +258,18 @@ mod queue;
 #[path = "panel/recovery/panel_recovery.rs"]
 mod recovery;
 #[cfg(test)]
-#[path = "panel_scroll_momentum_tests.rs"]
+#[path = "panel/scroll/panel_scroll_momentum_tests.rs"]
 mod scroll_momentum_tests;
 #[path = "panel_shortcuts.rs"]
 pub(crate) mod shortcuts;
 #[path = "panel_startup.rs"]
 mod startup;
-#[path = "panel_stop_reason.rs"]
+#[path = "panel/activity/panel_stop_reason.rs"]
 mod stop_reason;
-#[path = "panel_stream_reveal.rs"]
+#[path = "panel/scroll/panel_stream_reveal.rs"]
 mod stream_reveal;
 #[cfg(test)]
-#[path = "panel_stream_scroll_tests.rs"]
+#[path = "panel/scroll/panel_stream_scroll_tests.rs"]
 mod stream_scroll_tests;
 pub use startup::StartupLayout;
 #[path = "panel/applets/panel_applet.rs"]
