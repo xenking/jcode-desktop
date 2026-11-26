@@ -132,7 +132,8 @@ pub(super) fn build(
                     )));
                 }
             }
-            "swarm_worker_notice" if !message.content.trim().is_empty() => {
+            // Setting changes share the compact notice row.
+            "swarm_worker_notice" | "setting_change" if !message.content.trim().is_empty() => {
                 items.push(Item::SwarmWorkerNotice(message.content));
             }
             // A stored automatic memory injection. Like the compaction

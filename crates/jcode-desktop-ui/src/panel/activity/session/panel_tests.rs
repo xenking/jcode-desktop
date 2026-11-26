@@ -1602,6 +1602,22 @@ fn swarm_worker_notices_remain_compact_transcript_rows(cx: &mut gpui::TestAppCon
 }
 
 #[gpui::test]
+fn setting_changes_reload_from_history_as_notice_rows(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("setting-history".into(), None, None, crate::harness::spawn_inert(), cx)
+    });
+    panel.update(vcx, |panel, cx| {
+        let history: jcode_sdk::HistoryMessage = serde_json::from_value(serde_json::json!({
+            "role": "setting_change", "content": "Model: a → b (you chose it)", "timestamp_ms": 10
+        }))
+        .unwrap();
+        panel.load_history(vec![history], vec![], cx);
+        assert!(panel.items.iter().any(|item| matches!(item, Item::SwarmWorkerNotice(text)
+            if text == "Model: a → b (you chose it)")));
+    });
+}
+
+#[gpui::test]
 fn queued_compaction_settles_one_row_with_result_or_error(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace =
