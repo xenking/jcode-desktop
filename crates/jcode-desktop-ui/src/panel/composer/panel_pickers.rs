@@ -20,7 +20,7 @@ impl Panel {
                 PickerKind::Model => "Search models…",
                 PickerKind::Effort => "Search effort…",
                 PickerKind::Mode => "Search modes and skills • Tab toggles • Enter closes",
-                PickerKind::Context => "Search files, skills and context…",
+                PickerKind::Context => "Search skills and context…",
             };
             let mut input = PromptInput::new(cx, placeholder, move |content, _, _, app| {
                 if let Some(panel) = submit.upgrade() {

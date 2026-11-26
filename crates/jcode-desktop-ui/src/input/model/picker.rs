@@ -743,57 +743,6 @@ impl PromptInput {
         (icon + text, any_icon)
     }
 
-    /// The focused grid row's whole description, shown under the list when the
-    /// row cannot fit it on one line. Hover moves the focus, so the pointer
-    /// reads it the same way the keyboard does.
-    pub(super) fn picker_detail(
-        &self,
-        suggestions: &[CommandSuggestion],
-        window: &Window,
-    ) -> Option<gpui::Div> {
-        let row = suggestions.get(self.command_selection)?;
-        let text = grid_description(row)?;
-        let row_width = self
-            .composer_bounds
-            .get()
-            .map_or(window.viewport_size().width, |bounds| bounds.size.width);
-        let (name_column, _) = self.grid_name_column(window, row_width);
-        // Row padding, scrollbar gutter, the check mark, the column gaps and,
-        // on the rows that offer one, the focused row's key hint.
-        let hint = if row.context_action.is_some() && row_width >= px(340.) {
-            GRID_GAP + 120.
-        } else {
-            0.
-        };
-        let reserved = name_column + px(2. * 12. + 8. + 8. + 14. + 2. * GRID_GAP + hint);
-        let measured = window
-            .text_system()
-            .shape_line(
-                text.clone().into(),
-                px(GRID_TEXT),
-                &[gpui::TextRun {
-                    len: text.len(),
-                    font: gpui::font(Theme::global().FONT_UI),
-                    ..Default::default()
-                }],
-                None,
-            )
-            .width;
-        (measured > row_width - reserved).then(|| {
-            div()
-                .debug_selector(|| "picker-detail".into())
-                .flex_none()
-                .px_3()
-                .py_2()
-                .border_t_1()
-                .border_color(Theme::global().PANEL_BORDER)
-                .text_size(px(11.0))
-                .text_color(Theme::global().TEXT_DIM)
-                .line_clamp(4)
-                .child(text)
-        })
-    }
-
     pub(super) fn render_command_row(
         &self,
         index: usize,
@@ -806,8 +755,6 @@ impl PromptInput {
             .get()
             .map_or(window.viewport_size().width, |bounds| bounds.size.width);
         let compact = row_width < px(430.);
-        // Too narrow for the key hint to share a row with a description.
-        let tiny = row_width < px(340.);
         let grid_help = grid_description(&suggestion);
         let grid = grid_help.is_some();
         let (name_column, icon_slot) = grid
@@ -839,26 +786,6 @@ impl PromptInput {
                 Action::Attach => Some(crate::mode_catalog::ModeIcon::Document),
                 Action::Skill(_) => None,
             });
-        let alternate_key = if cfg!(target_os = "macos") {
-            "⌥↵"
-        } else {
-            "Alt+Enter"
-        };
-        let action_hint = match &suggestion.context_action {
-            Some(Action::File(_)) if selected && !compact => {
-                Some(format!("{alternate_key} Include contents"))
-            }
-            Some(Action::Skill(name)) if selected && !tiny && name != "off" => {
-                let pin = match (active_mode, compact) {
-                    (true, _) => "Unpin",
-                    (false, true) => "Pin",
-                    (false, false) => "Pin for session",
-                };
-                let once = if compact { "Use once" } else { "Next message only" };
-                Some(format!("↵ {pin} · {alternate_key} {once}"))
-            }
-            _ => None,
-        };
         let mode_target = mode.map(str::to_owned);
         let logo_svg = |provider: &str, fallback: &str, size: f32, color: gpui::Rgba| {
             match crate::accounts::logo(provider) {
@@ -894,6 +821,15 @@ impl PromptInput {
                 ))
         });
         let header = suggestion.header.clone().map(|header| {
+            if header.is_empty() {
+                // A bare divider between groups, no label.
+                return div()
+                    .debug_selector(move || format!("picker-separator-{index}"))
+                    .h(px(1.0))
+                    .mx_3()
+                    .my_1p5()
+                    .bg(Theme::global().PANEL_BORDER);
+            }
             let faint = Theme::global().TEXT_FAINT;
             let base = div()
                 .debug_selector(move || format!("model-picker-group-{index}"))
@@ -1050,7 +986,14 @@ impl PromptInput {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .child(icon.render(16.0, ink))
+                                        .child(icon.render(
+                                            16.0,
+                                            if mode.is_some() && !selected {
+                                                icon.tint(Theme::global())
+                                            } else {
+                                                ink
+                                            },
+                                        ))
                                 }),
                             )
                             .font_family(if model.is_some() || speed.is_some() || stage_row {
@@ -1122,9 +1065,6 @@ impl PromptInput {
                                 Theme::global().TEXT_FAINT
                             })
                             .child(suggestion.help)
-                    }))
-                    .children(action_hint.map(|hint| {
-                        div().flex_none().text_size(px(10.)).child(hint)
                     }))
                     .children(
                         model

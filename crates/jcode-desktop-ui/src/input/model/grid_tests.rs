@@ -88,21 +88,25 @@ fn descriptions_start_at_one_x_on_single_lines_at_every_width(cx: &mut gpui::Tes
 }
 
 #[gpui::test]
-fn the_focused_rows_full_text_is_shown_only_when_the_row_cannot_hold_it(
-    cx: &mut gpui::TestAppContext,
-) {
-    // Row 0 carries a three-line description, row 1 a short one.
-    let (_input, vcx) = open_picker(cx, 420., 0);
-    let detail = vcx
-        .debug_bounds("picker-detail")
-        .expect("a truncated focused row opens the detail area");
-    let list = vcx.debug_bounds("slash-command-scroll").unwrap();
-    assert!(detail.top() >= list.bottom(), "{detail:?} under {list:?}");
-    let (_input, vcx) = open_picker(cx, 420., 1);
-    assert!(
-        vcx.debug_bounds("picker-detail").is_none(),
-        "a description that fits needs no detail area"
-    );
+fn moving_the_selection_never_resizes_or_moves_the_list(cx: &mut gpui::TestAppContext) {
+    // Row 0 carries a long description: no detail pane may open under it, and
+    // no row may swap its text for a key hint when it takes the selection.
+    let layout = |cx: &mut gpui::TestAppContext, selected: usize| {
+        let (_input, vcx) = open_picker(cx, 420., selected);
+        assert!(vcx.debug_bounds("picker-detail").is_none());
+        let mut bounds = vec![vcx.debug_bounds("slash-command-scroll").unwrap()];
+        for index in 0..5 {
+            for selector in ["slash-command-row", "picker-help", "picker-name"] {
+                let name = format!("{selector}-{index}");
+                bounds.push(vcx.debug_bounds(Box::leak(name.into_boxed_str())).unwrap());
+            }
+        }
+        bounds
+    };
+    let first = layout(cx, 0);
+    for selected in 1..5 {
+        assert_eq!(first, layout(cx, selected), "selection {selected} re-laid the list out");
+    }
 }
 
 #[gpui::test]

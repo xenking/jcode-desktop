@@ -369,6 +369,46 @@ mod tests {
     }
 
     #[gpui::test]
+    fn plus_menu_puts_search_first_then_modes_then_tools_then_skills(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::input::bind_keys);
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        vcx.run_until_parked();
+        panel.update(vcx, |panel, cx| {
+            panel.skills = vec![
+                ("selfdev".into(), "Fork workflow".into()),
+                ("swarm".into(), "Coordinate workers".into()),
+                ("verify-jcode".into(), "Drive an isolated instance".into()),
+            ];
+            panel.pinned_modes = vec!["selfdev".into()];
+            panel.sync_mode_menu(cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        panel.update(vcx, |panel, cx| panel.open_picker_search(PickerKind::Context, cx));
+        vcx.run_until_parked();
+        let values = panel.read_with(vcx, |panel, cx| {
+            let (_, search) = panel.picker_search.as_ref().expect("menu open");
+            search.read(cx).command_suggestion_values()
+        });
+        assert_eq!(
+            values,
+            ["/mode selfdev", "/mode swarm", "/mode off", "Attach…", "/mode verify-jcode"],
+            "active and other modes, a separator, the tools, then the long skill list"
+        );
+        let field = vcx.debug_bounds("picker-search-field").expect("search sits in the menu");
+        let menu = vcx.debug_bounds("slash-command-overlay").expect("menu");
+        let first = vcx.debug_bounds("slash-command-row-0").expect("first row");
+        let attach = vcx.debug_bounds("slash-command-row-3").expect("attach row");
+        let divider = vcx.debug_bounds("picker-separator-3").expect("a separator before the tools");
+        assert!(field.top() >= menu.top() && field.bottom() <= first.top(), "{field:?} {first:?}");
+        assert!(divider.bottom() <= attach.top() && divider.top() >= first.bottom());
+        assert!(
+            vcx.debug_bounds("picker-search").is_some_and(|bar| bar.size.height < px(8.)),
+            "no second search box under the menu"
+        );
+    }
+
+    #[gpui::test]
     fn plus_keeps_the_pinned_skill_icon_and_opens_the_context_picker(cx: &mut gpui::TestAppContext) {
         cx.update(crate::input::bind_keys);
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
@@ -403,9 +443,9 @@ mod tests {
         vcx.simulate_click(pill.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         let poteto = vcx
-            .debug_bounds("mode-picker-icon-crown-1")
+            .debug_bounds("mode-picker-icon-crown-0")
             .expect("poteto has a rendered crown icon, not the frontmatter text");
-        for selector in ["mode-picker-icon-selfdev-2", "mode-picker-icon-trash-3"] {
+        for selector in ["mode-picker-icon-selfdev-1", "mode-picker-icon-trash-2"] {
             let icon = vcx.debug_bounds(selector).expect("rendered row icon");
             assert_eq!(icon.origin.x, poteto.origin.x);
             assert_eq!(icon.size, poteto.size);
@@ -414,10 +454,10 @@ mod tests {
             let (kind, search) = panel.picker_search.as_ref().expect("menu open");
             assert_eq!(*kind, PickerKind::Context);
             let rows = search.read(cx).command_suggestion_values();
-            assert_eq!(rows, ["Attach…", "/mode poteto-mode", "/mode selfdev", "/mode off"]);
+            assert_eq!(rows, ["/mode poteto-mode", "/mode selfdev", "/mode off", "Attach…"]);
             assert_eq!(
                 search.read(cx).selected_command_value().as_deref(),
-                Some("Attach…")
+                Some("/mode poteto-mode")
             );
         });
         panel.update(vcx, |panel, cx| {

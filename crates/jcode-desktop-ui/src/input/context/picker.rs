@@ -172,8 +172,30 @@ impl PromptInput {
         let mut rows = Vec::new();
         if !files_only {
             let query = query.trim_start_matches('/').trim().to_lowercase();
+            let mut in_skills = false;
+            let (skills, mut head): (Vec<_>, Vec<_>) = mode_suggestions(
+                &format!("/mode {query}"),
+                &self.command_skills,
+                &self.current_modes,
+                &self.mode_catalog,
+            )
+            .into_iter()
+            .map(|mut row| {
+                row.context_action = row
+                    .value
+                    .strip_prefix("/mode ")
+                    .map(|name| Action::Skill(name.to_owned()));
+                row
+            })
+            .partition(|row| {
+                if let Some(header) = &row.header {
+                    in_skills = header == "Skills";
+                }
+                in_skills
+            });
+            let mut tools = Vec::new();
             if "attach images".contains(&query) {
-                rows.push(row(
+                tools.push(row(
                     "Attach…".into(),
                     "Choose files or images".into(),
                     None,
@@ -181,29 +203,20 @@ impl PromptInput {
                 ));
             }
             if picker.root.is_some() && "files workspace project".contains(&query) {
-                rows.push(row(
+                tools.push(row(
                     "Files".into(),
                     "Search this workspace".into(),
                     None,
                     Action::Browse,
                 ));
             }
-            rows.extend(
-                mode_suggestions(
-                    &format!("/mode {query}"),
-                    &self.command_skills,
-                    &self.current_modes,
-                    &self.mode_catalog,
-                )
-                .into_iter()
-                .map(|mut row| {
-                    row.context_action = row
-                        .value
-                        .strip_prefix("/mode ")
-                        .map(|name| Action::Skill(name.to_owned()));
-                    row
-                }),
-            );
+            // Modes first, then a separator before the tools and the long skill list.
+            if let Some(first) = tools.first_mut().filter(|_| !head.is_empty()) {
+                first.header = Some(String::new());
+            }
+            head.extend(tools);
+            rows.extend(head);
+            rows.extend(skills);
         }
         if (files_only || !query.is_empty())
             && let (Some(root), Some(index)) = (&picker.root, &picker.index)

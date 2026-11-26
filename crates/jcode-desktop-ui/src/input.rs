@@ -1535,7 +1535,122 @@ impl Render for PromptInput {
                 let _ = input.update(cx, |_, cx| cx.notify());
             });
         }
-        let picker_detail = self.picker_detail(&suggestions, window);
+        // The standalone context picker keeps its search field at the top of
+        // the menu panel, not in a box of its own under it.
+        let search_hosted = self.standalone_context();
+        let mut editor_row = Some(div()
+            .w_full()
+            .flex()
+            .items_start()
+            .px_4()
+            .py_2()
+            .when(self.compact_padding, |el| el.py(px(3.)))
+            .text_size(px(14.0))
+            .when(spacious, |el| {
+                // One line of 16px text plus padding.
+                el.min_h(px(SPACIOUS_MIN_HEIGHT))
+                    .px_4()
+                    .py_4()
+                    .text_size(px(16.0))
+            })
+            .when(self.trailing_inset > 0., |el| {
+                el.pr(px(self.trailing_inset))
+            })
+            .child(
+                div()
+                    .id("prompt-editor")
+                    .debug_selector(|| "prompt-editor".into())
+                    .flex_1()
+                    .min_w_0()
+                    .max_h(editor_height)
+                    .overflow_y_scroll()
+                    .track_scroll(&self.editor_scroll)
+                    .on_scroll_wheel(cx.listener(
+                        |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                            if this.compact_padding {
+                                let delta = event.delta.pixel_delta(window.line_height()).y;
+                                let before = this.editor_scroll.offset().y - delta;
+                                let max = this.editor_scroll.max_offset().y;
+                                if (delta < px(0.) && before > -max)
+                                    || (delta > px(0.) && before < px(0.))
+                                {
+                                    cx.stop_propagation();
+                                }
+                            } else {
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
+                    .text_color(Theme::global().TEXT)
+                    .child(
+                        div()
+                            .relative()
+                            .child(TextElement { input: cx.entity() })
+                            .children(self.chip_positions.iter().filter_map(
+                                |(index, bounds)| {
+                                    let attachment = self.attachments.get(*index)?;
+                                    let index = *index;
+                                    let chip = crate::image_chip::chip_with_label(
+                                        match &attachment.payload {
+                                            AttachmentPayload::Image {
+                                                preview, ..
+                                            } => Some(preview.clone()),
+                                            AttachmentPayload::Text(_) | AttachmentPayload::Context(_) => None,
+                                            AttachmentPayload::File { image, .. }
+                                            | AttachmentPayload::Queued {
+                                                preview: image,
+                                                ..
+                                            } => image
+                                                .as_ref()
+                                                .map(|image| image.preview.clone()),
+                                        },
+                                        image_chip_numbers[index].map_or_else(
+                                            || crate::image_chip::label(&attachment.label),
+                                            crate::image_chip::numbered_label,
+                                        ),
+                                        "composer-image-chip",
+                                        "composer-image-thumbnail",
+                                        "composer-image-label",
+                                    )
+                                    .absolute()
+                                    .left(bounds.origin.x)
+                                    .top(bounds.origin.y)
+                                    .w(bounds.size.width)
+                                    .h(bounds.size.height);
+                                    let chip = if matches!(
+                                        attachment.payload,
+                                        AttachmentPayload::Image { .. }
+                                            | AttachmentPayload::File {
+                                                image: Some(_),
+                                                ..
+                                            }
+                                            | AttachmentPayload::Text(_)
+                                            | AttachmentPayload::Context(DraftContext::File { .. })
+                                    ) {
+                                        crate::keyboard::button(
+                                            chip.id(("composer-attachment", index)),
+                                        )
+                                        .on_click(cx.listener(
+                                            move |this, event, window, cx| {
+                                                if matches!(
+                                                    event,
+                                                    gpui::ClickEvent::Keyboard(_)
+                                                ) {
+                                                    this.activate_attachment(
+                                                        index, window, cx,
+                                                    );
+                                                }
+                                            },
+                                        ))
+                                        .into_any_element()
+                                    } else {
+                                        chip.into_any_element()
+                                    };
+                                    Some(chip)
+                                },
+                            )),
+                    ),
+            ),);
         let attachment_overlay = self.render_paste_preview(window, cx);
         div()
             .debug_selector(|| "prompt-input".into())
@@ -1592,6 +1707,18 @@ impl Render for PromptInput {
                                 .bg(Theme::global().HEADER_BG)
                                 .shadow_lg()
                                 .occlude()
+                                .children(search_hosted.then(|| editor_row.take()).flatten().map(|row| {
+                                    div()
+                                        .debug_selector(|| "picker-search-field".into())
+                                        .flex_none()
+                                        .w_full()
+                                        .cursor(CursorStyle::IBeam)
+                                        .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+                                        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+                                        .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+                                        .on_mouse_move(cx.listener(Self::on_mouse_move))
+                                        .child(row)
+                                }))
                                 .child(
                                     div()
                                         .relative()
@@ -1669,8 +1796,7 @@ impl Render for PromptInput {
                                             &self.command_scroll,
                                             "slash-command-scrollbar",
                                         )),
-                                )
-                                .children(picker_detail),
+                                ),
                             px(4.0 + 6.0 * (1.0 - menu_progress)),
                         )
                         .dismiss_outside(self.on_picker_outside.clone()),
@@ -1749,9 +1875,9 @@ impl Render for PromptInput {
             .w_full()
             .min_w_0()
             .flex_none()
-            .when(self.chrome, |el| el.bg(Theme::global().INPUT_BG))
+            .when(self.chrome && !search_hosted, |el| el.bg(Theme::global().INPUT_BG))
             .border_1()
-            .border_color(if !self.chrome {
+            .border_color(if !self.chrome || search_hosted {
                 gpui::transparent_black().into()
             } else if focused {
                 Theme::global().PANEL_BORDER_FOCUS
@@ -1787,121 +1913,7 @@ impl Render for PromptInput {
                         .child("Prompt stashed · Ctrl+S to restore"),
                 )
             })
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .items_start()
-                    .px_4()
-                    .py_2()
-                    .when(self.compact_padding, |el| el.py(px(3.)))
-                    .text_size(px(14.0))
-                    .when(spacious, |el| {
-                        // One line of 16px text plus padding.
-                        el.min_h(px(SPACIOUS_MIN_HEIGHT))
-                            .px_4()
-                            .py_4()
-                            .text_size(px(16.0))
-                    })
-                    .when(self.trailing_inset > 0., |el| {
-                        el.pr(px(self.trailing_inset))
-                    })
-                    .child(
-                        div()
-                            .id("prompt-editor")
-                            .debug_selector(|| "prompt-editor".into())
-                            .flex_1()
-                            .min_w_0()
-                            .max_h(editor_height)
-                            .overflow_y_scroll()
-                            .track_scroll(&self.editor_scroll)
-                            .on_scroll_wheel(cx.listener(
-                                |this, event: &gpui::ScrollWheelEvent, window, cx| {
-                                    if this.compact_padding {
-                                        let delta = event.delta.pixel_delta(window.line_height()).y;
-                                        let before = this.editor_scroll.offset().y - delta;
-                                        let max = this.editor_scroll.max_offset().y;
-                                        if (delta < px(0.) && before > -max)
-                                            || (delta > px(0.) && before < px(0.))
-                                        {
-                                            cx.stop_propagation();
-                                        }
-                                    } else {
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .text_color(Theme::global().TEXT)
-                            .child(
-                                div()
-                                    .relative()
-                                    .child(TextElement { input: cx.entity() })
-                                    .children(self.chip_positions.iter().filter_map(
-                                        |(index, bounds)| {
-                                            let attachment = self.attachments.get(*index)?;
-                                            let index = *index;
-                                            let chip = crate::image_chip::chip_with_label(
-                                                match &attachment.payload {
-                                                    AttachmentPayload::Image {
-                                                        preview, ..
-                                                    } => Some(preview.clone()),
-                                                    AttachmentPayload::Text(_) | AttachmentPayload::Context(_) => None,
-                                                    AttachmentPayload::File { image, .. }
-                                                    | AttachmentPayload::Queued {
-                                                        preview: image,
-                                                        ..
-                                                    } => image
-                                                        .as_ref()
-                                                        .map(|image| image.preview.clone()),
-                                                },
-                                                image_chip_numbers[index].map_or_else(
-                                                    || crate::image_chip::label(&attachment.label),
-                                                    crate::image_chip::numbered_label,
-                                                ),
-                                                "composer-image-chip",
-                                                "composer-image-thumbnail",
-                                                "composer-image-label",
-                                            )
-                                            .absolute()
-                                            .left(bounds.origin.x)
-                                            .top(bounds.origin.y)
-                                            .w(bounds.size.width)
-                                            .h(bounds.size.height);
-                                            let chip = if matches!(
-                                                attachment.payload,
-                                                AttachmentPayload::Image { .. }
-                                                    | AttachmentPayload::File {
-                                                        image: Some(_),
-                                                        ..
-                                                    }
-                                                    | AttachmentPayload::Text(_)
-                                                    | AttachmentPayload::Context(DraftContext::File { .. })
-                                            ) {
-                                                crate::keyboard::button(
-                                                    chip.id(("composer-attachment", index)),
-                                                )
-                                                .on_click(cx.listener(
-                                                    move |this, event, window, cx| {
-                                                        if matches!(
-                                                            event,
-                                                            gpui::ClickEvent::Keyboard(_)
-                                                        ) {
-                                                            this.activate_attachment(
-                                                                index, window, cx,
-                                                            );
-                                                        }
-                                                    },
-                                                ))
-                                                .into_any_element()
-                                            } else {
-                                                chip.into_any_element()
-                                            };
-                                            Some(chip)
-                                        },
-                                    )),
-                            ),
-                    ),
-            )
+            .when(!search_hosted, |el| el.children(editor_row.take()))
             .when(show_resize, |el| {
                 el.child(self.render_editor_resize(window, cx))
             })

@@ -33,6 +33,22 @@ macro_rules! mode_icons {
                 match self { $(Self::$variant => $name,)* }
             }
 
+            /// The icon's own colour in a picker row, from the active palette.
+            pub(crate) fn tint(self, theme: &crate::theme::Palette) -> Rgba {
+                match self {
+                    Self::Selfdev => theme.CODE_FUNCTION,
+                    Self::Swarm => theme.CODE_KEYWORD,
+                    Self::Crown => theme.WARN,
+                    Self::Moon => theme.CODE_TYPE,
+                    Self::Trash => theme.ERROR,
+                    Self::Todo | Self::Check => theme.OK,
+                    Self::Pencil => theme.CODE_STRING,
+                    Self::Cloud | Self::Monitor => theme.CODE_FUNCTION,
+                    Self::Search | Self::Document | Self::Book => theme.CODE_CONSTANT,
+                    Self::Terminal | Self::Star | Self::Generic => theme.TEXT_DIM,
+                }
+            }
+
             pub(crate) fn render(self, size: f32, ink: Rgba) -> Svg {
                 let data = match self {
                     $(Self::$variant => include_bytes!(concat!("../../../../../../assets/icons/", $path)).as_slice(),)*
