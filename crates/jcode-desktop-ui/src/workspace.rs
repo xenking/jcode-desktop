@@ -35,9 +35,9 @@ mod side_panel;
 
 #[path = "workspace/surfaces/workspace_screens.rs"]
 pub(crate) mod screens;
-#[path = "workspace_resume.rs"]
+#[path = "workspace/resume/workspace_resume.rs"]
 pub(crate) mod resume;
-#[path = "workspace_resume_view.rs"]
+#[path = "workspace/resume/workspace_resume_view.rs"]
 mod resume_view;
 
 #[path = "workspace/controls/workspace_menu.rs"]
@@ -76,7 +76,7 @@ mod strip_gesture;
 mod strip_geometry;
 #[path = "workspace/sidebar/catalog/workspace_sidebar_sessions.rs"]
 mod sidebar_sessions;
-#[path = "workspace_working_dirs.rs"]
+#[path = "workspace/directories/workspace_working_dirs.rs"]
 mod working_dirs;
 use snapshot::*;
 pub use snapshot::WorkspaceSnapshot;
@@ -100,7 +100,7 @@ mod changelog_panel;
 #[path = "workspace/surfaces/workspace_publish.rs"]
 mod publish_panel;
 
-#[path = "workspace_switch_directory.rs"]
+#[path = "workspace/directories/workspace_switch_directory.rs"]
 mod switch_directory;
 
 #[path = "workspace_responsive.rs"]
@@ -245,26 +245,26 @@ mod login_rows;
 #[path = "workspace_usage_reset.rs"]
 mod usage_reset;
 
-#[path = "workspace_rename.rs"]
+#[path = "workspace/directories/workspace_rename.rs"]
 mod rename;
 
-#[path = "workspace_pin.rs"]
+#[path = "workspace/directories/workspace_pin.rs"]
 mod pin;
 
-#[path = "workspace_default_directory.rs"]
+#[path = "workspace/directories/workspace_default_directory.rs"]
 mod default_directory;
-#[path = "workspace_folder_picker.rs"]
+#[path = "workspace/directories/workspace_folder_picker.rs"]
 mod folder_picker;
 use folder_picker::FolderPicker;
 #[cfg(test)]
-#[path = "workspace_default_directory_tests.rs"]
+#[path = "workspace/directories/workspace_default_directory_tests.rs"]
 mod default_directory_tests;
 #[cfg(test)]
 #[path = "workspace_modal_tests.rs"]
 mod modal_tests;
 
 #[cfg(test)]
-#[path = "workspace_resume_search_tests.rs"]
+#[path = "workspace/resume/workspace_resume_search_tests.rs"]
 mod resume_search_tests;
 
 // Actions that panels dispatch to the workspace live in a leaf module so the
@@ -355,7 +355,7 @@ const FOLDER_CONTENT_INSET: f32 = 32.0;
 const FOLDER_CONNECTOR_WIDTH: f32 = 0.0;
 const FOLDER_RIGHT_MARGIN: f32 = 0.0;
 
-#[path = "folder_surface.rs"]
+#[path = "workspace/directories/folder_surface.rs"]
 mod folder_surface;
 
 #[path = "live_tabs.rs"]

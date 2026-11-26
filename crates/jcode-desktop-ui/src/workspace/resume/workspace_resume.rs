@@ -12,7 +12,7 @@ use crate::global_search::{self, Effect, PickRow};
 use crate::panel::PreviewScroll;
 use std::time::Instant;
 
-pub(super) const RESUME_ARROW: &[u8] = include_bytes!("../../../assets/icons/arrow-up.svg");
+pub(super) const RESUME_ARROW: &[u8] = include_bytes!("../../../../../assets/icons/arrow-up.svg");
 pub(super) const RESUME_STACKED_WIDTH: f32 = 640.;
 
 /// How long an opened session's transcript is polled for the message to

@@ -23,22 +23,22 @@ use crate::text_selection::{self, TextSelection};
 use crate::theme::{Ink, Palette, Theme};
 use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask, TodoistClient};
 
-#[path = "panel_control.rs"]
+#[path = "panel/commands/panel_control.rs"]
 mod control;
 
-#[path = "panel_workspace_commands.rs"]
+#[path = "panel/commands/panel_workspace_commands.rs"]
 pub(crate) mod workspace_commands;
 
-#[path = "panel_special_commands.rs"]
+#[path = "panel/commands/panel_special_commands.rs"]
 mod special_commands;
 
 #[path = "panel/recovery/panel_command_recovery.rs"]
 mod command_recovery;
 
-#[path = "panel_runtime_commands.rs"]
+#[path = "panel/commands/panel_runtime_commands.rs"]
 mod runtime_commands;
 
-#[path = "panel_commands.rs"]
+#[path = "panel/commands/panel_commands.rs"]
 mod desktop_commands;
 
 #[path = "panel_chrome.rs"]
@@ -75,7 +75,7 @@ mod render;
 mod items;
 pub use items::{AssistantOutputPhase, Item, TodoCardPayload, Transcript, TranscriptImage};
 use items::*;
-#[path = "panel_slash.rs"]
+#[path = "panel/commands/panel_slash.rs"]
 mod slash;
 #[path = "panel_events.rs"]
 mod events;
@@ -105,11 +105,11 @@ mod assistant_output;
 
 
 #[cfg(test)]
-#[path = "panel_command_workflow_tests.rs"]
+#[path = "panel/commands/panel_command_workflow_tests.rs"]
 mod command_workflow_tests;
 
 #[cfg(test)]
-#[path = "panel_slash_send_tests.rs"]
+#[path = "panel/commands/panel_slash_send_tests.rs"]
 mod slash_send_tests;
 
 #[cfg(test)]
@@ -220,7 +220,7 @@ mod swarm_card;
 #[path = "panel_swarm_indicator.rs"]
 mod swarm_indicator;
 pub(crate) use swarm_indicator::OpenSwarmWorker;
-#[path = "panel_diff.rs"]
+#[path = "panel/documents/review/panel_diff.rs"]
 mod diff_review;
 #[path = "panel_effort.rs"]
 mod effort_switch;
@@ -282,7 +282,7 @@ mod gmail_draft_card;
 mod gmail_read_card;
 #[path = "panel/transcript/cards/panel_mcp_list_card.rs"]
 mod mcp_list_card;
-#[path = "panel_openrig.rs"]
+#[path = "panel/openrig/panel_openrig.rs"]
 pub(crate) mod openrig;
 #[path = "panel_orchestration.rs"]
 pub(crate) mod orchestration;
