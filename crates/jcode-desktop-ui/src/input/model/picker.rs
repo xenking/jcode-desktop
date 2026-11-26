@@ -681,6 +681,15 @@ impl PromptInput {
         }
     }
 
+    /// → on the MCP row opens it, as Enter does.
+    pub(super) fn enter_selected_mcp(&mut self, cx: &mut Context<Self>) -> bool {
+        let on_mcp = self
+            .command_suggestions()
+            .get(self.command_selection)
+            .is_some_and(|row| row.context_action == Some(Action::Mcp));
+        on_mcp && self.set_mcp_open(true, cx)
+    }
+
     /// Hover changes selection, not the catalog. Retain rows across repaints and
     /// refresh relative usage labels on the next interaction after a minute.
     pub(super) fn command_suggestions(&self) -> Arc<Vec<CommandSuggestion>> {

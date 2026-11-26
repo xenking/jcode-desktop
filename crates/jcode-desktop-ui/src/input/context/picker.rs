@@ -163,15 +163,6 @@ impl PromptInput {
         self.set_mcp_open(false, cx)
     }
 
-    /// → on the MCP row opens it, as Enter does.
-    pub(super) fn enter_selected_mcp(&mut self, cx: &mut Context<Self>) -> bool {
-        let on_mcp = self
-            .command_suggestions()
-            .get(self.command_selection)
-            .is_some_and(|row| row.context_action == Some(Action::Mcp));
-        on_mcp && self.set_mcp_open(true, cx)
-    }
-
     pub(super) fn standalone_context(&self) -> bool {
         self.context_picker
             .as_ref()
