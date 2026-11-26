@@ -5,6 +5,8 @@ policy (`[routing]` in `config.toml`). Desktop shows what the runtime decided,
 lets you answer a spending limit with one click, and steers routing without
 leaving the session. Everything here needs a runtime that advertises the
 `routing_v1` capability. On an older runtime none of it appears.
+The policy itself (accounts, budgets, egress) is documented in the Jcode
+repository: [ROUTING.md](https://github.com/xenking/jcode/blob/master/docs/ROUTING.md).
 
 ## Account chip
 

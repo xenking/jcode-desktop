@@ -1,208 +1,77 @@
 # Interaction latency profile
 
-## macOS idle OpenRig polling and hang reports
+Current budgets, how to measure them, and the constraints that follow from past
+measurements. Dated investigation records were cut; `git log -- PERFORMANCE.md`
+holds them. Raw artifacts lived under `target/` and were never committed.
 
-An ordinary workspace used to fetch the entire OpenRig browser snapshot every
-2 seconds while the app was active, including remote fleet inventory. Changes
-not relevant to a chat also invalidated its view. The browser still gets full
-snapshots while open. A session HUD now requests only fleet identity and seat
-activity for attached host identities every 10 seconds; a local HUD never
-enumerates peers, and unchanged seat data does not invalidate chat panels.
+## Budgets
 
-On macOS, `scripts/accept-idle-openrig.py <candidate> <baseline>` exercises the
-production poll loop against a private loopback server in a hidden native window.
-With the same fixture entry point in both binaries, three alternating 12-second
-measurements after a 4-second warmup went from 72 requests per sample to 0 and
-from 0.250% to 0.083% median single-core CPU (`ps` process CPU-time delta divided
-by elapsed wall time). This isolates OpenRig idle overhead, not foreground frame
-cost on a loaded workspace or the cause of the reported hang.
+| Budget | Value | Where it comes from |
+|---|---|---|
+| Frame | 8.33 ms (120 Hz), 16.7 ms (60 Hz) | Live profiler counts draws above 8.33 ms; sustained physical-display 120 FPS is **unproven** |
+| Interaction state response | p99 < 3.7 ms for focus, strip transition, panel move and resize preset | `interaction_latency_profile` (below), 32 panels in four strips |
+| Visual settle | 150 ms for camera, row, order and width transitions; 180 ms for modal transitions | Motion policy, not CPU cost |
+| View construction | 17.5 ms per action | Counted as missed in `JCODE_DESKTOP_PERF_ACTIONS` records; the self-development badge turns yellow when its wake-lag or construction budget is exceeded and red at twice the budget |
+| Event bridge | at most 128 updates per turn, then yield 1 ms | Keeps a ready producer from monopolizing the UI executor |
+| Transcript invalidation | unchanged repaint invalidates 0 rows; stable streaming text or reasoning invalidates at most 3 trailing rows | Structural, tool, history, selection and font changes invalidate fully |
+| Session-row hover | only visible rows are constructed (virtual list, 100 px overscan); a 500-session hover measures fewer than 50 titles | `sidebar_hover_frame_profile` |
+| OpenRig idle | session HUD polls fleet identity and seat activity every 10 s; a local HUD never enumerates peers | `scripts/accept-idle-openrig.py` |
+| Main-thread hang report | watchdog heartbeat answered within 2 s; one report per stall and per minute; eight reports of at most 2 MiB kept in `$JCODE_HOME/logs/desktop-hangs` | `scripts/accept-main-hang.py` |
+| Polling | workspace bridge and each embedded terminal drain at 16 ms (60 Hz); empty polls neither notify nor repaint | Replace with event-driven wakeups before lengthening the interval |
 
-The macOS host watchdog posts one heartbeat at a time to the native main queue.
-If it takes more than 2 seconds to answer, the watchdog runs `/usr/bin/sample`
-off the main thread and writes a private report under
-`$JCODE_HOME/logs/desktop-hangs` (normally `~/.jcode/logs/desktop-hangs`). It saves
-at most one report per continuous stall and per minute per process, keeps eight
-reports of at most 2 MiB each, and records profiler failures in the report.
-`python3 scripts/accept-main-hang.py <binary>` checks the report contains the
-intentionally blocked main stack without opening or focusing a working window.
+The production scheduler has no blanket 120 FPS cap. The Wayland backend follows
+compositor frame callbacks, so an active window runs at the display's cadence.
+GPUI throttles some unfocused animation to about 30 FPS and serious or critical
+thermal state to about 60 FPS; those are not promises of delivered FPS (see
+[the platform source audit](docs/display-refresh-scheduling.md)).
 
-## Sidebar invalidation follow-up, 2026-11-15
+## Interaction latency profile
 
-A passive generation-6 capture (`target/live-profile/render-cleanup-gen6/`)
-showed 221 sidebar renders across 243 draws. Its 18 animation intervals are
-not enough to establish sustained frame rate. This was a reason to keep
-investigating after the first allocation cleanup, not evidence of 120 fps.
+The opt-in `interaction_latency_profile` test drives the real key bindings
+through GPUI into a workspace of 32 panels across four strips. It records 500
+input-to-state samples after 50 warmups per operation, in three independent
+runs with isolated state.
 
-Two independent dependencies made text-only panel updates rebuild the list:
+```sh
+cargo test --release -p jcode-desktop-ui interaction_latency_profile -- --ignored --nocapture
+cargo test --release -p jcode-desktop-ui loaded_animation_first_frame_profile -- --ignored --nocapture
+```
 
-- The sidebar read full panel entities for identity, title, activity and todo
-  progress. Workspace now publishes a small metadata entity bounded to its
-  current slots, only when those visible fields change. It does not retain
-  transcripts, panels, or old generations of metadata.
-- The sidebar spinner's `Context::observe` callback leased its spinner entity
-  on every panel notification, even if activity had not changed. GPUI records
-  that lease as a write. Its observer now compares before updating, and the
-  initialized sidebar spinner uses the observed activity rather than reading
-  the entire panel again during every render.
+Measured on 2026-08-22 (Dell XPS 13 9350, Linux x86_64, optimized build):
 
-The integrated regression sends five real text-delta events to a working
-panel and checks that both the session-list render count and metadata
-allocation stay unchanged. Title, todo progress, working directory, session
-identity, focus, and turn completion still invalidate the relevant sidebar
-state. The full workspace suite passes 1,949 tests, with 17 ignored.
+| Interaction | p50 range | p95 range | p99 range |
+|---|---:|---:|---:|
+| Horizontal focus | 0.82–1.31 ms | 0.92–1.79 ms | 1.10–1.95 ms |
+| Vertical focus / strip transition | 1.31–2.25 ms | 1.40–3.54 ms | 1.69–3.66 ms |
+| Horizontal panel move | 0.82–1.42 ms | 1.34–1.94 ms | 1.54–2.85 ms |
+| Panel resize preset | 1.31–1.43 ms | 1.77–1.81 ms | 1.90–1.96 ms |
 
-Sidebar construction also sorts its already-owned session catalog in place,
-reuses the non-closing-panel lookup for membership, indexes project groups,
-and borrows existing repository-cache keys on hits. Stable ordering and
-cached negative repository results have dedicated regressions. Duplicate
-session IDs keep the original first-record lookup behavior.
+The numbers include key parsing, dispatch, workspace mutation, focus updates and
+learning-state persistence, and exclude the keyboard, compositor, GPU
+presentation and the animation frames after the state change. Perceived latency
+is dominated by the settle policy, not handler cost: shortening 150/180 ms would
+change snappiness far more than micro-optimizing handlers, which is a motion
+decision. Vertical focus is the most expensive path (row selection, row
+animation, coach update, two strips rendered). Coach-state writes run on a
+coalescing worker, settled transcript rows are borrowed rather than cloned, and
+panel entities are GPUI cache boundaries, so a strip translation does not
+reparse unchanged transcript markdown.
 
-Three alternating 10-second steady-stream runs per frozen binary are saved
-under `target/perf/sidebar-stream-{baseline,candidate}-{1,2,3}/`. They use
-three half-width panels on the private 2880×1800, scale-1.6, 120 Hz GPU output.
-Medians across all three runs:
+A physical input-to-photon profile needs compositor presentation timestamps or a
+high-speed camera; the headless profiler cannot provide one.
 
-| Metric | Before | After |
-| --- | ---: | ---: |
-| Sidebar list builds/s | 82.05 | 30.06 |
-| Sidebar render CPU ms/s | 5.06 | 2.00 |
-| Mean draw time | 1.286 ms | 1.092 ms |
-| UI-thread CPU | 28.80% | 25.50% |
-| RSS | 135.58 MiB | 135.83 MiB |
-| Animation FPS | 122.22 | 121.90 |
+## Sustained camera navigation
 
-This establishes less sidebar reconstruction (63%) and lower median work,
-not an FPS gain. Sample-window p95 maxima did not improve (2.86 to 3.32 ms),
-and one baseline run had a 42.9 ms outlier. Shared system load remains a
-confounder. The first unpaired baseline was much slower and is deliberately
-excluded from these comparisons. The remaining roughly 30 sidebar builds/s
-are consistent with the fixture's real workspace bridge-update cadence, which
-also advances catalog recency. That state must not be frozen just to improve
-a benchmark.
-
-Offline visual review: `target/sidebar-stream-review.png` shows three live
-panels, activity marks and todo progress. The measured visible-sidebar path
-is unchanged by the final guard that skips metadata preparation when the
-sidebar is hidden.
-
-A separate six-panel camera-pan check is saved under
-`target/perf/sidebar-nav-{baseline,candidate}-{1,2}/`. All runs traversed four
-camera targets over 2,362 px, confirming actual camera movement. Candidate
-runs reached 122.35/122.27 animation fps with 2.71/3.30 ms mean draw time;
-baselines were 122.17/107.39 fps and 2.89/5.40 ms. The loaded second baseline
-makes a pooled speedup claim inappropriate. Candidate maxima were still
-10.45/10.49 ms, above the 8.33 ms budget, so this does not prove every frame
-meets 120 Hz.
-
-The final running host activated UI generation 8 without a restart. Passive
-verification at `target/live-profile/sidebar-projection-gen8/` captured only
-14 draws and no input or animation intervals. It verifies the updated app
-is running, not sustained performance of the user's full live workspace.
-
-## Rendering allocation and synchronization cleanup, 2026-11-15
-
-A fresh real-GPU half-width camera-pan profile is saved at
-`target/perf/render-next-profile/`. Under panel-render stacks, markdown document
-construction accounted for roughly half the inclusive samples. The large
-`libc.so.6!fun_176380` bucket is `__memcpy_avx_unaligned_erms` (confirmed by
-local objdump), not an event-loop timer hotspot. GPUI style/layout and scene
-replay are substantial remaining costs.
-
-This pass removes work rather than adding a larger render cache:
-
-- Stable theme lookups read the existing palette/status atomic instead of
-  taking the transition mutex. Animated transitions still use the lock and
-  preserve their interpolated palettes. Concurrent selection publishes the
-  target and transition flag together.
-- Prompt-row indices and the existing latest-todo snapshot are shared with
-  `Arc` rather than deep-cloned per panel frame. Their chrome fingerprint is
-  computed only when settled items change. Streaming/disclosure changes reuse
-  these snapshots; replacement drops old snapshots, covered by a weak-reference
-  regression. This is bounded sharing, not an accumulating cache.
-- Strip geometry uses one buffer instead of four parallel buffers per frame.
-  Applet scope strings are borrowed instead of copied.
-- Ordered, disjoint highlight ranges use a linear pass instead of endpoint
-  sorting and a quadratic range scan. Nested/overlapping ranges keep the
-  original merge algorithm. Exhaustive small-range equivalence checks cover
-  empty, reversed, adjacent, overlapping and nested inputs.
-- Markdown transfers paragraph/highlight/link buffers rather than discarding
-  copies, skips inactive fade-vector allocation, and avoids dozens of no-op
-  string replacement allocations in inline math.
-- Panel activity and minimap queries borrow already-lowercase status strings
-  rather than allocating a fresh lowercase copy several times per frame.
-  Mixed-case errors, lost sessions and live activity keep the same behavior.
-- Inline math skips command substitutions entirely when no backslash remains,
-  and copies ordinary formula text in runs instead of testing six command
-  prefixes for every character.
-- Non-avatar markdown leaves no longer have a redundant outer div. An exact
-  glyph-position and wrapping regression compares the old and new structure at
-  three widths, including Unicode, inline code, bold text and links.
-
-Same-process release highlight benchmark, 10,000 iterations:
-
-| Disjoint spans | Previous | Linear path |
-| --- | ---: | ---: |
-| 8 | 1.881 ms | 0.265 ms |
-| 64 | 33.750 ms | 1.659 ms |
-| 256 | 449.984 ms | 6.750 ms |
-
-The theme benchmark uses nine alternating rounds of one million calls in the
-**default dev/test profile**, not release: median 31.21 ns/call for the previous
-mutex path and 14.27 ns/call for stable lookup. These are isolated operation
-benchmarks, not whole-frame speedup claims.
-
-Three alternating 10-second real-GPU comparisons of the first cleanup build
-(before the final wrapper removal) versus the saved baseline produced median
-animation FPS **112.78 versus 113.08**, and mean draw time **4.519 versus
-4.556 ms**. Median RSS was 144.76 versus 143.09 MiB. There is **no established
-whole-frame improvement** in those samples. Binary baseline is
-`target/nav120/render-next-baseline`; data is
-`target/perf/render-efficiency-{baseline,candidate}-{1,2,3}/`.
-A separate CPU pan run recorded 265 frames, p50/p95/max 1.93/3.25/8.84 ms,
-including one frame above 8.33 ms. Separate hosted runs under changing load
-cannot establish a regression or gain against earlier CPU profiles.
-
-The final wrapper-removal profile at `target/perf/render-efficiency-final-profile/`
-recorded 111.5 animation FPS, 4.68 ms mean draw and 142 MiB RSS. It still shows
-GPUI style/layout memory movement, bounds-tree insertion and scene sprite
-sorting as prominent costs. These engine costs are not proof of a safe generic
-translated-subtree cache: moving views also need correct clipping, mouse
-geometry and live-child invalidation. Such a cache was not introduced.
-
-Validation includes 45 markdown tests (selection/link/geometry included),
-79 UI-core tests, panel snapshot/cache/status regressions and a final full
-workspace run with **1,946 passed, zero failed, 17 ignored**. The earlier two
-failures were assertions in concurrent destination-picker changes; that owner
-subsequently fixed and committed them independently. Offline screenshots and
-live generation activation are checked separately from build success. The
-sustained physical-display 120 FPS target remains unproven.
-
-## Panel camera navigation, 2026-11-15
-
-Camera frames previously rebuilt the stationary sidebar along with Workspace.
-The sidebar now has its own retained view. A camera-only notification can replay
-that view, while changes to workspace selection, panel metadata, globals and
-hover state still invalidate it. A regression test checks both replay and model
-invalidation, and the live render attribution names this boundary `SidebarChrome`.
-
-The release CPU-only navigation test uses six half-width panels, each with 120
-conversation items, and delivers every animation frame rather than measuring
-only the first frame after a keypress:
+The CPU-only navigation test delivers every animation frame of a pan, not only
+the first one:
 
 ```sh
 justrust test --release -p jcode-desktop-ui --lib navigation_frame_profile -- --ignored --nocapture
 ```
 
-On the warmed horizontal-pan workload, baseline p50/p95/max were
-2.11/3.50/6.07 ms over 264 frames. With sidebar isolation they were
-1.96/2.73/5.70 ms over 264 frames, with zero CPU-only samples above 8.33 ms in
-either run. These are separate hosted runs, not proof of live 120 FPS or GPU
-presentation latency. An explicit cached-panel layout boundary was also tried
-and reverted: its small difference did not justify losing the ordinary view's
-fine-grained nested invalidation.
-
-The performance suite can now use a private headless Wayland compositor and the
-real GPU, without driving the user's desktop:
+For real-GPU runs without touching the user's desktop, the suite uses a private
+headless Wayland compositor (default output 2880x1800 at 120 Hz, scale 1.6;
+override with `PERF_SUITE_MODE` and `PERF_SUITE_SCALE`):
 
 ```sh
 python3 scripts/perf-suite.py target/perf/navigation-gpu \
@@ -211,390 +80,78 @@ python3 scripts/perf-suite.py target/perf/navigation-gpu \
   --seconds 12 --repeats 3
 ```
 
-The default private output is 2880x1800 at 120 Hz, scale 1.6. Metadata records
-the output, scale, renderer and binary hash. Use `PERF_SUITE_MODE` and
-`PERF_SUITE_SCALE` to choose another setup. Hardware rendering is distinct from
-the default Xvfb/lavapipe CPU fixture. A private headless compositor is still not
-the user's physical display and does not prove physical scanout cadence.
+Rules learned the hard way:
 
-Two measurement pitfalls were found and corrected: repeated short-lived virtual
-keyboards made the native window inactive between keys, triggering GPUI's
-inactive-window throttle, and fixture widths of `1 / panel_count` did not
-necessarily produce horizontal camera motion. The Wayland measurement now keeps
-one keyboard attached throughout the sampling interval. `--panel-width` applies
-native width presets, and wide-panel navigation must record changing camera
-targets. Do not compare the earlier narrow-panel focus-only numbers as if they
-were sustained camera-pan results. Samply capture failures now fail visibly with
-a diagnostic log rather than silently producing a timing-only run.
+- Keep one virtual keyboard attached for the whole sampling interval. Short-lived
+  keyboards leave the window inactive between keys and trigger GPUI's
+  inactive-window throttle.
+- Fixture widths of `1 / panel_count` do not necessarily move the camera. Use
+  `--panel-width` presets and require changing camera targets in the record; do
+  not compare focus-only narrow-panel numbers with camera-pan numbers.
+- Alternate baseline and candidate runs, record system load, and discard an
+  unpaired first run. Concurrent builds on the shared machine moved FPS by tens of
+  percent; a single pair cannot show a gain.
+- A passive live capture without input or animation intervals only proves the
+  diagnostic boundary is reachable. Report it as that.
+- Xvfb with lavapipe is a CPU fixture; GPUI's Vulkan presenter needs DRI3, so use
+  the headless Wayland path for presentation. A private compositor still does not
+  prove physical scanout cadence.
 
-The earlier live capture at `target/live-profile/nav-before-1114` recorded 984
-animation intervals averaging 15.00 ms, or 66.65 FPS, with 5.57 ms average CPU
-draw time. CPU draw timing excludes renderer submission/present and does not
-explain the entire presentation interval. No claim that all navigation frames
-meet the 8.33 ms budget is made from these measurements.
+## Live profiling
 
-Three alternating eight-second private-GPU runs per binary, with six half-width
-panels in FolderTabs mode, verified four distinct camera targets spanning
-2362.26 logical pixels. Median animation FPS was 72.13 before versus 84.90
-after, and median mean-draw time was 9.06 versus 8.02 ms. UI-thread utilization
-was 57.63% versus 61.95%, consistent with drawing more frames, not an idle-CPU
-saving claim. Results varied substantially: concurrent work drove the 16-core
-machine's load average above 48 and CPU pressure to 46% during comparison.
-These results support further investigation but do not isolate the sidebar's
-effect from scheduling contention and do not meet the 120 FPS goal. Artifacts:
-`target/perf/camera-gpu-compare-{baseline,candidate}-{1,2,3}`.
+Self-development launches (`--hot-reload`) show a compact badge with the rolling
+p95 event-loop wake lag, view construction time and the worst retained sample;
+samples are bounded and the badge refreshes four times per second. Normal
+launches omit it; set `JCODE_DESKTOP_PERF=1` to opt in. The badge also reports
+GPUI's p95 draw and presentation intervals, presented FPS, input-to-frame
+latency, coalesced input events and inputs that arrived during a draw. With
+`JCODE_DESKTOP_STATE` set, the same values go to the public diagnostic state.
 
-## Refresh-rate investigation, 2026-09-21
+`JCODE_DESKTOP_PERF_ACTIONS=/path/to/actions.jsonl` appends one record per
+meaningful focus-left/right/up/down action after its animation settles, with
+draw, presentation and input p95 computed from the samples added during that
+action, settle time, presented and constructed frame counts, and missed 17.5 ms
+construction budgets. Edge no-ops are excluded. Presentation fields are
+nullable: in isolated headless Sway the presentation histogram can stay empty,
+and then `present_p95_ms` and `presented_fps` are `null` and
+`presented_frame_count` is 0. That is not 0 FPS; use the target compositor for
+user-visible cadence.
 
-The production scheduler does **not** have a blanket 120 FPS cap. The current
-Wayland backend follows compositor frame callbacks. An active window can use the
-display's native cadence without estimating Hz from slow frames or adding an
-application timer. GPUI deliberately throttles some unfocused animation to about
-30 FPS and serious/critical thermal conditions to about 60 FPS. These are not
-promises of delivered FPS. See [the platform source audit](docs/display-refresh-scheduling.md)
-for exact pinned revisions, macOS behavior, and the separate X11 multi-monitor gap.
+The profiler emits interval-weighted mean draw and presentation times, window
+focus, thermal state and a sampler identity, separates reload generations, warns
+when animation samples are too sparse, and falls back to timing-only capture when
+`perf` is missing. A target that exits mid-capture leaves partial evidence marked
+incomplete.
 
-A passive 30-second capture against release host PID 346784 recorded 538 raw
-draw samples and 52 input-bearing samples. Maximum draw time was **71.43 ms**,
-maximum UI wake lag **112.36 ms**, and maximum input-to-frame latency **10.55 ms**.
-Thirty of 336 sampling windows included a draw over the 8.33 ms budget for 120 Hz.
-The median of nonempty windows' draw p95 values was 2.12 ms, not a pooled p95.
-The process consumed 4.54 CPU seconds over 29.94 seconds. Load average was about
-16 to 18 and CPU pressure reported about 15% at the end, with concurrent Rust
-builds running. This establishes real long-tail stalls under load, not which
-function caused them or how fast a quiet system would render.
-
-Only **three animation intervals** were recorded, insufficient to characterize
-sustained animation FPS. Another UI reload overlapped the capture, so raw counts
-may overlap between samplers. The initial `--perf` attempt could not run because
-the `perf` executable is absent. No CPU stack attribution is claimed.
-Artifacts: `target/live-profile/refresh-investigation-timing/`.
-
-An isolated release fixture on private Xvfb/lavapipe exercised 26 native overview
-actions and 93 animation intervals. Idle produced zero draws over eight seconds.
-During overview transitions, median per-window draw p95 was 5.76 ms, maximum
-draw was 93.65 ms, and maximum wake lag was 637.92 ms under concurrent build load.
-This is software-renderer workflow evidence, not performance on the Intel GPU
-or a before/after speedup. Artifacts: `target/live-profile/refresh-offline-baseline/`.
-
-The profiler now emits interval-weighted mean draw/presentation times, window
-focus, thermal state, and a sampler identity. Analysis separates reload
-generations, warns when animation samples are too sparse, and does not mistake
-idle wall time for lost frames or invert a p95 as average FPS. Missing `perf`
-falls back explicitly to timing-only capture. An exiting target preserves partial
-evidence and marks the capture incomplete instead of losing it to a missing RSS
-field. This handling was motivated by the original host exiting during a second
-capture. No host restart was forced.
-
-These are diagnostic improvements, not a claimed rendering optimization.
-The next meaningful performance comparison needs sustained active interaction,
-no overlapping reload, and documented build/system load.
-
-### Follow-up with enhanced diagnostics
-
-The state-preserving reload completed in remaining single-panel host PID 373219.
-The emitted new fields confirm activation, rather than relying on the socket's
-enqueue acknowledgement. A 30-second capture contained one sampler, 1,149 draws,
-371 input-bearing frames and **623 animation intervals**. All animation intervals
-were in focus-active sampling windows: their weighted mean was **13.89 ms
-(72.01 FPS)**. Active-window draws averaged **5.91 ms**. Maximum draw across the
-capture was **18.76 ms**, maximum wake lag **17.60 ms**, and maximum input-to-frame
-latency **30.87 ms**. Thermal state remained `Nominal`. Inactive windows had no
-animation interval samples, so their ordinary event-driven draws are not evidence
-of an animation throttle. Focus is sampled at the window boundary, not per frame.
-
-A read-only `wlr-randr --json` query reported the only enabled output, `eDP-1`, at
-2880x1800, **120.000999 Hz**, adaptive sync disabled. No output configuration was
-changed and no compositor-specific IPC command was used. This confirms a real
-shortfall against the active mode, not a 60 Hz screen mistaken for 120 Hz.
-Forty-seven of 114 focus-active sampling windows included a draw above 8.33 ms.
-That establishes missed CPU draw budgets during part of the run. It does not
-separate layout/text, GPU submission, compositor scheduling and other costs.
-System load fell from about 11.9 to 8.2 and the process consumed 8.86 CPU seconds.
-This different-window capture is not a controlled before/after speedup comparison.
-Artifacts: `target/live-profile/refresh-single-panel-enhanced/`.
-
-Validation: 20 Python profiling tests, two Rust live-profiler tests and eight
-real-crate scroll cadence tests passed. The current debug fixture rendered and
-was visually inspected at `target/ui-review-refresh-profile.png`; the enhanced
-offline overview capture exercised 17 native actions and 40 animation intervals.
-That software/debug run is validation of telemetry, not a GPU FPS benchmark.
-
-## Loaded desktop stalls, 2026-09-12
-
-A passive 25-second capture of the running desktop recorded 875 draws and
-68 input-bearing frames. The maximum draw was 52.26 ms and maximum input latency
-73.60 ms. Thirty-five sampling windows contained draws over 16.7 ms. Concurrent
-Rust builds were active, so these are observed stalls, not an isolated benchmark.
-Artifacts: `target/live-profile/fps-before-20260912c/`.
-
-Two UI hot paths now avoid unnecessary work:
-
-- Transcript notifications no longer discard every cached list measurement.
-  Unchanged repaints invalidate zero rows, and stable streaming text/reasoning
-  updates invalidate at most three trailing rows. Structural, tool, history,
-  selection, and font changes retain conservative full invalidation. GPUI still
-  measures visible rows and independently invalidates wrapping on width changes.
-- The event bridge processes at most 128 updates before yielding for 1 ms, so a
-  continuously ready producer cannot monopolize the UI executor. It preserves
-  event order and leaves excess events queued, without reintroducing idle polls.
-  Session refreshes also skip durable todo-file reads when no unfinished-work
-  dashboard is open.
-
-The real-panel measurement tests cover repaint reuse, streaming geometry, tool
-updates, selection, recovery, and width changes. A 10,002-row measurement plan
-invalidates 300 rows across 100 stable stream updates, rather than 1,000,200.
-This is a reduction in explicit invalidation work, not a claimed FPS multiplier.
-Timing comparisons between existing debug binaries were inconsistent under the
-concurrent build load, so they do not establish an isolated frame-time speedup.
-
-Graphics selection matters independently of transcript work. The affected Intel
-machine had Mesa OpenGL and software Vulkan installed, but no Intel Vulkan ICD.
-Install the matching `vulkan-intel` package on Arch to make hardware Vulkan
-available. The running process keeps its graphics context until an application
-restart, not a UI hot reload. UI activation now logs GPUI's actual GPU specs once
-to the persistent desktop diagnostic log, including software-emulation status.
-The screenshot harness deliberately forces lavapipe and cannot prove hardware
-Vulkan presentation on the user's display.
-
-The rebuilt release UI activated successfully in the running process, and its
-adapter log confirmed hardware Intel Arc B390 rendering through Mesa OpenGL.
-The private-Xvfb visual review is `target/ui-review-fps-20260912.png`. Eighteen
-targeted queue, measurement, cache, streaming-scroll, tool, and image tests passed.
-The broader panel run passed 185 tests with two failures outside these checks:
-fresh-session composer geometry (also reproduced with the earlier binary) and
-multiedit diff-boundary expectations. A post-reload passive capture overlapped
-further UI reloads and contained concatenated JSONL records, so its failed
-analysis is not evidence of an end-to-end FPS improvement. Raw artifacts remain
-at `target/live-profile/fps-after-20260912/`.
-
-## Sidebar hover, 2026-09-05
-
-Session rows previously lived in one eagerly built scrollable div. GPUI's hover
-style invalidated the workspace, rebuilding and measuring every history row,
-including title shaping for rows outside the viewport. The sidebar now uses a
-variable-height virtual list with 100 px overscan and initial height estimates.
-Only visible rows are constructed. Layout-affecting changes invalidate cached
-row heights without resetting scroll position. The file browser retains its
-separate scroll handle, and the session scrollbar uses the virtual list state.
-
-The debug-build `sidebar_hover_frame_profile` alternates actual GPUI mouse-move
-events between two rows and includes the next constructed frame. With 10 warmups
-and 50 measured samples, the before/after p95 results were:
-
-| Sessions | Eager rows | Virtual rows |
-| --- | ---: | ---: |
-| 10 | 1.96 ms | 2.62 ms |
-| 100 | 10.68 ms | 6.07 ms |
-| 500 | 53.45 ms | 5.31 ms |
-
-These are single-run headless CPU measurements, not physical input-to-photon or
-live compositor latency. The test excludes transcript workload and machine load
-can affect the timings. Run with:
-
-```sh
-cargo test -p jcode-desktop-ui sidebar_hover_frame_profile -- --ignored --nocapture
-```
-
-Non-timing regressions additionally assert that a 500-session hover measures
-fewer than 50 titles, end-of-history remains reachable, title updates and added
-history preserve the visible row, and metadata changes update row heights.
-Existing UI tests cover wheel scrolling, clicking sessions, section ordering,
-saved dividers, equal title heights, and the outer-gutter scrollbar placement.
-
-### Live acceptance limitation
-
-After reload, a 30-second passive capture against the actual running desktop
-process on 2026-09-05 at 09:37 UTC returned **zero input-bearing frames**. The
-capture is stored locally at
-`target/live-profile/sidebar-acceptance-20260905/`. It confirms that the running
-window's diagnostic boundary is reachable, but it cannot validate hover latency
-or establish an improvement in the user's actual workspace. Other compilation
-jobs were also active, making this unsuitable as an idle performance baseline.
-No pointer input, focus changes, or compositor commands were injected into the
-user's desktop. Live hover acceptance remains unverified until a capture includes
-the affected interaction. The headless improvement above is not a substitute for
-that missing observation.
-
-The exact committed source passed the sidebar regressions. The broader suite
-had five failures in inbox scrolling, restored transcript scroll, gesture
-reticle rendering, the right-edge click target, and shortcut showcase text.
-The same five failures were reproduced on untouched pre-fix commit `24ce6e7`
-in an isolated source copy, distinguishing them from this sidebar change.
-
-## Live self-development profile
-
-Self-development launches (`--hot-reload`) show a compact live performance
-badge in the upper-right corner. It reports the rolling p95 event-loop wake lag,
-UI render construction time, and the worst retained sample. The badge turns
-yellow when either budget is exceeded and red at twice the budget. Samples are
-bounded and the display refreshes four times per second to avoid becoming a
-source of continuous repaint overhead.
-
-The badge is intentionally absent from normal launches. To diagnose a packaged
-or non-hot-reload build, opt in with `JCODE_DESKTOP_PERF=1`.
-
-The badge reports GPUI's direct p95 draw and presentation intervals, effective
-presented FPS, input-to-frame latency, view-construction time, coalesced input
-events, and inputs that arrived during a draw. When `JCODE_DESKTOP_STATE` is
-set, the same values are appended to the public diagnostic state so
-compositor-driven acceptance runs can inspect them without screen scraping.
-Recorded presentation packets remain an independent end-to-end check of the
-application, Wayland, Vulkan, and compositor boundary.
-
-For action-scoped measurements against the exact restored workspace, set
-`JCODE_DESKTOP_PERF_ACTIONS=/path/to/actions.jsonl`. Each meaningful focus-left,
-focus-right, focus-up, or focus-down action appends one JSON record after its
-animation settles. Draw, presentation, and input p95 values are computed from
-the GPUI histogram samples added during that action, rather than from the
-window's earlier history. The record also includes elapsed settling time,
-presented and constructed frame counts, and missed 17.5 ms construction
-budgets. Edge no-ops are intentionally excluded.
-
-Presentation fields are nullable. GPUI only adds presentation-interval samples
-when the compositor reports consecutive active animation presents. In isolated
-headless Sway acceptance this histogram can remain empty even though draw and
-input-to-frame samples prove that frames crossed the application/Wayland
-boundary. Such records use `null` for `present_p95_ms` and `presented_fps` and
-zero for `presented_frame_count`; they must not be interpreted as 0 FPS. Run on
-the target interactive compositor to obtain user-visible presentation cadence.
+Graphics selection matters independently of UI work. On the Intel test machine
+hardware Vulkan needs the matching `vulkan-intel` package; UI activation logs
+GPUI's actual GPU specs once, including software-emulation status, to the
+persistent desktop diagnostic log. The screenshot harness forces lavapipe and
+cannot prove hardware Vulkan presentation. `TUI_SLOW_FRAME` records in the Jcode
+runtime log describe terminal sessions, not desktop window frames.
 
 ## Development-build runtime
 
-The hot-reload workflow keeps Jcode Desktop's own crates and most dependencies
-at `opt-level = 0`, but builds a profile-selected list of runtime-hot
-dependencies (taffy layout, GPUI, text shaping, the Wayland/Calloop event loop,
-and the renderer) at `opt-level = 2`.
-The UI-independent animation registry and per-frame interpolation primitives live
-in `jcode-desktop-motion`, which is also built at `opt-level = 2`. The frequently
-edited GPUI composition remains in the unoptimized, dynamically reloadable UI
-crate, while the small UI adapter applies the current reduced-motion setting.
-GPUI, Calloop, Wayland dispatch, text shaping, and rendering dominate idle and
-paint-time CPU. Leaving those dependencies unoptimized caused the development
-host to consume 16–40% of one CPU core while idle on the test machine. A
-sampled live profile attributed the work to the GPUI timer scheduler,
-Calloop/Wayland dispatch, and atomic/task bookkeeping rather than application
-state handlers. With only the profile-selected crates optimized, the rebuilt
-debug executable used 3.7% CPU over a 10-second steady-state sample in an
-isolated headless Sway compositor (a full `opt-level = 2` dependency build
-measured 3.0%, so the selective list captures the win while leaving most of the
-graph fast to compile). This is development-only overhead: the release
-interaction profile below was already fast.
-
-Two 16 ms polling boundaries remain intentional. The workspace bridge drains
-streaming session updates at up to 60 Hz, and each embedded terminal drains PTY
-output at up to 60 Hz. Empty polls do not notify or repaint, but they do wake the
-executor. If idle power becomes a release concern, replace these polls with
-event-driven wakeups rather than increasing their interval and adding visible
-streaming or terminal latency.
-
-The Jcode runtime log is separate from the desktop renderer. `TUI_SLOW_FRAME`
-records found during this investigation described terminal Jcode sessions
-rebuilding multi-megabyte, roughly 2,050-line transcripts in 70–82 ms. Those
-warnings explain lag inside a TUI session, but are not desktop window frames.
-Repeated skill-frontmatter and stale Claude OAuth warnings likewise add log
-noise but are not on the desktop render path.
-
-Measured on 2026-08-22 on a Dell XPS 13 9350 (Intel Core Ultra 7 256V), Linux x86_64, using an optimized build and GPUI's headless interaction harness.
-
-## Method
-
-The opt-in `interaction_latency_profile` test drives the real key bindings through GPUI into a workspace containing 32 panels across four strips. It records 500 input-to-state samples after 50 warmups for each operation. Three independent runs used isolated state directories.
-
-Run it with:
-
-```sh
-cargo test --release -p jcode-desktop-ui interaction_latency_profile -- --ignored --nocapture
-cargo test --release -p jcode-desktop-ui loaded_animation_first_frame_profile -- --ignored --nocapture
-```
-
-These measurements include key parsing, action dispatch, workspace mutation, focus updates, learning-model updates, and learning-state persistence. They exclude the physical keyboard, compositor, GPU presentation, and the subsequent animation frames. Policy-driven visual settling is listed separately.
-
-The loaded first-frame profile constructs 32 panel entities across four strips
-and includes GPUI's next rendered frame after each focus change. Persistent
-coach-state filesystem writes run on a coalescing worker, and settled transcript
-rows are borrowed rather than cloned during rendering. Panel entities remain
-GPUI cache boundaries, so a workspace strip translation does not require
-reparsing unchanged transcript markdown.
-
-## Results
-
-| Interaction | p50 range | p95 range | p99 range | Visual settle policy |
-|---|---:|---:|---:|---:|
-| Horizontal focus | 0.82–1.31 ms | 0.92–1.79 ms | 1.10–1.95 ms | 150 ms |
-| Vertical focus / strip transition | 1.31–2.25 ms | 1.40–3.54 ms | 1.69–3.66 ms | 150 ms |
-| Horizontal panel move | 0.82–1.42 ms | 1.34–1.94 ms | 1.54–2.85 ms | 150 ms |
-| Panel resize preset | 1.31–1.43 ms | 1.77–1.81 ms | 1.90–1.96 ms | 150 ms |
-
-## Findings
-
-1. **State response is fast.** Every measured path remained below 3.7 ms at p99, comfortably inside one 60 Hz frame (16.7 ms) and one 120 Hz frame (8.3 ms).
-2. **Perceived latency is animation-policy dominated.** Movement and focus state changes happen in roughly 1–3 ms, but the visible camera, row, order, and width transitions intentionally settle over 150 ms. Modal transitions settle over 180 ms.
-3. **Vertical focus is the most expensive measured path.** It updates row selection, creates a row animation, changes focus, updates the coach, and renders incoming and outgoing strips during the transition. Its worst observed p99 was 3.66 ms, still well within frame budget.
-4. **Learning persistence is on the interaction hot path.** Successful navigation, movement, and resize shortcuts synchronously serialize and write coach state, making persistence and coach bookkeeping the clearest optimization target if tail latency becomes visible on slower storage.
-5. **No CPU-side interaction bottleneck was found on this machine.** Reducing the 150/180 ms policy durations would change perceived snappiness far more than micro-optimizing handlers, but that is a product-motion decision rather than a correctness fix.
-
-## Next measurement layer
-
-A physical input-to-photon profile should use compositor presentation timestamps or a high-speed camera. It should record key event arrival, first changed frame, frame pacing throughout the 150 ms animation, and final presentation. The headless profiler intentionally remains deterministic and does not disturb the active desktop session.
-
-## Acceptance coverage
-
-The release binary was launched through its public CLI (`jcode-desktop --no-sidebar`) on an isolated headless Sway compositor. `wtype` injected real Wayland keyboard events, local terminal panels exercised the host/UI/resource boundary, GPUI rendered the resulting surfaces, and the public `JCODE_DESKTOP_STATE` diagnostic supplied the observable acceptance state. This kept the test entirely separate from the user's active compositor.
-
-The observed end-to-end state-change times were 15.8 ms for focus-left, 8.3 ms for focus-right, and 14.9 ms for moving a panel left. Each operation produced the expected externally visible focus position in the running release binary. These are conservative single-sample bounds because they include launching `wtype` and shell polling at roughly 1 ms intervals. They corroborate the micro-profile's conclusion that the state change arrives within one 60 Hz frame, while the deliberate 150 ms animation controls final settling.
-
-An earlier Xvfb attempt failed because GPUI's Vulkan presenter requires DRI3, which Xvfb does not provide. The headless Wayland run closes that presentation gap. This still does not measure a physical keyboard or monitor scanout, so it is presentation-path acceptance rather than a physical input-to-photon claim.
-
-## 2026-08-24 reprofile
-
-The optimized headless interaction profile was repeated after the session-ordering
-and reconciliation changes. All p99 state transitions remained below 3.5 ms:
-
-| Interaction | mean | p95 | p99 |
-|---|---:|---:|---:|
-| Horizontal focus | 1.62 ms | 1.90 ms | 2.82 ms |
-| Vertical focus / strip transition | 2.70 ms | 3.17 ms | 3.48 ms |
-| Horizontal panel move | 1.83 ms | 2.51 ms | 3.33 ms |
-| Panel resize preset | 1.64 ms | 2.03 ms | 2.25 ms |
-
-A direct 10-second `/proc` sample of the running hot-reload desktop measured
-0.10% process CPU after startup. The persistent diagnostics log also showed that
-session reconciliation is the dominant recurring background operation. Its
-historical samples include 100-session refreshes ranging from roughly 0.2 to
-0.65 seconds in recent runs. This work is performed off the UI thread and is
-coalesced, so it does not impose that duration on interaction handling.
-
-The same log contains CPU warnings from older, long-running debug generations.
-Those warnings measure whole-process utilization in five-second windows, not UI
-event latency, and should not be interpreted as slow frames. The old
-`~/.cache/jcode/desktop/performance.log` predates the current desktop telemetry
-and is retained only as historical evidence.
-
-The terminal output poll remains at 16 ms to preserve one-frame output latency.
-Its 32 KiB read slab is now retained for the terminal lifetime instead of being
-allocated on every idle poll, removing approximately 62 allocations per second
-per open terminal without increasing latency.
-
-The rebuilt release binary was also exercised through its public
-`jcode-desktop --no-sidebar` entry point in a fresh state directory on an
-isolated headless Sway compositor. A real compositor window and the public
-diagnostic state both appeared after 259.5 ms. The process remained alive,
-produced no lag warnings, and averaged 1.13% CPU during the following 15-second
-idle sample. This validates the release host, GPUI Wayland renderer, UI plugin,
-state diagnostic, and persistent diagnostics boundaries together without
-touching the active desktop session.
+The hot-reload workflow keeps Jcode Desktop's own crates and most dependencies at
+`opt-level = 0` but builds a profile-selected list of runtime-hot dependencies
+(taffy layout, GPUI, text shaping, the Wayland/Calloop event loop, the renderer)
+at `opt-level = 2`. The animation registry and per-frame interpolation live in
+`jcode-desktop-motion`, also `opt-level = 2`; the frequently edited GPUI
+composition stays in the unoptimized, reloadable UI crate. Unoptimized
+dependencies made the dev host use 16–40% of one core while idle; with the
+selective list a 10-second steady-state sample in headless Sway used 3.7% (a full
+`opt-level = 2` dependency build measured 3.0%).
 
 ## Compile times
 
-Recorded in `target/build-timings.jsonl`. `python3 scripts/build-timings.py`
-takes controlled measurements (touch a file, run the same cargo command as
-Ctrl+R, and record the median). The host also appends a `source: "host"` line
-for every real Ctrl+R and startup build. Run
-`python3 scripts/build-timings.py --summary` to see the log.
+Recorded in `target/build-timings.jsonl`. `python3 scripts/build-timings.py` takes
+controlled measurements (touch a file, run the same cargo command as Ctrl+R,
+record the median); the host also appends a `source: "host"` line for every real
+Ctrl+R and startup build. `python3 scripts/build-timings.py --summary` prints the
+log.
 
-Baseline, 2026-09-22, XPS 14 (Core Ultra X9 388H, 16 threads), rustc 1.98.1,
-mold, commit 4f6372c:
+Baseline, 2026-09-22, XPS 14 (Core Ultra X9 388H, 16 threads), rustc 1.98.1, mold,
+commit 4f6372c:
 
 | Profile | Scenario | Median |
 |---|---|---|
@@ -606,108 +163,34 @@ mold, commit 4f6372c:
 | release | touch a UI leaf file | 48.1s |
 | release | touch host `main.rs` | 49.2s |
 
-The running hot-reload hosts are release builds, so every Ctrl+R costs about
-48s. `-Ztime-passes` on the release UI crate (43.5s total): 25.4s waiting on
-LLVM codegen, 18.4s ThinLTO, 12.3s LLVM passes, 11.4s codegen, 5.6s
-monomorphization, and under 5s in the frontend. Nearly all the time goes to
-optimized code generation for one large crate. The frontend is cheap.
+The running hot-reload hosts are release builds, so every Ctrl+R costs about 48s,
+nearly all of it optimized code generation for one large crate (ThinLTO 18.4s,
+LLVM codegen and passes). `CARGO_PROFILE_RELEASE_INCREMENTAL=true
+CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256` brings a UI-leaf rebuild to 12–15s after
+one cold rebuild (about 7 minutes) and keeps the ABI, but yields less optimized UI
+code, so it could apply only to Ctrl+R builds; that needs a host change
+(`rebuild_ui`) and a host restart and is not adopted.
 
-Experiment: `CARGO_PROFILE_RELEASE_INCREMENTAL=true
-CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256` brings a release UI-leaf rebuild down
-from 48s to 12-15s after one cold rebuild (about 7 minutes). This does not change
-type layout, so it is ABI-compatible with a normally built release host. It
-does produce less optimized UI code, so it should apply only to Ctrl+R builds,
-not shipped releases. Doing that needs a host change (a dedicated profile or env
-in `rebuild_ui`) and a host restart, so it has not been adopted yet.
+A dev-profile function-body edit in `jcode-desktop-ui` takes about 4.3s in rustc,
+mostly fixed per-crate work (metadata 1.2s, monomorphization 0.5s, macro expansion
+0.4s, cdylib link 0.45s, incremental save 0.4s); only splitting the crate reduces
+it. A full `cargo build` Ctrl+R also rebuilds `jcode-base` (6.7s) when the sibling
+Jcode checkout changes and relinks the host (2s) unless `--lib` is passed.
+Optimizing proc macros (`[profile.dev.build-override] opt-level = 3`) changes the
+UI crate's metadata hash, which a running hot-reload host rejects, and scoping it
+to `[profile.test.build-override]` costs more rebuilds than it saves; neither is
+enabled.
 
-### Dev profile breakdown, 2026-10-05
+## Unit test run time
 
-A one-function body edit in `jcode-desktop-ui` (dev, incremental, warm) takes
-about 4.3s in rustc (`-Ztime-passes`): 1.2s generating crate metadata, 0.5s
-monomorphization collection, 0.4s macro expansion, 0.45s linking the cdylib,
-0.4s saving the incremental cache, 0.3s name resolution, and only 0.1-0.8s in
-LLVM, because incremental reuses unchanged codegen units. Cranelift could save
-at most that LLVM slice. The rest is front-end and fixed per-crate work, which
-only splitting the crate reduces. A full `cargo build` Ctrl+R also rebuilds
-`jcode-base` (6.7s) when the sibling Jcode checkout changes, and relinks the
-host binary (2s) unless `--lib` is passed.
-
-### Unit test run time, 2026-10-05
-
-`cargo test -p jcode-desktop-ui --lib` takes about 20s wall but 200s of CPU,
-and only 79s run one test at a time. The parallel run is contention-bound
-inside one process. `cargo nextest run` gives each test its own process and
-finishes in 12-15s. Configuration lives in `.config/nextest.toml`.
-
-Profiles of the slowest tests showed lyon re-tessellating identical
-prompt-card backgrounds every frame. `prompt_background::rounded_union` now
-keeps a small position-independent LRU of tessellated paths, which also
-benefits the running app. The first before/after numbers (15.8s to 3.2s) mixed
-an unloaded run with a loaded one and overstated the effect. A same-load,
-interleaved CPU-time comparison on 2026-10-05 measured roughly 10-25% less
-CPU for `native_scroll_paints_historical_prompt_cards` and
-`startup_each_native_submission_paints_the_newest_row`.
-
-Unit tests now ignore the developer's `~/.jcode/config.toml` unless
-`JCODE_DESKTOP_CONFIG` is set. Previously a non-default theme there failed
-theme-colour assertions whenever a test ran before anything set the theme.
-
-Theme switches are instant under `cfg(test)`. The 180 ms fade runs on wall
-clock time, which GPUI's test executor cannot advance, so each switch kept a
-test redrawing until it ended. Same-load interleaved runs: the theme-cycle
-test takes 6.8-7.1s without the change and 0.2-0.6s with it.
-Tests that change the process-global theme hold `theme::test_theme_lock()`.
-
-Verified A/B, 2026-10-05: the UI unit-test binary built without these changes
-(`625f7aa`) against one built with them, run alternately three times each at
-the same load (11-22) with plain libtest: 20.7s, 20.3s, 20.6s before versus
-11.5s, 11.0s, 10.7s after, with failures falling from 8-11 to 0-2. The
-remaining intermittent failure is a timing flake under load. Whole-workspace
-`cargo nextest run --workspace` passes 1727 of 1728 in about 11s; the one
-failure is the stale `GPUI_REVISION` constant, which needs a host restart.
-
-Animations generally sample `Instant::now()`, so about a dozen tests still
-`thread::sleep` through real transitions and can flake under heavy load. A
-test-controllable animation clock would make them deterministic and faster.
-
-Optimizing proc macros (`[profile.dev.build-override] opt-level = 3`) cut UI
-test-target macro expansion from ~2.3s to ~1.3s per rebuild, but it changes
-the UI crate's metadata hash, which a running hot-reload host would reject.
-It needs a coordinated host restart, so it is not enabled. Scoping it to
-`[profile.test.build-override]` keeps the dev identity, but then test builds
-stop sharing dependency artifacts with dev builds: about 320 crates rebuild
-once, and every later sibling Jcode crate change compiles twice. That costs
-more than the ~1s it saves, so it is not enabled either.
-
-### Crate split plan, 2026-10-05
-
-`jcode-desktop-ui` is 183 non-test modules and ~122k lines. A static scan of
-`crate::`/`super::` references shows ~45k lines in modules that never reach
-`workspace` or `panel`. Those are the split candidates. The expected gain is
-in the UI crate's fixed per-rebuild work (crate metadata 1.2s, monomorphization
-collection, macro expansion, incremental cache save), which scales with crate
-size. Incremental compilation already skips most unchanged code, and editing
-a moved module still rebuilds the UI crate that depends on it, so measure a
-first slice before moving more.
-
-A first `jcode-desktop-core` slice of 13 modules (~10k lines, 193 tests) was
-verified on 2026-10-05 by copying the files unchanged into a standalone crate
-with the UI crate's dependency list: `cargo check` passes with no source
-edits. Modules: `diff_model` (with its `diff_tool_result` child), `diff`,
-`learning`, `remote_targets`, `performance`, `managed_cloud_parity`, `effort`,
-`image_cache`, `native_mermaid`, `pdf_render`, `prompt_background`, `todoist`,
-`preview_control`. Excluded after checking: `input_model_search`,
-`sidebar_projects`, and `terminal_paint` are child modules of `input`,
-`workspace`, and `terminal` that reach into their parents through `super`.
-Moving the slice changes callers' import paths and turns `pub(crate)` items
-used by the UI crate into `pub`. Its tests also need two adjustments, found by
-compiling them in the probe: `include_bytes!`/`include_str!` fixtures under
-`assets/previews/` use paths relative to `crates/jcode-desktop-ui/src`, and
-`performance` tests need the `hdrhistogram` dev-dependency. A second slice
-would add `theme`, `config`, `markdown`, `text_selection`, and `harness` once
-their mutual references are cut.
-
-Constraints: the UI crate is the hot-reloaded cdylib, so moved code is linked
-into it statically and keeps one GPUI instance. Moved types must stay out of
-the host/plugin ABI (`jcode-desktop-api`). Do the move while no other session
-has large uncommitted edits in the UI crate, since every moved file conflicts.
+`cargo test -p jcode-desktop-ui --lib` takes about 20s wall but 200s of CPU; the
+parallel run is contention-bound inside one process. `cargo nextest run` gives
+each test its own process and finishes in 12–15s (config in
+`.config/nextest.toml`). Unit tests ignore `~/.jcode/config.toml` unless
+`JCODE_DESKTOP_CONFIG` is set. Theme switches are instant under `cfg(test)`
+because the 180 ms fade runs on wall-clock time, which GPUI's test executor cannot
+advance; tests that change the process-global theme hold
+`theme::test_theme_lock()`. About a dozen tests still `thread::sleep` through real
+transitions and can flake under heavy load; a test-controllable animation clock
+would make them deterministic. `prompt_background::rounded_union` keeps a small
+position-independent LRU of tessellated paths.

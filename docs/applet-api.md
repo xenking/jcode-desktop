@@ -127,7 +127,7 @@ Spacing uses tokens (`none`, `xs`, `sm`, `md`, `lg`, `xl`), not pixels. Colors u
 tones (`default`, `dim`, `accent`, `success`, `warning`, `danger`), not hex values.
 
 The complete reference example is
-`crates/jcode-desktop-ui/src/applet_showcase.json`. It is also what the screenshot
+`crates/jcode-desktop-ui/src/workspace/applets/applet_showcase.json`. It is also what the screenshot
 fixture renders (`scripts/screenshot.py --transcript applet --applet-tab media`).
 
 ## Protocol

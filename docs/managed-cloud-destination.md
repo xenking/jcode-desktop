@@ -79,7 +79,7 @@ sequenceDiagram
   Runtime accrues against a monthly allowance (default 50 hours), enforced by
   the connect path and a 5-minute cron. A failed first boot is terminated and
   replaced automatically.
-- **Desktop**: `crates/jcode-desktop-ui/src/managed_cloud.rs`. The pending panel
+- **Desktop**: `crates/jcode-desktop-harness/src/managed_cloud.rs`. The pending panel
   shows a live checklist: Jcode account, Cloud machine, Jcode installed, Secure
   connection, Jcode session. Failures keep the draft and queued prompts and offer
   Retry, Jcode account, and Use this computer. There is no implicit local fallback.

@@ -6,12 +6,12 @@
 - Always commit and push completed changes to `main`. Do this every time unless the user explicitly asks you not to.
 - Commit only the changes you made. Do not include unrelated or pre-existing modifications.
 - Use the user's configured Git identity. Never override it with `Jcode`, an invented agent email, `git -c user.*`, or `GIT_AUTHOR_*` / `GIT_COMMITTER_*` values. If identity is missing, resolve the user's established identity rather than inventing one.
-- Before committing, verify `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT`. On this checkout the established identity is Jeremy Huang <94247773+1jehuang@users.noreply.github.com>.
+- Before committing, verify `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT`.
 - Enable this repository's identity guard with `git config --local core.hooksPath .githooks`. Do not bypass these hooks. They reject agent identities both at commit time and before pushing, including commits created through plumbing commands.
 
 ## Jcode Repository Ownership
 
-- This project also owns and maintains the adjacent Jcode SDK, harness API, and supporting crates in `/home/jeremy/jcode`.
+- This project also owns and maintains the adjacent Jcode SDK, harness API, and supporting crates in the sibling `../jcode` checkout.
 - New desktop functionality usually requires SDK changes. When desktop work requires an SDK, protocol, or shared-runtime change, make the correct change in the Jcode repository directly rather than adding a desktop-only workaround or asking the user to coordinate it.
 - Do not change the Jcode TUI unless the task explicitly requires it. Desktop features should normally be delivered through the SDK, not TUI changes.
 - Keep cross-repository behavior aligned and commit and push the changes in each affected repository.
