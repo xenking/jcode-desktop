@@ -327,7 +327,7 @@ mod socket_tests {
     }
 
     #[test]
-    fn old_bridge_does_not_receive_fifo_prompt() {
+    fn old_bridge_receives_a_fifo_prompt_as_a_follow_up() {
         let worker = Worker::new(|_| vec![]);
         worker.commands.send(SessionCommand::QueuePrompt(jcode_sdk::api::QueuedPrompt {
             active_skill: None,
@@ -338,9 +338,7 @@ mod socket_tests {
             mode: jcode_sdk::api::QueuedPromptMode::Queue,
             editing: false,
         })).unwrap();
-        worker.wait_for(|update| matches!(update, Update::QueuePromptFailed { client_id, reason, .. } if client_id == "fifo-id" && reason.contains("FIFO")));
-        worker.send("plain prompt", vec![]);
-        assert!(matches!(worker.request(), ApiRequest::SendMessage { content, .. } if content == "plain prompt"));
+        assert!(matches!(worker.request(), ApiRequest::QueuePrompt { mode, content, .. } if mode == jcode_sdk::api::QueuedPromptMode::AfterYield && content == "keep me"));
     }
 
     #[test]
