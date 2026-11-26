@@ -112,8 +112,7 @@ fn credits_line(account_id: &str, login: usize, credits: &Credits) -> gpui::Div 
     line
 }
 
-/// One short line: how many resets this login holds and when the first
-/// expires. `1 usable of 2 · exp 12d`.
+/// A saved-grant count is not an offer to reset the current session.
 fn resets_text(reset: &crate::accounts::BankedReset) -> Option<String> {
     let expiry = reset
         .expires_at
@@ -126,9 +125,9 @@ fn resets_text(reset: &crate::accounts::BankedReset) -> Option<String> {
         .map(|_| " · imported")
         .unwrap_or_default();
     match (reset.usable_count, reset.available_count) {
-        (Some(usable), available) if available > 0 => Some(format!(
-            "↻ {usable} usable of {available}{expiry}{imported}"
-        )),
+        (Some(_), available) if available > 0 => {
+            Some(format!("↻ {available} saved{imported}{expiry}"))
+        }
         (None, available) if available > 0 => Some(format!(
             "↻ {available} {}{expiry}{imported}",
             if available == 1 { "reset" } else { "resets" }
@@ -143,11 +142,18 @@ fn resets_text(reset: &crate::accounts::BankedReset) -> Option<String> {
 }
 
 fn resets_line(account_id: &str, login: usize, report: &UsageReport) -> Option<gpui::Div> {
-    let text = resets_text(report.banked_reset.as_ref()?)?;
+    let reset = report.banked_reset.as_ref()?;
+    let text = resets_text(reset)?;
     let id = account_id.to_owned();
-    Some(
-        caption(text).debug_selector(move || format!("account-{id}-login-{login}-resets")),
-    )
+    let mut lines = div()
+        .debug_selector(move || format!("account-{id}-login-{login}-resets"))
+        .flex()
+        .flex_col()
+        .child(caption(text));
+    if let Some(reason) = reset.inactive_reason() {
+        lines = lines.child(caption(reason));
+    }
+    Some(lines)
 }
 
 /// Credits of a provider that has no saved-login identities (Cursor): its one
@@ -335,7 +341,7 @@ mod tests {
                 r#"{"providers":[{"id":"claude","display_name":"Claude","status":"available","auth_kind":"OAuth"}]}"#,
             )
             .unwrap();
-            let reached = THREE_CLAUDE_LOGINS.replace("\"limit_reached\":false", "\"limit_reached\":true");
+            let reached = THREE_CLAUDE_LOGINS.replace("\"limit_reached\":false", "\"session_reset_available\":true,\"limit_reached\":true");
             accounts::merge_usage_for_tests(&mut accounts, &reached);
             w.accounts = accounts;
             cx.notify();
@@ -353,6 +359,30 @@ mod tests {
                 "pill {pill:?} outside block {block:?}"
             );
         }
+    }
+
+    #[test]
+    fn imported_saved_resets_do_not_imply_a_session_offer() {
+        let mut accounts = accounts::parse(
+            r#"{"providers":[{"id":"claude","status":"available","auth_kind":"OAuth"}]}"#,
+        )
+        .unwrap();
+        accounts::merge_usage_for_tests(
+            &mut accounts,
+            r#"{"providers":[{
+            "provider_name":"Anthropic - otter", "limits":[],
+            "extra_info":[["Account label","claude-otter"]],
+            "banked_reset":{"provider":"claude","account_label":"claude-otter",
+                "available_count":1,"usable_count":1,"cached_source":"imported",
+                "session_reset_available":false,"limit_reached":false,
+                "grants":[{"status":"redeemed"},{"status":"available"}]}
+        }]}"#,
+        );
+        let reset = accounts[0].usage_reports[0].banked_reset.as_ref().unwrap();
+        assert_eq!(resets_text(reset).as_deref(), Some("↻ 1 saved · imported"));
+        assert_eq!(reset.inactive_reason(), Some("Session reset unavailable"));
+        assert!(!reset.offerable());
+        assert_eq!(reset.account_label.as_deref(), Some("claude-otter"));
     }
 
     #[test]
