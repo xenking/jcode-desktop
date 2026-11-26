@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 pub struct LiveSwarmStatus {
     snapshots: HashMap<String, (u64, HashSet<String>)>,
     members: HashMap<String, (u64, SwarmMemberInfo)>,
+    pending_titles: HashMap<String, String>,
 }
 
 impl LiveSwarmStatus {
@@ -60,10 +61,28 @@ impl LiveSwarmStatus {
         changed
     }
 
-    /// Overlay after each poll as well as each live event. Both UI projections
-    /// then consume this one reconciled catalog, never a separate status cache.
+    /// Protect a live rename from a catalog read already in flight. Once a
+    /// poll observes the rename, later durable title changes may win normally.
+    pub fn note_title(&mut self, session_id: &str, title: &str) {
+        self.pending_titles
+            .insert(session_id.to_owned(), title.to_owned());
+    }
+
+    pub fn merge_catalog(&mut self, sessions: &mut [SessionInfo]) {
+        for session in sessions.iter() {
+            if self.pending_titles.get(&session.session_id) == session.title.as_ref() {
+                self.pending_titles.remove(&session.session_id);
+            }
+        }
+        self.merge(sessions);
+    }
+
+    /// Overlay after each poll as well as each live event.
     pub fn merge(&self, sessions: &mut [SessionInfo]) {
         for session in sessions {
+            if let Some(title) = self.pending_titles.get(&session.session_id) {
+                session.title = Some(title.clone());
+            }
             let Some((_, member)) = self.members.get(&session.session_id) else {
                 continue;
             };
@@ -158,6 +177,21 @@ mod tests {
         let mut sessions = catalog();
         live.merge(&mut sessions);
         assert_eq!(sessions[0].swarm_status.as_deref(), Some("running"));
+    }
+
+    #[test]
+    fn live_title_survives_a_read_in_flight_until_catalog_catches_up() {
+        let mut live = LiveSwarmStatus::default();
+        let mut sessions = catalog();
+        sessions[0].title = Some("old".into());
+        live.note_title("worker", "new");
+        live.merge(&mut sessions);
+        assert_eq!(sessions[0].title.as_deref(), Some("new"));
+        live.merge(&mut sessions);
+        live.merge_catalog(&mut sessions);
+        sessions[0].title = Some("later durable title".into());
+        live.merge_catalog(&mut sessions);
+        assert_eq!(sessions[0].title.as_deref(), Some("later durable title"));
     }
 
     #[test]

@@ -55,6 +55,11 @@ impl Panel {
         (pretty_model_label(model), effort)
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_composer_identity(&self) -> (String, Option<String>) {
+        self.composer_identity()
+    }
+
     /// Prompt input with its pill row below. Every composer location
     /// (fresh session, startup layout, docked) uses this so the pills never
     /// drift apart from the input they label.

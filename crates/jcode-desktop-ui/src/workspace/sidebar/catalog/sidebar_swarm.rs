@@ -1176,6 +1176,21 @@ mod tests {
         let worker_id = "session_gorilla_3_c";
         workspace.update(vcx, |w, cx| {
             lead_with_workers(w, cx, &[(worker_id, "ready")]);
+            w.push_test_panel(worker_id, cx);
+            w.apply(
+                Update::Event {
+                    session_id: worker_id.into(),
+                    event: jcode_sdk::ApiEvent::ModelInfo {
+                        session_id: worker_id.into(),
+                        model: Some("old-model".into()),
+                        provider: None,
+                        reasoning_effort: Some("low".into()),
+                        auth_method: None,
+                        account_label: None,
+                    },
+                },
+                cx,
+            );
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("sidebar-worker-glyph-0-0-check").is_some());
@@ -1201,26 +1216,68 @@ mod tests {
             }
             // A slow poll may finish after the live event with the spawn-time snapshot.
             let mut stale = w.sessions.clone();
+            w.apply(
+                Update::Event {
+                    session_id: worker_id.into(),
+                    event: jcode_sdk::ApiEvent::SessionRenamed {
+                        session_id: worker_id.into(),
+                        title: Some("new task".into()),
+                        display_title: "new task".into(),
+                    },
+                },
+                cx,
+            );
             stale
                 .iter_mut()
                 .find(|s| s.session_id == worker_id)
                 .unwrap()
                 .swarm_status = Some("ready".into());
             w.apply(Update::Sessions { sessions: stale }, cx);
-            w.apply(Update::WorkerFacts {
-                workers: HashMap::from([(worker_id.into(), jcode_sdk::WorkerMeta {
-                    model: Some("old-model".into()),
-                    effort: Some("low".into()),
-                    ..Default::default()
-                })]),
-            }, cx);
+            w.apply(
+                Update::WorkerFacts {
+                    workers: HashMap::from([(
+                        worker_id.into(),
+                        jcode_sdk::WorkerMeta {
+                            model: Some("old-model".into()),
+                            effort: Some("low".into()),
+                            ..Default::default()
+                        },
+                    )]),
+                },
+                cx,
+            );
         });
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, cx| {
             let panel = w.slots[w.active].panel.read(cx);
             assert_eq!(panel.test_swarm_indicator_count(), 1);
-            assert_eq!(w.worker_meta[worker_id].model.as_deref(), Some("gpt-6.2-sol"));
+            assert_eq!(
+                w.worker_meta[worker_id].model.as_deref(),
+                Some("gpt-6.2-sol")
+            );
             assert_eq!(w.worker_meta[worker_id].effort.as_deref(), Some("high"));
+            let worker_panel = w
+                .slots
+                .iter()
+                .find_map(|slot| {
+                    let panel = slot.panel.read_chat(cx)?;
+                    (panel.session_id == worker_id).then_some(panel)
+                })
+                .expect("worker panel");
+            assert_eq!(worker_panel.model.as_deref(), Some("gpt-6.2-sol"));
+            assert_eq!(worker_panel.reasoning_effort.as_deref(), Some("high"));
+            let (footer_model, footer_effort) = worker_panel.test_composer_identity();
+            assert!(footer_model.to_lowercase().contains("sol"), "{footer_model}");
+            assert_eq!(footer_effort.as_deref(), Some("high"));
+            assert_eq!(
+                w.sessions
+                    .iter()
+                    .find(|s| s.session_id == worker_id)
+                    .unwrap()
+                    .title
+                    .as_deref(),
+                Some("new task")
+            );
             assert_eq!(
                 w.sessions
                     .iter()

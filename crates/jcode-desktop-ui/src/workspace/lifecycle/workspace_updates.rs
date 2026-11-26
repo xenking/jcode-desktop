@@ -21,25 +21,36 @@ pub(super) fn install_update_dialog_host<T: 'static>(cx: &mut App) {
 }
 
 impl Workspace {
-    pub(super) fn dispatch_bridge_batch(workspace: &Entity<Self>, updates: Vec<Update>, cx: &mut App) {
+    pub(super) fn dispatch_bridge_batch(
+        workspace: &Entity<Self>,
+        updates: Vec<Update>,
+        cx: &mut App,
+    ) {
         let mut changed = false;
         for update in updates {
             match &update {
                 Update::Event { session_id, event } => {
                     crate::render_stats::note_variant("event:", event);
-                    if matches!(event, jcode_sdk::ApiEvent::TextDelta { .. }
-                        | jcode_sdk::ApiEvent::ReasoningDelta { .. }
-                        | jcode_sdk::ApiEvent::ToolInputDelta { .. })
-                    {
+                    if matches!(
+                        event,
+                        jcode_sdk::ApiEvent::TextDelta { .. }
+                            | jcode_sdk::ApiEvent::ReasoningDelta { .. }
+                            | jcode_sdk::ApiEvent::ToolInputDelta { .. }
+                    ) {
                         let workspace = workspace.read(cx);
                         let owner = workspace.side_question_owner(session_id, cx);
-                        let panel = workspace.slots.iter().find(|slot| {
-                            (owner.is_none() || !slot.closing)
-                                && slot.panel.session_id(cx) == *session_id
-                        }).and_then(|slot| slot.panel.chat().cloned());
+                        let panel = workspace
+                            .slots
+                            .iter()
+                            .find(|slot| {
+                                (owner.is_none() || !slot.closing)
+                                    && slot.panel.session_id(cx) == *session_id
+                            })
+                            .and_then(|slot| slot.panel.chat().cloned());
                         let _no_blocking_sdk_read = jcode_sdk::forbid_blocking_local_io();
                         if let Some(owner) = owner {
-                            owner.update(cx, |panel, cx| panel.apply_side_question_event(event, cx));
+                            owner
+                                .update(cx, |panel, cx| panel.apply_side_question_event(event, cx));
                         }
                         if let Some(panel) = panel {
                             panel.update(cx, |panel, cx| panel.apply(event, cx));
@@ -111,7 +122,7 @@ impl Workspace {
             }
         }
         if let Update::Sessions { sessions } = &mut update {
-            self.live_swarm_status.merge(sessions);
+            self.live_swarm_status.merge_catalog(sessions);
             if same_session_catalog(&self.sessions, sessions) {
                 // Keep exact recency metadata for future changes without
                 // redrawing a catalog whose rows and order are unchanged.
@@ -165,7 +176,9 @@ impl Workspace {
                         (summary, Some(notice))
                     }
                     (None, true) => {
-                        let raw = message.strip_prefix("Remote session failed: ").unwrap_or(&message);
+                        let raw = message
+                            .strip_prefix("Remote session failed: ")
+                            .unwrap_or(&message);
                         let notice = machines::RowNotice {
                             summary: crate::friendly_error::summarize(raw),
                             action: Some(crate::connect_failure::FailureAction::Retry),
@@ -298,9 +311,10 @@ impl Workspace {
                         // Restored panels can predate directory metadata. Refresh it
                         // along with the title so the identity footer stays current.
                         // Missing catalog metadata must not erase a known directory.
-                        let directory = session.working_dir.as_ref().filter(|dir| {
-                            !dir.trim().is_empty() && !panel.is_in(dir)
-                        });
+                        let directory = session
+                            .working_dir
+                            .as_ref()
+                            .filter(|dir| !dir.trim().is_empty() && !panel.is_in(dir));
                         if title.is_some() || directory.is_some() {
                             slot.panel.update_chat(cx, |panel, cx| {
                                 if let Some(title) = title {
@@ -562,8 +576,38 @@ impl Workspace {
                                     .iter()
                                     .any(|session| session.session_id == member.session_id)
                         });
+                        let previous_routes = self.worker_meta.clone();
                         self.live_swarm_status.merge(&mut self.sessions);
-                        self.live_swarm_status.merge_worker_routes(&mut self.worker_meta);
+                        self.live_swarm_status
+                            .merge_worker_routes(&mut self.worker_meta);
+                        // A worker panel may have retained the model reported on
+                        // attach. A newer live route must update that identity too,
+                        // not just the sidebar's polled worker record.
+                        for slot in &self.slots {
+                            let id = slot.panel.session_id(cx);
+                            let Some(route) = self.worker_meta.get(id) else {
+                                continue;
+                            };
+                            let Some(previous) = previous_routes.get(id) else {
+                                continue;
+                            };
+                            if route.model.is_some()
+                                && (route.model != previous.model
+                                    || route.provider != previous.provider
+                                    || route.effort != previous.effort)
+                            {
+                                let event = jcode_sdk::ApiEvent::ModelInfo {
+                                    session_id: id.to_owned(),
+                                    model: route.model.clone(),
+                                    provider: route.provider.clone(),
+                                    reasoning_effort: route.effort.clone(),
+                                    auth_method: None,
+                                    account_label: None,
+                                };
+                                slot.panel
+                                    .update_chat(cx, |panel, cx| panel.apply(&event, cx));
+                            }
+                        }
                         self.sync_swarm_strips(cx);
                         if unknown_worker {
                             self.bridge.send(Command::RefreshSessions);
@@ -593,12 +637,14 @@ impl Workspace {
                     self.bridge.send(Command::RefreshSessions);
                 }
                 let mut changed = false;
-                if matches!(event, jcode_sdk::ApiEvent::MessageAccepted { .. }
-                    | jcode_sdk::ApiEvent::PeerUserMessage { .. }
-                    | jcode_sdk::ApiEvent::ToolDone { .. }
-                    | jcode_sdk::ApiEvent::TurnDone { .. }
-                    | jcode_sdk::ApiEvent::TurnStopped { .. })
-                    && let Some(session) = self
+                if matches!(
+                    event,
+                    jcode_sdk::ApiEvent::MessageAccepted { .. }
+                        | jcode_sdk::ApiEvent::PeerUserMessage { .. }
+                        | jcode_sdk::ApiEvent::ToolDone { .. }
+                        | jcode_sdk::ApiEvent::TurnDone { .. }
+                        | jcode_sdk::ApiEvent::TurnStopped { .. }
+                ) && let Some(session) = self
                     .sessions
                     .iter_mut()
                     .find(|session| session.session_id == session_id)
@@ -626,6 +672,14 @@ impl Workspace {
                     }
                     _ => None,
                 };
+                if let Some(title) = updated_title.as_deref()
+                    && self.sessions.iter().any(|session| {
+                        session.session_id == session_id && session.parent_session_id.is_some()
+                    })
+                {
+                    self.live_swarm_status.note_title(&session_id, title);
+                    self.bridge.send(Command::RefreshSessions);
+                }
                 if let Some(display_title) = updated_title
                     && let Some(session) = self
                         .sessions
@@ -655,7 +709,8 @@ impl Workspace {
                             && let Some(panel) = slot.panel.read_chat(cx)
                             && let Some(provider) = panel.provider.as_deref()
                         {
-                            let id = accounts::credential_id(provider, panel.auth_method.as_deref());
+                            let id =
+                                accounts::credential_id(provider, panel.auth_method.as_deref());
                             if self.recent_accounts.first() != Some(&id) {
                                 accounts::record_use(&mut self.recent_accounts, id);
                                 changed = true;
@@ -727,7 +782,8 @@ impl Workspace {
                         slot.panel.update_chat(cx, |panel, cx| {
                             if !panel.session_saved_settled(saved, None, Some(&error)) {
                                 let verb = if saved { "save" } else { "unsave" };
-                                panel.report_error(format!("Failed to {verb} session: {error}"), cx);
+                                panel
+                                    .report_error(format!("Failed to {verb} session: {error}"), cx);
                             }
                             crate::sounds::play(crate::sounds::Cue::Error, cx);
                             cx.notify();
@@ -775,9 +831,18 @@ impl Workspace {
                     }
                 }
             }
-            Update::SpeedSettled { session_id, serial, result } => {
-                if let Some(slot) = self.slots.iter().find(|slot| slot.panel.session_id(cx) == session_id) {
-                    slot.panel.update_chat(cx, |panel, cx| panel.speed_settled(serial, result, cx));
+            Update::SpeedSettled {
+                session_id,
+                serial,
+                result,
+            } => {
+                if let Some(slot) = self
+                    .slots
+                    .iter()
+                    .find(|slot| slot.panel.session_id(cx) == session_id)
+                {
+                    slot.panel
+                        .update_chat(cx, |panel, cx| panel.speed_settled(serial, result, cx));
                 }
             }
             Update::AskAttachment {
