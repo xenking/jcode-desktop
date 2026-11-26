@@ -1277,17 +1277,17 @@ impl Workspace {
         let host = self.remotes.default_host.as_deref();
         let (icon, display, description): (&'static [u8], String, String) = match host {
             None => (
-                include_bytes!("../../../assets/icons/computer.svg"),
+                include_bytes!("../../../../../assets/icons/computer.svg"),
                 compact_path_in(&path, self.default_working_dir()),
                 format!("Local · {path}"),
             ),
             Some(host) if machines::managed_destination(host) => (
-                include_bytes!("../../../assets/icons/machine-cloud.svg"),
+                include_bytes!("../../../../../assets/icons/machine-cloud.svg"),
                 format!("{} · ~", machines::machine_label(host)),
                 format!("{} · ~ (remote home)", machines::machine_label(host)),
             ),
             Some(host) => (
-                include_bytes!("../../../assets/icons/ssh.svg"),
+                include_bytes!("../../../../../assets/icons/ssh.svg"),
                 format!("{host} · ~"),
                 format!("SSH · {host} · ~ (remote home)"),
             ),

@@ -16,7 +16,8 @@ window's successful update.
 Change a Desktop preference, arrange sessions and drafts, then quit and relaunch
 the same profile. Recovery differs from hot reload, which retains host resources.
 Source entry points are `crates/jcode-desktop-ui-core/src/config.rs`,
-`crates/jcode-desktop-ui/src/workspace_recovery.rs` and `workspace_restart.rs`.
+`crates/jcode-desktop-ui/src/workspace/recovery/workspace_recovery.rs` and
+`crates/jcode-desktop-ui/src/workspace/lifecycle/workspace_restart.rs`.
 
 ## Driving it safely on macOS
 

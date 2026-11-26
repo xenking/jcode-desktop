@@ -133,7 +133,7 @@ fn handle_window_request(
                 input.attach_image(
                     crate::clipboard_image::ClipboardImage {
                         media_type: "image/png".into(),
-                        bytes: include_bytes!("../../../assets/previews/image-preview.png")
+                        bytes: include_bytes!("../../../../../assets/previews/image-preview.png")
                             .to_vec(),
                         width: 640,
                         height: 480,

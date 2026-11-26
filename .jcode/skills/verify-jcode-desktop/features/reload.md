@@ -15,7 +15,7 @@ terminals. A failed candidate must leave the previous UI usable.
 The development host exposes Ctrl+R for rebuild/reload. Host or ABI changes can
 require a coordinated restart instead. Source entry points are
 `src/host/reload.rs`, `src/host/resources.rs` and
-`crates/jcode-desktop-ui/src/workspace_restart.rs`.
+`crates/jcode-desktop-ui/src/workspace/lifecycle/workspace_restart.rs`.
 
 ## Driving it safely on macOS
 

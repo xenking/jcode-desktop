@@ -5,7 +5,7 @@
 //! left/right within a strip and up/down between strips.
 
 #[cfg(test)]
-#[path = "workspace_control_tests.rs"]
+#[path = "workspace/controls/workspace_control_tests.rs"]
 mod control_tests;
 
 #[cfg(test)]
@@ -16,10 +16,10 @@ mod file_editor_tests;
 #[path = "workspace_terminal_tests.rs"]
 mod terminal_tests;
 
-#[path = "workspace_control.rs"]
+#[path = "workspace/controls/workspace_control.rs"]
 mod control;
 
-#[path = "workspace_commands.rs"]
+#[path = "workspace/controls/workspace_commands.rs"]
 mod commands;
 
 #[path = "workspace_account_sign_in.rs"]
@@ -33,26 +33,26 @@ mod applet_surfaces;
 #[path = "workspace_side_panel.rs"]
 mod side_panel;
 
-#[path = "workspace_screens.rs"]
+#[path = "workspace/surfaces/workspace_screens.rs"]
 pub(crate) mod screens;
 #[path = "workspace_resume.rs"]
 pub(crate) mod resume;
 #[path = "workspace_resume_view.rs"]
 mod resume_view;
 
-#[path = "workspace_menu.rs"]
+#[path = "workspace/controls/workspace_menu.rs"]
 mod menu;
 #[path = "workspace_single_panel.rs"]
 mod single_panel;
-#[path = "workspace_window_launch.rs"]
+#[path = "workspace/lifecycle/workspace_window_launch.rs"]
 mod window_launch;
-#[path = "workspace_remotes_fixtures.rs"]
+#[path = "workspace/remotes/workspace_remotes_fixtures.rs"]
 mod remotes_fixtures;
-#[path = "workspace_boot.rs"]
+#[path = "workspace/lifecycle/workspace_boot.rs"]
 mod boot;
 #[path = "workspace/recovery/workspace_snapshot.rs"]
 mod snapshot;
-#[path = "workspace_updates.rs"]
+#[path = "workspace/lifecycle/workspace_updates.rs"]
 mod runtime_updates;
 #[path = "workspace_sessions.rs"]
 mod sessions;
@@ -60,13 +60,13 @@ mod sessions;
 mod navigation;
 #[path = "workspace_panels.rs"]
 mod panels;
-#[path = "workspace_toggles.rs"]
+#[path = "workspace/controls/workspace_toggles.rs"]
 mod toggles;
 #[path = "workspace/layout/workspace_strip_view.rs"]
 mod strip_view;
 #[path = "workspace/sidebar/chrome/sidebar_view.rs"]
 mod sidebar_view;
-#[path = "workspace_settings_view.rs"]
+#[path = "workspace/controls/workspace_settings_view.rs"]
 mod settings_view;
 #[path = "workspace_chrome_view.rs"]
 mod chrome_view;
@@ -91,13 +91,13 @@ mod global_voice;
 #[path = "workspace_panel_window.rs"]
 pub(crate) mod panel_window;
 
-#[path = "workspace_preview.rs"]
+#[path = "workspace/surfaces/workspace_preview.rs"]
 mod preview;
 
-#[path = "workspace_changelog.rs"]
+#[path = "workspace/surfaces/workspace_changelog.rs"]
 mod changelog_panel;
 
-#[path = "workspace_publish.rs"]
+#[path = "workspace/surfaces/workspace_publish.rs"]
 mod publish_panel;
 
 #[path = "workspace_switch_directory.rs"]
@@ -108,7 +108,7 @@ mod responsive;
 #[path = "workspace_files.rs"]
 pub(crate) mod files;
 
-#[path = "workspace_notifications.rs"]
+#[path = "workspace/lifecycle/workspace_notifications.rs"]
 mod notifications;
 
 #[path = "workspace_change_review.rs"]
@@ -149,7 +149,7 @@ mod sidebar_worktrees;
 mod sidebar_atoms;
 #[path = "workspace/sidebar/chrome/sidebar_quick_actions.rs"]
 mod sidebar_quick_actions;
-#[path = "workspace_stream_fixture.rs"]
+#[path = "workspace/surfaces/workspace_stream_fixture.rs"]
 mod workspace_stream_fixture;
 use sidebar_metadata::SidebarPanelMetadata;
 
@@ -184,9 +184,9 @@ use crate::updates;
 
 #[path = "workspace/recovery/workspace_recovery.rs"]
 pub(crate) mod recovery;
-#[path = "workspace_restart.rs"]
+#[path = "workspace/lifecycle/workspace_restart.rs"]
 pub(crate) mod restart;
-#[path = "workspace_housekeeping.rs"]
+#[path = "workspace/lifecycle/workspace_housekeeping.rs"]
 mod housekeeping;
 
 #[cfg(test)]
@@ -212,17 +212,17 @@ mod navigation_map_tests;
 mod navigation_state;
 #[path = "workspace_openrig.rs"]
 mod openrig;
-#[path = "workspace_fleet_session.rs"]
+#[path = "workspace/remotes/workspace_fleet_session.rs"]
 mod fleet_session;
 #[cfg(test)]
 #[path = "panel_cache_tests.rs"]
 pub(crate) mod panel_cache_tests;
 #[cfg(test)]
-#[path = "workspace_remote_tests.rs"]
+#[path = "workspace/remotes/workspace_remote_tests.rs"]
 mod remote_tests;
-#[path = "workspace_machines.rs"]
+#[path = "workspace/remotes/workspace_machines.rs"]
 pub(crate) mod machines;
-#[path = "workspace_remotes.rs"]
+#[path = "workspace/remotes/workspace_remotes.rs"]
 mod remotes;
 #[path = "workspace_scroll_snap.rs"]
 mod scroll_snap;
@@ -360,7 +360,7 @@ mod folder_surface;
 
 #[path = "live_tabs.rs"]
 mod live_tabs;
-#[path = "workspace_version.rs"]
+#[path = "workspace/lifecycle/workspace_version.rs"]
 mod version;
 
 #[path = "workspace/sidebar/chrome/sidebar_roller.rs"]
@@ -379,7 +379,7 @@ mod hover_scroll_tests;
 #[cfg(test)]
 #[path = "focus_follow_tests.rs"]
 mod focus_follow_tests;
-#[path = "workspace_pull.rs"]
+#[path = "workspace/remotes/workspace_pull.rs"]
 mod workspace_pull;
 #[cfg(test)]
 #[path = "workspace_scroll_tests.rs"]
