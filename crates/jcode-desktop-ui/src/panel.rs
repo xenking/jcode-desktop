@@ -57,9 +57,9 @@ mod fixtures;
 use fixtures::{demo_items, demo_tool_times, screenshot_fixture_for};
 #[path = "panel_labels.rs"]
 mod labels;
-#[path = "panel_todo_card.rs"]
+#[path = "panel/transcript/cards/panel_todo_card.rs"]
 mod todo_card;
-#[path = "panel_tool_summary.rs"]
+#[path = "panel/transcript/tools/panel_tool_summary.rs"]
 mod tool_summary;
 pub(crate) use labels::tool_card_token_pill;
 pub(crate) use crate::provider_mark::human_auth_method;
@@ -69,9 +69,9 @@ use tool_summary::*;
 pub(crate) use crate::accounts::pretty_provider_name;
 #[path = "panel_todoist.rs"]
 mod todoist;
-#[path = "panel_render.rs"]
+#[path = "panel/transcript/render/panel_render.rs"]
 mod render;
-#[path = "panel_items.rs"]
+#[path = "panel/transcript/render/panel_items.rs"]
 mod items;
 pub use items::{AssistantOutputPhase, Item, TodoCardPayload, Transcript, TranscriptImage};
 use items::*;
@@ -79,7 +79,7 @@ use items::*;
 mod slash;
 #[path = "panel_events.rs"]
 mod events;
-#[path = "panel_rows.rs"]
+#[path = "panel/transcript/render/panel_rows.rs"]
 mod rows;
 #[path = "panel_construct.rs"]
 mod construct;
@@ -100,7 +100,7 @@ pub(crate) mod live;
 use live::Live;
 #[path = "panel_clean_chat.rs"]
 mod clean_chat;
-#[path = "panel_assistant_output.rs"]
+#[path = "panel/transcript/render/panel_assistant_output.rs"]
 mod assistant_output;
 
 
@@ -121,7 +121,7 @@ mod rewind_tests;
 mod overlay_keys;
 
 #[cfg(test)]
-#[path = "panel_display_tests.rs"]
+#[path = "panel/transcript/render/panel_display_tests.rs"]
 mod display_tests;
 
 #[cfg(test)]
@@ -129,7 +129,7 @@ mod display_tests;
 mod applet_interaction_tests;
 
 #[cfg(test)]
-#[path = "panel_selection_tests.rs"]
+#[path = "panel/transcript/render/panel_selection_tests.rs"]
 mod selection_tests;
 
 #[cfg(test)]
@@ -155,12 +155,12 @@ mod text_document;
 mod snapshot;
 pub use snapshot::TranscriptSnapshot;
 
-#[path = "panel_background_task.rs"]
+#[path = "panel/transcript/cards/panel_background_task.rs"]
 mod background_task;
 
-#[path = "panel_tool_output.rs"]
+#[path = "panel/transcript/tools/panel_tool_output.rs"]
 mod tool_output;
-#[path = "panel_codemode_card.rs"]
+#[path = "panel/transcript/cards/panel_codemode_card.rs"]
 mod codemode_card;
 
 #[path = "panel_compaction.rs"]
@@ -184,13 +184,13 @@ mod steady_activity;
 #[path = "panel_tail_glide.rs"]
 mod tail_glide;
 use scroll_motion::WheelGlide;
-#[path = "panel_agent_message.rs"]
+#[path = "panel/transcript/cards/panel_agent_message.rs"]
 mod agent_message;
 #[path = "panel/ask/panel_ask.rs"]
 mod ask;
 #[path = "panel/ask/panel_ask_images.rs"]
 mod ask_images;
-#[path = "panel_background_jobs.rs"]
+#[path = "panel/transcript/cards/panel_background_jobs.rs"]
 mod background_jobs;
 #[path = "panel_cache_miss.rs"]
 mod cache_miss;
@@ -232,7 +232,7 @@ mod speed;
 mod mode_switch;
 // One disclosure model for every truncated line: tool titles, errors, output,
 // prompts, notices, background tasks and swarm lines.
-#[path = "expandable.rs"]
+#[path = "panel/transcript/tools/expandable.rs"]
 pub(crate) mod expandable;
 #[path = "panel_flicker.rs"]
 mod flicker;
@@ -276,11 +276,11 @@ pub use startup::StartupLayout;
 pub(crate) mod applet_panel;
 #[path = "panel_demo_replay.rs"]
 pub(crate) mod demo_replay;
-#[path = "panel_gmail_draft_card.rs"]
+#[path = "panel/transcript/cards/panel_gmail_draft_card.rs"]
 mod gmail_draft_card;
-#[path = "panel_gmail_read_card.rs"]
+#[path = "panel/transcript/cards/panel_gmail_read_card.rs"]
 mod gmail_read_card;
-#[path = "panel_mcp_list_card.rs"]
+#[path = "panel/transcript/cards/panel_mcp_list_card.rs"]
 mod mcp_list_card;
 #[path = "panel_openrig.rs"]
 pub(crate) mod openrig;
@@ -292,10 +292,10 @@ mod response_stats;
 mod side_document;
 #[path = "panel_tab_outline.rs"]
 mod tab_outline;
-#[path = "panel_user_response.rs"]
+#[path = "panel/transcript/cards/panel_user_response.rs"]
 mod user_response;
 pub(crate) use tab_outline::{TabRing, tab_corner_radius};
-#[path = "panel_tool_streaming.rs"]
+#[path = "panel/transcript/tools/panel_tool_streaming.rs"]
 mod tool_streaming;
 #[path = "panel_usage.rs"]
 pub(crate) mod usage;
@@ -756,7 +756,7 @@ impl TranscriptMeasurements {
 }
 
 #[cfg(test)]
-#[path = "panel_measurement_tests.rs"]
+#[path = "panel/transcript/render/panel_measurement_tests.rs"]
 mod measurement_tests;
 
 #[cfg(test)]
@@ -1776,10 +1776,10 @@ impl Focusable for Panel {
 
 
 #[cfg(test)]
-#[path = "panel_expandable_tests.rs"]
+#[path = "panel/transcript/tools/panel_expandable_tests.rs"]
 mod expandable_tests;
 #[cfg(test)]
-#[path = "panel_row_state_tests.rs"]
+#[path = "panel/transcript/render/panel_row_state_tests.rs"]
 mod row_state_tests;
 #[cfg(test)]
 #[path = "panel_fresh_session_tests.rs"]
