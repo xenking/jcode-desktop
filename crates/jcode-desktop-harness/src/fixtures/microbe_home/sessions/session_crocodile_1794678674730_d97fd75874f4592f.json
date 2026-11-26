@@ -1,7 +1,7 @@
 {
  "id": "session_crocodile_1794678674730_d97fd75874f4592f",
  "parent_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
- "title": "Implement the 'shake' compaction (omp toolshaking) in the us",
+ "title": "Implement the 'shake' compaction (legacy toolshaking) in the us",
  "created_at": "2026-11-14T17:51:14.730173Z",
  "updated_at": "2026-11-14T18:35:45.981327Z",
  "model_usage_turn_id": "session_crocodile_1794678674730_d97fd75874f4592f:message_1794678674792_18438162386936941527",

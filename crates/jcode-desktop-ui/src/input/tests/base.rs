@@ -2,7 +2,7 @@ use super::*;
 use gpui::{TestAppContext, WindowOptions};
 
 #[test]
-fn large_paste_threshold_matches_omp() {
+fn large_paste_threshold_counts_chars_and_lines() {
     assert!(!is_large_paste(&"a".repeat(1000)));
     assert!(is_large_paste(&"a".repeat(1001)));
     assert!(!is_large_paste(&"a\n".repeat(9)));

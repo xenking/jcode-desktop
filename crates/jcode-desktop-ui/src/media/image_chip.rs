@@ -108,7 +108,7 @@ pub(super) fn ordinal_fixture_ids() -> [String; 2] {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn attachment_label_matches_omp() {
+    fn attachment_label_is_numbered_image() {
         assert_eq!(super::label("[#image 1]"), "[Image #1]");
         assert_eq!(super::label("[#image 12]"), "[Image #12]");
     }

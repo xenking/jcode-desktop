@@ -1,7 +1,7 @@
 {
  "id": "session_panda_1794683793414_e41918bbb3db2259",
  "parent_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
- "title": "Implement omp compaction parity in ~/projects/github.com/xen",
+ "title": "Implement legacy compaction parity in ~/projects/github.com/xen",
  "created_at": "2026-11-14T19:16:33.414449Z",
  "updated_at": "2026-11-14T19:51:47.101174Z",
  "model_usage_turn_id": "session_panda_1794683793414_e41918bbb3db2259:message_1794683793447_15117187930320770064",
