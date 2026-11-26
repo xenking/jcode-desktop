@@ -373,3 +373,40 @@ fn a_collapsed_description_that_does_not_fit_ends_in_an_ellipsis(cx: &mut gpui::
     assert!(shown.ends_with('…'), "cut without a mark: {shown:?}");
     assert!(!shown.contains('\n'), "one line: {shown:?}");
 }
+
+#[gpui::test]
+fn the_first_card_of_a_new_session_takes_the_keys_from_the_composer(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.push_test_panel("session-a", cx);
+        workspace
+    });
+    let panel = workspace
+        .read_with(vcx, |workspace, _| workspace.test_panel(0))
+        .unwrap();
+    // The first prompt of a new session was sent: its row exists, the welcome layout has not settled.
+    panel.update(vcx, |panel, cx| {
+        *panel.items = vec![Item::User("hello".into())];
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(
+        panel.read_with(vcx, |panel, _| panel.startup_layout.is_some()),
+        "the welcome layout is still in place"
+    );
+    vcx.update(|window, cx| {
+        let input = panel.read(cx).input_focus_handle(cx);
+        window.focus(&input, cx);
+    });
+    show(
+        &panel,
+        vcx,
+        "ask-1",
+        vec![question(false, &[("A", ""), ("B", "")])],
+    );
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("2");
+    assert_eq!(card(&panel, vcx, |card| card.chosen[0].clone()), [1]);
+}

@@ -464,6 +464,37 @@ impl Panel {
         });
     }
 
+    /// An ask card that arrives while the composer holds the keyboard takes it, so the
+    /// answer keys work at once. Every composer placement calls this: the welcome layout
+    /// of a new session does not use the docked composer.
+    fn hand_keyboard_to_ask_card(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let should_focus_ask = self.ask_card.as_ref().is_some_and(|card| {
+            self.input.read(cx).is_focused(window)
+                || (card.submitting() && self.ask_editor_focused(window, cx))
+        });
+        if should_focus_ask {
+            let panel = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                if let Some(panel) = panel.upgrade() {
+                    let focus = {
+                        let panel = panel.read(cx);
+                        panel
+                            .ask_card
+                            .as_ref()
+                            .is_some_and(|card| {
+                                panel.input.read(cx).is_focused(window)
+                                    || (card.submitting() && panel.ask_editor_focused(window, cx))
+                            })
+                            .then(|| panel.focus_handle.clone())
+                    };
+                    if let Some(focus) = focus {
+                        window.focus(&focus, cx);
+                    }
+                }
+            });
+        }
+    }
+
     pub(super) fn render_composer_stack(
         &mut self,
         bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
@@ -471,6 +502,7 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
+        self.hand_keyboard_to_ask_card(window, cx);
         let overlays = [
             self.render_side_question_card(window, cx),
             self.render_provider_picker(window, cx),
@@ -533,31 +565,6 @@ impl Panel {
             ..background
         };
         let panel = cx.entity().downgrade();
-        let should_focus_ask = self.ask_card.as_ref().is_some_and(|card| {
-            self.input.read(cx).is_focused(window)
-                || (card.submitting() && self.ask_editor_focused(window, cx))
-        });
-        if should_focus_ask {
-            let panel = panel.clone();
-            window.defer(cx, move |window, cx| {
-                if let Some(panel) = panel.upgrade() {
-                    let focus = {
-                        let panel = panel.read(cx);
-                        panel
-                            .ask_card
-                            .as_ref()
-                            .is_some_and(|card| {
-                                panel.input.read(cx).is_focused(window)
-                                    || (card.submitting() && panel.ask_editor_focused(window, cx))
-                            })
-                            .then(|| panel.focus_handle.clone())
-                    };
-                    if let Some(focus) = focus {
-                        window.focus(&focus, cx);
-                    }
-                }
-            });
-        }
         div()
             .debug_selector(|| "composer-dock".into())
             .absolute()
