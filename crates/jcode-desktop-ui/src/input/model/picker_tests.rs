@@ -436,3 +436,130 @@ fn the_same_model_lists_one_route_per_account_and_marks_the_serving_one(
         }
     }
 }
+
+#[gpui::test]
+fn every_account_group_and_the_serving_marker_are_reachable_in_a_short_window(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(crate::input::bind_keys);
+    let labels = ["claude-otter", "claude-fox", "claude-panda", "claude-hare", "claude-wren"];
+    let routes: Vec<_> = labels
+        .into_iter()
+        .flat_map(|label| {
+            ["claude-opus-4-8", "claude-sonnet-5-5"].map(|model| jcode_sdk::ModelRouteInfo {
+                account: Some(format!("claude:{label}")),
+                icon: Some("🦊".into()),
+                speed_options: Vec::new(),
+                reasoning_efforts: None,
+                model: model.into(),
+                provider: "Anthropic".into(),
+                api_method: format!("claude-oauth@{label}"),
+                available: true,
+                detail: String::new(),
+                usage: None,
+            })
+        })
+        .collect();
+    let (fixture, vcx) = cx.add_window_view(|_, cx| {
+        Fixture(cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {})))
+    });
+    let input = fixture.read_with(vcx, |fixture, _| fixture.0.clone());
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, size(px(1000.), px(640.)));
+    input.update(vcx, |input, cx| {
+        input.set_model_routes(Vec::new(), &routes, Some("claude-opus-4-8".into()), cx);
+        input.set_current_account(Some("claude:claude-wren".into()), cx);
+        input.set_content("/model ".into(), cx);
+    });
+    vcx.update(|window, cx| {
+        let focus = input.read(cx).focus_handle.clone();
+        window.focus(&focus, cx);
+    });
+    vcx.run_until_parked();
+    let rows = input.read_with(vcx, |input, _| input.command_suggestions().len());
+    let mut headers = HashSet::new();
+    let mut active_seen = false;
+    let visible = |vcx: &mut gpui::VisualTestContext, name: String| {
+        let viewport = vcx.debug_bounds("slash-command-scroll")?;
+        vcx.debug_bounds(Box::leak(name.into_boxed_str()))
+            .filter(|bounds| bounds.top() >= viewport.top() && bounds.bottom() <= viewport.bottom())
+    };
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    let on_screen = (0..rows)
+        .filter(|index| visible(vcx, format!("model-picker-group-label-{index}")).is_some())
+        .count();
+    assert!(on_screen < labels.len(), "the window must be too short to show every group");
+    for step in 0..rows {
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        let viewport = vcx.debug_bounds("slash-command-scroll").expect("list");
+        let focus = vcx.debug_bounds("picker-keyboard-focus").expect("a highlighted row");
+        assert!(
+            focus.top() >= viewport.top() && focus.bottom() <= viewport.bottom(),
+            "step {step}: the highlighted row is outside the list: {focus:?} in {viewport:?}"
+        );
+        for index in 0..rows {
+            if visible(vcx, format!("model-picker-group-label-{index}")).is_some() {
+                headers.insert(index);
+            }
+            active_seen |= visible(vcx, format!("model-picker-account-active-{index}")).is_some();
+        }
+        vcx.simulate_keystrokes("down");
+        vcx.run_until_parked();
+    }
+    assert_eq!(headers.len(), labels.len(), "groups that were ever on screen: {headers:?}");
+    assert!(active_seen, "the serving account's marker never came into view");
+}
+
+#[gpui::test]
+fn the_wheel_scrolls_the_model_list_down_to_its_last_account_group(cx: &mut gpui::TestAppContext) {
+    let routes: Vec<_> = ["claude-otter", "claude-fox", "claude-panda", "claude-hare", "claude-wren"]
+        .into_iter()
+        .flat_map(|label| {
+            ["claude-opus-4-8", "claude-sonnet-5-5"].map(|model| jcode_sdk::ModelRouteInfo {
+                account: Some(format!("claude:{label}")),
+                icon: Some("🦊".into()),
+                speed_options: Vec::new(),
+                reasoning_efforts: None,
+                model: model.into(),
+                provider: "Anthropic".into(),
+                api_method: format!("claude-oauth@{label}"),
+                available: true,
+                detail: String::new(),
+                usage: None,
+            })
+        })
+        .collect();
+    let (fixture, vcx) = cx.add_window_view(|_, cx| {
+        Fixture(cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {})))
+    });
+    let input = fixture.read_with(vcx, |fixture, _| fixture.0.clone());
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, size(px(1000.), px(640.)));
+    input.update(vcx, |input, cx| {
+        input.set_model_routes(Vec::new(), &routes, Some("claude-opus-4-8".into()), cx);
+        input.set_content("/model ".into(), cx);
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    let viewport = vcx.debug_bounds("slash-command-scroll").expect("list");
+    let last_group = input.read_with(vcx, |input, _| {
+        input.command_suggestions().iter().rposition(|row| row.header.is_some()).expect("groups")
+    });
+    let label = Box::leak(format!("model-picker-group-label-{last_group}").into_boxed_str()) as &'static str;
+    assert!(vcx.debug_bounds(label).is_none(), "the last group starts below the fold");
+    let mut reached = false;
+    for _ in 0..40 {
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-120.))),
+            ..Default::default()
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        if vcx.debug_bounds(label).is_some_and(|bounds| bounds.bottom() <= viewport.bottom()) {
+            reached = true;
+            break;
+        }
+    }
+    assert!(reached, "the wheel never brought the last group's header into view");
+}
