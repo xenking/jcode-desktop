@@ -219,7 +219,7 @@ mod tests {
                 )
                 .unwrap(),
             );
-            w.set_test_routing_view(crate::routing::fixture());
+            w.set_test_routing_view(crate::routing::feed::fixture());
             cx.notify();
         });
         vcx.run_until_parked();

@@ -28,7 +28,7 @@ impl Workspace {
         } else {
             Vec::new()
         };
-        let routing_feed = crate::routing::spawn();
+        let routing_feed = crate::routing::feed::spawn();
         let recovering_crash = crash_launch.is_some();
         let launch = crash_launch
             .or_else(|| snapshot.as_ref()?.launch.clone().map(Into::into))
@@ -703,7 +703,7 @@ impl Workspace {
                 workspace.sidebar_view = SidebarView::Accounts;
                 // The routing section below the logins: labelled API keys with
                 // their icons, and budgets.
-                workspace.routing_view = Some(crate::routing::fixture());
+                workspace.routing_view = Some(crate::routing::feed::fixture());
                 // Past the end: the list clamps it, so the routing rows show.
                 workspace.accounts_scroll.set_offset(gpui::point(px(0.0), px(-4000.0)));
             }

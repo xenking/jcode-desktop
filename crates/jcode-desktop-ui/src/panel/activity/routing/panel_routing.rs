@@ -6,8 +6,9 @@
 //! sends routing intents typed as `/acct`.
 use super::*;
 use crate::input::popup::Popup;
+use crate::routing::RoutingChip;
+use crate::routing::gate::GateCard;
 use crate::routing::popover::{RoutingPopover, Tone};
-use crate::routing::{GateCard, RoutingChip};
 use jcode_sdk::RoutingIntentAction;
 use jcode_session_types::routing::{RoutingGateChoice, RoutingGateOption};
 use jcode_session_types::routing_acct::parse_acct;

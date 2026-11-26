@@ -519,7 +519,7 @@ pub struct Panel {
     routing_popover_focus: FocusHandle,
     routing_trigger_focus: FocusHandle,
     /// A spending limit holds the turn until the person answers.
-    routing_gate: Option<crate::routing::GateCard>,
+    routing_gate: Option<crate::routing::gate::GateCard>,
     rewind_selection: Option<history_paging::rewind::Selection>,
     expandable_viewport_height: gpui::Pixels,
     transcript_row_count: usize,

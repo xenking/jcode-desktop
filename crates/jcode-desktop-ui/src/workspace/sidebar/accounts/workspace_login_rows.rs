@@ -353,7 +353,7 @@ mod tests {
             .unwrap();
             accounts::merge_usage_for_tests(&mut accounts, THREE_CLAUDE_LOGINS);
             w.accounts = accounts;
-            let mut view = crate::routing::fixture();
+            let mut view = crate::routing::feed::fixture();
             view.accounts[0].id = "claude:claude-fox".into();
             view.accounts[0].icon = Some("🚀".into());
             w.set_test_routing_view(view);

@@ -17,7 +17,7 @@ pub enum Tone {
 }
 
 /// A bar's colour for a used fraction, shared by windows and budgets.
-pub fn tone_for(fraction: f32) -> Tone {
+fn tone_for(fraction: f32) -> Tone {
     if fraction >= 0.9 {
         Tone::Error
     } else if fraction >= 0.7 {
