@@ -79,7 +79,7 @@ impl Panel {
             .text_size(px(11.))
             .occlude()
             .when_some(full_status, |el, full| {
-                el.tooltip(move |_, cx| cx.new(|_| VoiceTooltip(full.clone())).into())
+                el.tooltip(move |_, cx| cx.new(|_| crate::components::Tooltip::header_text(full.clone()).debug_selector("voice-shortcut-tooltip")).into())
             })
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
@@ -177,7 +177,7 @@ impl Panel {
                         .bg(theme.wash(Ink::Accent, 0.15))
                         .hover(|el| el.bg(theme.wash(Ink::Accent, 0.3)))
                         .tooltip(|_, cx| {
-                            cx.new(|_| VoiceTooltip("Stop and send transcription".into()))
+                            cx.new(|_| crate::components::Tooltip::header_text("Stop and send transcription").debug_selector("voice-shortcut-tooltip"))
                                 .into()
                         })
                         .on_click(cx.listener(|panel, _, _, cx| {
@@ -202,7 +202,7 @@ impl Panel {
                         .text_color(theme.TEXT_DIM)
                         .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
                         .tooltip(|_, cx| {
-                            cx.new(|_| VoiceTooltip("Dismiss or cancel voice request".into()))
+                            cx.new(|_| crate::components::Tooltip::header_text("Dismiss or cancel voice request").debug_selector("voice-shortcut-tooltip"))
                                 .into()
                         })
                         .on_click(cx.listener(|panel, _, _, cx| {

@@ -443,7 +443,7 @@ impl Panel {
                                 panel.read(cx).speed_picker().tooltip
                             )
                         });
-                        cx.new(|_| crate::speed_icon::SpeedTooltip(tooltip)).into()
+                        cx.new(|_| crate::components::Tooltip::header_text(tooltip)).into()
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.choose_speed(jcode_provider_core::SpeedMode::Standard, cx);

@@ -1,4 +1,4 @@
-use gpui::{Context, IntoElement, ParentElement, Render, Rgba, Styled, Window, div, px, svg};
+use gpui::{IntoElement, Rgba, Styled, px, svg};
 
 use jcode_provider_core::{SpeedAvailability, SpeedMode, SpeedOption};
 
@@ -162,22 +162,6 @@ pub(crate) fn quota(tier: SpeedMode) -> &'static str {
         SpeedMode::Standard => "Normal quota use.",
         SpeedMode::Fast => "Faster inference. May use more quota or cost more.",
         SpeedMode::Ultrafast => "Fastest advertised inference. May use more quota or cost more.",
-    }
-}
-
-pub(crate) struct SpeedTooltip(pub String);
-
-impl Render for SpeedTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let theme = crate::theme::Theme::global();
-        div()
-            .max_w(px(300.))
-            .p_2()
-            .rounded_md()
-            .bg(theme.HEADER_BG)
-            .text_size(px(12.))
-            .text_color(theme.TEXT)
-            .child(self.0.clone())
     }
 }
 

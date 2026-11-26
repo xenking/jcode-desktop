@@ -67,7 +67,7 @@ impl Panel {
                 .items_center()
                 .gap(px(6.))
                 .min_w_0()
-                .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip.clone())).into())
+                .tooltip(move |_, cx| cx.new(|_| crate::components::Tooltip::header_text(tooltip.clone()).debug_selector("voice-shortcut-tooltip")).into())
                 .child(
                     div()
                         .debug_selector(move || format!("voice-action-rank-{}", index + 1))

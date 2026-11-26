@@ -64,22 +64,6 @@ pub fn voice_tooltip(action: &str, status: &str) -> String {
     )
 }
 
-pub struct VoiceTooltip(pub String);
-impl Render for VoiceTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let _render_scope = crate::render_stats::scope("VoiceTooltip");
-        div()
-            .debug_selector(|| "voice-shortcut-tooltip".into())
-            .max_w(px(300.))
-            .p_2()
-            .rounded_md()
-            .bg(Theme::global().HEADER_BG)
-            .text_size(px(12.))
-            .text_color(Theme::global().TEXT)
-            .child(self.0.clone())
-    }
-}
-
 /// Compact OS-pill label for Jev's decision, e.g. "Jev → Coding agent".
 pub fn global_pill_decision(decision: &str) -> String {
     let Some(decision) = decision.strip_prefix("Jev chose: ") else {

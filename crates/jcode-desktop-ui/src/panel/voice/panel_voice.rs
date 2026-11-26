@@ -914,7 +914,7 @@ impl Panel {
                 theme.prompt_background(usize::MAX)
             })
             .when(!active, |el| el.hover(|el| el.bg(theme.USER_BG)))
-            .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip_status.clone())).into())
+            .tooltip(move |_, cx| cx.new(|_| crate::components::Tooltip::header_text(tooltip_status.clone()).debug_selector("voice-shortcut-tooltip")).into())
             .on_click(cx.listener(|panel, _, window, cx| {
                 // All controls use the same action path. Workspace captures
                 // this before the panel fallback to stop the existing owner,

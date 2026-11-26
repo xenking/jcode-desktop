@@ -6,6 +6,7 @@ use crate::theme::Theme;
 #[derive(Clone)]
 enum Content {
     Text(SharedString),
+    HeaderText(SharedString),
     Rows {
         title: SharedString,
         rows: Vec<SharedString>,
@@ -29,6 +30,10 @@ pub struct Tooltip {
 impl Tooltip {
     pub fn text(text: impl Into<SharedString>) -> Self {
         Self::with(Content::Text(text.into()))
+    }
+
+    pub fn header_text(text: impl Into<SharedString>) -> Self {
+        Self::with(Content::HeaderText(text.into())).max_width(px(300.))
     }
 
     /// A title over a few dim rows, for controls with several facts.
@@ -86,6 +91,18 @@ impl Render for Tooltip {
         let theme = Theme::global();
         let selector = self.selector;
         match &self.content {
+            Content::HeaderText(text) => div()
+                .when_some(selector, |el, selector| {
+                    el.debug_selector(move || selector.into())
+                })
+                .when_some(self.max_width, |el, width| el.max_w(width))
+                .p_2()
+                .rounded_md()
+                .bg(theme.HEADER_BG)
+                .text_size(px(12.))
+                .text_color(theme.TEXT)
+                .child(text.clone())
+                .into_any_element(),
             Content::Text(text) => div()
                 .when_some(selector, |el, selector| {
                     el.debug_selector(move || selector.into())

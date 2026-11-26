@@ -1015,7 +1015,7 @@ impl PromptInput {
                     .text_color(ink)
                     .cursor_pointer()
                     .when_some(speed_tooltip, |row, detail| {
-                        row.tooltip(move |_, cx| cx.new(|_| crate::speed_icon::SpeedTooltip(detail.clone())).into())
+                        row.tooltip(move |_, cx| cx.new(|_| crate::components::Tooltip::header_text(detail.clone())).into())
                     })
                     .on_mouse_move(cx.listener(move |this, _, _, cx| {
                         if this.command_selection != index {
@@ -1256,7 +1256,7 @@ impl PromptInput {
                             if on { ink } else { ink.opacity(0.75) },
                         ))
                         .tooltip(move |_, cx| {
-                            cx.new(|_| speed_icon::SpeedTooltip(tooltip.clone())).into()
+                            cx.new(|_| crate::components::Tooltip::header_text(tooltip.clone())).into()
                         })
                         .on_mouse_down(
                             MouseButton::Left,
@@ -1321,7 +1321,7 @@ impl PromptInput {
                 .children(crate::effort_icon::picker_icon(effort, 11.0))
                 .when(on && !compact, |pill| pill.child(effort_row_label(effort)))
                 .tooltip(move |_, cx| {
-                    cx.new(|_| speed_icon::SpeedTooltip(crate::effort::tooltip(effort)))
+                    cx.new(|_| crate::components::Tooltip::header_text(crate::effort::tooltip(effort)))
                         .into()
                 })
                 .on_mouse_down(
