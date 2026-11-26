@@ -12,6 +12,7 @@
 #![cfg_attr(all(feature = "test-support", not(test)), allow(dead_code))]
 
 pub mod animation_clock;
+pub mod choice_keys;
 pub mod components;
 pub mod config;
 pub mod image_cache;

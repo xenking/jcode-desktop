@@ -194,6 +194,8 @@ mod agent_message;
 mod ask;
 #[path = "panel/ask/panel_ask_images.rs"]
 mod ask_images;
+#[path = "panel/ask/panel_ask_fixtures.rs"]
+mod ask_fixtures;
 #[path = "panel/transcript/cards/panel_background_jobs.rs"]
 mod background_jobs;
 #[path = "panel/activity/panel_cache_miss.rs"]
@@ -629,6 +631,9 @@ pub struct Panel {
     recovery_picker_open: bool,
     /// Pending `ask` tool questions, answered from an inline card.
     ask_card: Option<ask::AskCard>,
+    /// The ask card's dragged height. It lives here, not on the card, so the
+    /// size the user chose holds for every question of this session.
+    ask_resize: crate::input::VerticalResize,
     /// Questions waiting behind `ask_card`, oldest first.
     queued_asks: VecDeque<ask::QueuedAsk>,
     ask_focus_return: Option<FocusHandle>,

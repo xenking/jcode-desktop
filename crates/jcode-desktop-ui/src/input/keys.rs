@@ -1,5 +1,6 @@
 //! The prompt's actions and key bindings.
 use super::*;
+use crate::choice_keys::{ChoiceKey, search_keystroke as search_key};
 
 actions!(
     prompt_input,
@@ -123,19 +124,31 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-j", HistoryNext, Some("PromptInput")),
         KeyBinding::new("ctrl-[", HistoryPrev, Some("PromptInput")),
         KeyBinding::new("ctrl-]", HistoryNext, Some("PromptInput")),
-        KeyBinding::new("up", HistoryPrev, Some("PromptInput")),
-        KeyBinding::new("down", HistoryNext, Some("PromptInput")),
+        KeyBinding::new(
+            search_key(ChoiceKey::Prev),
+            HistoryPrev,
+            Some("PromptInput"),
+        ),
+        KeyBinding::new(
+            search_key(ChoiceKey::Next),
+            HistoryNext,
+            Some("PromptInput"),
+        ),
         KeyBinding::new("alt-shift-up", GrowEditor, Some("PromptInput")),
         KeyBinding::new("alt-shift-down", ShrinkEditor, Some("PromptInput")),
-        KeyBinding::new("escape", Clear, Some("PromptInput")),
+        KeyBinding::new(search_key(ChoiceKey::Dismiss), Clear, Some("PromptInput")),
         KeyBinding::new("ctrl-s", Stash, Some("PromptInput")),
         // Falls through (propagates) unless ghost text is showing.
-        KeyBinding::new("tab", AcceptCompletion, Some("PromptInput")),
+        KeyBinding::new(
+            search_key(ChoiceKey::Complete),
+            AcceptCompletion,
+            Some("PromptInput"),
+        ),
         KeyBinding::new("home", Home, Some("PromptInput")),
         KeyBinding::new("end", End, Some("PromptInput")),
         KeyBinding::new("ctrl-home", Home, Some("PromptInput")),
         KeyBinding::new("ctrl-end", End, Some("PromptInput")),
-        KeyBinding::new("enter", Submit, Some("PromptInput")),
+        KeyBinding::new(search_key(ChoiceKey::Confirm), Submit, Some("PromptInput")),
         KeyBinding::new("shift-enter", InsertNewline, Some("PromptInput")),
         // Outranks the ChatPanel shift-space jump. With a draft it types a
         // space (Shift is often still held mid-sentence), otherwise it

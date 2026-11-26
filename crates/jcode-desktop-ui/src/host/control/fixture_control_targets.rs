@@ -18,6 +18,13 @@ pub(crate) fn transcript_scroll_fixture() -> bool {
             == Ok("transcript-scroll")
 }
 
+/// An offline ask card fixture (`ask`, `ask-single`, ...).
+pub(crate) fn ask_fixture() -> bool {
+    enabled()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT")
+            .is_ok_and(|name| name.starts_with("ask"))
+}
+
 pub(crate) fn files_panel() -> bool {
     enabled() && std::env::var("JCODE_DESKTOP_CONTROL_FILES_PANEL").as_deref() == Ok("1")
 }
@@ -181,6 +188,8 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector.starts_with("agent-message:")
         || selector == "side-question-promote"
         || (side_questions() && selector.starts_with("side-question-"))
+        || (ask_fixture()
+            && matches!(selector, "ask-resize-drag" | "ask-resize-up" | "ask-resize-reset"))
         || ((voice_recording() || voice_soniox()) && selector == "composer.voice")
         || (model_speed_picker()
             && (selector.starts_with("model-speed:")
@@ -279,6 +288,8 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
         "composer:resize"
     } else if matches!(selector, "side-question-resize-up" | "side-question-resize-down") {
         "side-question-resize"
+    } else if matches!(selector, "ask-resize-drag" | "ask-resize-up" | "ask-resize-reset") {
+        "ask-resize"
     } else if matches!(
         selector,
         "gallery:wheel" | "gallery-nav:lines" | "gallery-nav:first" | "gallery-nav:last"
@@ -363,7 +374,7 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
         );
         return true;
     }
-    let click_count = if selector == "composer:resize-reset" {
+    let click_count = if matches!(selector, "composer:resize-reset" | "ask-resize-reset") {
         2
     } else {
         1
@@ -379,7 +390,8 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
     );
     let drag_y = match selector {
         "composer:resize-drag" => Some(position.y - px(50.)),
-        "side-question-resize-up" => Some(px(0.)),
+        "side-question-resize-up" | "ask-resize-up" => Some(px(0.)),
+        "ask-resize-drag" => Some(position.y - px(140.)),
         "side-question-resize-down" => Some(window.viewport_size().height - px(1.)),
         _ => None,
     };

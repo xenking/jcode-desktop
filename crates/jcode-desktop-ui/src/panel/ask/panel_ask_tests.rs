@@ -112,19 +112,24 @@ fn long_option_text_keeps_the_row_width(cx: &mut gpui::TestAppContext) {
     let comment = vcx.debug_bounds("ask-comment-button-0-0").unwrap();
     let radio = vcx.debug_bounds("ask-mark-0-0").unwrap();
     assert!(
-        label.size.width > px(150.),
-        "the label keeps its width: {:?} of {:?}",
-        label.size.width,
+        description.size.width > px(150.),
+        "the description takes the rest of the line: {:?} of {:?}",
+        description.size.width,
         row.size.width
     );
-    assert!(description.size.width > px(150.));
     assert!(label.size.height < px(40.), "the label stays on one line");
+    assert!(
+        description.size.height < px(40.),
+        "the description stays on one line"
+    );
     assert_eq!(label.center().y, radio.center().y);
     assert_eq!(label.center().y, comment.center().y);
-    assert!(comment.right() <= row.right() && comment.left() >= label.right() - px(1.));
+    assert!(label.right() <= description.left());
+    assert!(comment.right() <= row.right() && comment.left() >= description.right() - px(1.));
     assert!(
-        comment.left() - label.right() < px(16.),
-        "the text fills the row up to the comment button"
+        // This description is long enough to also carry the expand button.
+        comment.left() - description.right() < px(40.),
+        "the text fills the row up to the buttons"
     );
     assert!(
         comment.size.width <= px(28.),
@@ -206,7 +211,7 @@ fn selecting_an_option_preserves_option_text_geometry(cx: &mut gpui::TestAppCont
         let label = vcx.debug_bounds(selector).unwrap();
         let description = vcx.debug_bounds(description).unwrap();
         assert!(
-            label.size == before && label.bottom() <= description.top(),
+            label.size == before && label.right() <= description.left(),
             "{selector}: label was {before:?}, now {label:?}; description {description:?}"
         );
     }
@@ -832,8 +837,16 @@ fn large_card_scrolls_without_moving_footer(cx: &mut gpui::TestAppContext) {
         "long option label must wrap: {label:?}"
     );
     assert!(
-        description.size.height > px(24.),
-        "long description must wrap: {description:?}"
+        description.size.height < px(24.),
+        "a collapsed description is one line: {description:?}"
+    );
+    let expand = vcx.debug_bounds("ask-expand-button-0-0").unwrap().center();
+    vcx.simulate_click(expand, gpui::Modifiers::default());
+    vcx.run_until_parked();
+    let expanded = vcx.debug_bounds("ask-description-0-0").unwrap();
+    assert!(
+        expanded.size.height > px(24.),
+        "an expanded description wraps whole: {expanded:?}"
     );
     let transcript_before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
     let first_before = vcx.debug_bounds("ask-option-0-0").unwrap();

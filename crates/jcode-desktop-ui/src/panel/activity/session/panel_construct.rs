@@ -261,19 +261,21 @@ impl Panel {
                 });
             });
         }
-        if crate::harness::screenshot_mode() && fixture.as_deref() == Some("ask") {
+        if crate::harness::screenshot_mode()
+            && let Some(questions) = fixture.as_deref().and_then(ask_fixtures::questions)
+        {
             let panel = cx.weak_entity();
+            let applet = fixture.as_deref() == Some("ask-applet");
+            let opened = fixture.as_deref() == Some("ask");
             cx.defer(move |cx| {
-                let questions: Vec<_> = (0..4).map(|i| serde_json::json!({
-                    "header": format!("Section {}", i + 1),
-                    "question": format!("Section {}: Which option works best for this project?", i + 1),
-                    "options": (0..5).map(|o| serde_json::json!({"label": format!("Option {}", o + 1), "description": "A longer description to show how the answer wraps across multiple lines in a compact card."})).collect::<Vec<_>>()
-                })).collect();
-                let event = serde_json::json!({"ev":"ask_request", "session_id":"screenshot-fixture", "request_id":"screenshot-ask", "tool_call_id":"screenshot-tool", "questions":questions});
+                let event = serde_json::json!({"ev":"ask_request", "session_id":"screenshot-fixture", "request_id":"screenshot-ask", "tool_call_id": ask_fixtures::TOOL_CALL, "questions":questions});
+                if applet {
+                    crate::applet_runtime::get(cx).sync_agent("screenshot-fixture", &ask_fixtures::applet("screenshot-fixture"));
+                }
                 if let Ok(event) = serde_json::from_value::<ApiEvent>(event) {
                     let _ = panel.update(cx, |panel, cx| {
                         panel.apply(&event, cx);
-                        if let Some(card) = &mut panel.ask_card {
+                        if let Some(card) = panel.ask_card.as_mut().filter(|_| opened) {
                             card.toggle(0, 0);
                             card.open_comment(0, 0);
                         }
@@ -496,6 +498,7 @@ impl Panel {
             .then(orchestration::State::fixture),
             recovery_picker_open: false,
             ask_card: None,
+            ask_resize: crate::input::VerticalResize::default(),
             queued_asks: VecDeque::new(),
             ask_focus_return: None,
             ask_recovery: None,

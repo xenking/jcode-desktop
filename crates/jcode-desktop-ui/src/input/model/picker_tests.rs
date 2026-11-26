@@ -563,3 +563,33 @@ fn the_wheel_scrolls_the_model_list_down_to_its_last_account_group(cx: &mut gpui
     }
     assert!(reached, "the wheel never brought the last group's header into view");
 }
+
+#[gpui::test]
+fn picker_arrows_stop_at_both_ends_where_a_card_wraps(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (fixture, vcx) = cx.add_window_view(|_, cx| {
+        Fixture(cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {})))
+    });
+    let input = fixture.read_with(vcx, |fixture, _| fixture.0.clone());
+    input.update(vcx, |input, cx| {
+        input.set_model_routes(Vec::new(), &routes(2), None, cx);
+        input.set_content("/model ".into(), cx);
+        input.command_selection = 0;
+    });
+    vcx.update(|window, cx| {
+        let focus = input.read(cx).focus_handle.clone();
+        window.focus(&focus, cx);
+    });
+    vcx.run_until_parked();
+    let rows = input.read_with(vcx, |input, _| input.command_suggestions().len());
+    assert!(rows >= 3, "the picker has rows to walk through");
+    let selected = |vcx: &mut gpui::VisualTestContext| {
+        input.read_with(vcx, |input, _| input.command_selection)
+    };
+    vcx.simulate_keystrokes("up");
+    assert_eq!(selected(vcx), 0, "Up on the first row keeps it highlighted");
+    for _ in 0..rows + 2 {
+        vcx.simulate_keystrokes("down");
+    }
+    assert_eq!(selected(vcx), rows - 1, "Down stops on the last row");
+}

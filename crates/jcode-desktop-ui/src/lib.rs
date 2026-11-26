@@ -153,7 +153,7 @@ pub(crate) use jcode_desktop_model::{
 // The shared UI foundation every view uses, in its own crate so feature view
 // crates can depend on it without the whole UI.
 pub(crate) use jcode_desktop_ui_core::{
-    animation_clock, components, config, image_cache, prompt_background, pulse_text, render_stats,
+    animation_clock, choice_keys, components, config, image_cache, prompt_background, pulse_text, render_stats,
     scrollbar, text_selection, theme, transition,
 };
 // Feature leaves with no Panel/Workspace involvement, in their own crates.
