@@ -361,8 +361,21 @@ pub(in crate::harness) fn session_worker_with_connector(
             });
         }
 
+        // The daemon cannot answer mid-turn, so a local session also seeds the
+        // catalog from disk here; later retries leave a fresher state alone.
+        let local_home = address
+            .host
+            .is_none()
+            .then(|| jcode_base::storage::jcode_dir().ok())
+            .flatten();
         let mut skills_loaded = !client.supports("skill_message_v1")
-            || load_skill_catalog(&client, real_id, &session_id, &updates);
+            || load_skill_catalog(
+                &client,
+                real_id,
+                &session_id,
+                local_home.as_deref(),
+                &updates,
+            );
         let mut history = history::HistoryRecovery::default();
         history.load(&client, real_id, &session_id, &updates);
         let _ = updates.send(Update::AskAttachment {
@@ -1515,7 +1528,8 @@ pub(in crate::harness) fn session_worker_with_connector(
                 let closes_turn =
                     matches!(event, ApiEvent::Error { .. } | ApiEvent::TurnDone { .. });
                 if closes_turn && !skills_loaded {
-                    skills_loaded = load_skill_catalog(&client, real_id, &session_id, &updates);
+                    skills_loaded =
+                        load_skill_catalog(&client, real_id, &session_id, None, &updates);
                 }
                 let _ = updates.send(Update::Event {
                     session_id: session_id.clone(),

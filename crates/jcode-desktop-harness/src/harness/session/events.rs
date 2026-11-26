@@ -316,27 +316,37 @@ pub(in crate::harness) fn is_already_processing_error(message: &str) -> bool {
         .contains("already processing a message")
 }
 
+/// Ask the daemon for the session's skill catalog. The daemon refuses while a
+/// turn runs, so on failure a local session shows the catalog read from this
+/// machine instead of an empty picker. Returns whether the daemon answered:
+/// its snapshot is authoritative, so the caller retries until it does.
 pub(super) fn load_skill_catalog(
     client: &JcodeClient,
     real_id: &str,
     session_id: &str,
+    local_home: Option<&std::path::Path>,
     updates: &UpdateSender,
 ) -> bool {
-    let Ok(output) =
-        client.runtime_command(real_id, jcode_sdk::api::RuntimeCommand::Skills, Vec::new())
-    else {
-        return false;
+    let reply = client.runtime_command(real_id, jcode_sdk::api::RuntimeCommand::Skills, Vec::new());
+    let (answered, data) = match reply {
+        Ok(output) => (true, Some(output.data)),
+        Err(_) => (
+            false,
+            local_home.and_then(|home| crate::harness::catalog::local_skill_catalog(home, real_id)),
+        ),
     };
-    let _ = updates.send(Update::Event {
-        session_id: session_id.to_owned(),
-        event: ApiEvent::RuntimeCommandResult {
+    if let Some(data) = data {
+        let _ = updates.send(Update::Event {
             session_id: session_id.to_owned(),
-            command: output.command,
-            data: output.data,
-            message: String::new(),
-        },
-    });
-    true
+            event: ApiEvent::RuntimeCommandResult {
+                session_id: session_id.to_owned(),
+                command: jcode_sdk::api::RuntimeCommand::Skills,
+                data,
+                message: String::new(),
+            },
+        });
+    }
+    answered
 }
 
 pub(in crate::harness) fn recover_async_busy(
@@ -444,5 +454,163 @@ pub(in crate::harness) fn wait_for_reconnect(
             }
         }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => ReconnectWait::Elapsed,
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    use jcode_sdk::api::{ApiRequest, ClientFrame, ServerFrame, read_frame, write_frame};
+    use jcode_sdk::{ConnectOptions, JcodeClient};
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    struct Transport(UnixStream);
+    impl jcode_sdk::Transport for Transport {
+        fn split(
+            self: Box<Self>,
+        ) -> jcode_sdk::Result<(Box<dyn BufRead + Send>, Box<dyn Write + Send>)> {
+            let writer = self.0.try_clone().unwrap();
+            Ok((Box::new(BufReader::new(self.0)), Box::new(writer)))
+        }
+    }
+
+    /// A daemon whose session is mid-turn: it refuses the `skills` runtime
+    /// command exactly as the real one does while the turn holds the agent.
+    fn client(busy: bool) -> JcodeClient {
+        let (socket, server) = UnixStream::pair().unwrap();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(server.try_clone().unwrap());
+            let mut writer = server;
+            while let Ok(frame) = read_frame::<_, ClientFrame>(&mut reader) {
+                let event = match frame.request {
+                    ApiRequest::Hello { .. } => ApiEvent::HelloOk {
+                        runtime_identity: None,
+                        version: jcode_sdk::api::API_VERSION_MAJOR,
+                        server: "skills-test".into(),
+                        capabilities: vec!["runtime_commands".into(), "skill_message_v1".into()],
+                    },
+                    ApiRequest::RuntimeCommand {
+                        session_id,
+                        command,
+                        ..
+                    } if !busy => ApiEvent::RuntimeCommandResult {
+                        session_id,
+                        command,
+                        data: serde_json::json!({"skills": [], "pinned_skills": ["daemon"]}),
+                        message: String::new(),
+                    },
+                    ApiRequest::RuntimeCommand { .. } => ApiEvent::Error {
+                        code: jcode_sdk::api::ErrorCode::Internal,
+                        message:
+                            "Session is busy. Retry this runtime command after the current turn."
+                                .into(),
+                    },
+                    _ => ApiEvent::Ok,
+                };
+                if write_frame(&mut writer, &ServerFrame::reply(frame.id, event)).is_err() {
+                    break;
+                }
+            }
+        });
+        JcodeClient::connect_with(
+            Box::new(Transport(socket)),
+            ConnectOptions {
+                ensure_runtime: false,
+                request_timeout: Some(Duration::from_secs(2)),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn catalog_update(
+        updates: &crate::harness::updates::UpdateReceiver,
+    ) -> Option<serde_json::Value> {
+        std::iter::from_fn(|| updates.try_recv().ok()).find_map(|update| match update {
+            Update::Event {
+                event:
+                    ApiEvent::RuntimeCommandResult {
+                        command: jcode_sdk::api::RuntimeCommand::Skills,
+                        data,
+                        ..
+                    },
+                ..
+            } => Some(data),
+            _ => None,
+        })
+    }
+
+    fn home_with_pins() -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("project");
+        let skill = project.join(".jcode/skills/quiet");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: quiet\ndescription: Keep output brief\nmode: true\n---\nBe brief.\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(
+            home.path().join("sessions/s1.json"),
+            serde_json::json!({
+                "working_dir": project,
+                "pinned_skills": ["selfdev", "swarm", "poteto-mode"],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        home
+    }
+
+    #[test]
+    fn a_busy_daemon_still_gives_a_local_session_its_modes_skills_and_pins() {
+        let home = home_with_pins();
+        let (updates_tx, updates) = crate::harness::updates::update_channel();
+        let answered =
+            load_skill_catalog(&client(true), "s1", "s1", Some(home.path()), &updates_tx);
+        assert!(!answered, "the busy refusal must stay retryable");
+        let data = catalog_update(&updates).expect("the picker gets a catalog despite the refusal");
+        assert_eq!(
+            data["pinned_skills"],
+            serde_json::json!(["selfdev", "swarm", "poteto-mode"])
+        );
+        let quiet = data["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|skill| skill["name"] == "quiet")
+            .expect("project skills are listed");
+        assert_eq!(quiet["description"], "Keep output brief");
+        assert_eq!(quiet["mode"], true);
+    }
+
+    #[test]
+    fn the_daemons_answer_wins_and_retries_never_overwrite_it_locally() {
+        let home = home_with_pins();
+        let (updates_tx, updates) = crate::harness::updates::update_channel();
+        assert!(load_skill_catalog(
+            &client(false),
+            "s1",
+            "s1",
+            Some(home.path()),
+            &updates_tx
+        ));
+        assert_eq!(
+            catalog_update(&updates).unwrap()["pinned_skills"],
+            serde_json::json!(["daemon"])
+        );
+        assert!(!load_skill_catalog(
+            &client(true),
+            "s1",
+            "s1",
+            None,
+            &updates_tx
+        ));
+        assert!(
+            catalog_update(&updates).is_none(),
+            "a failed retry emits nothing"
+        );
     }
 }

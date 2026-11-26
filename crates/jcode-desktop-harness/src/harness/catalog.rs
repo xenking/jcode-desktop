@@ -62,12 +62,16 @@ pub(super) struct PersistedSession {
 }
 
 impl PersistedSession {
-    fn catalog_context(&self) -> Option<jcode_sdk::api::SessionCatalogContext> {
-        let modes = if self.pinned_skills.is_empty() {
+    fn pinned_modes(&self) -> Vec<String> {
+        if self.pinned_skills.is_empty() {
             self.pinned_skill.iter().cloned().collect()
         } else {
             self.pinned_skills.clone()
-        };
+        }
+    }
+
+    fn catalog_context(&self) -> Option<jcode_sdk::api::SessionCatalogContext> {
+        let modes = self.pinned_modes();
         let activity = (self.agent_started
             || self.is_swarm_worker
             || self.hidden
@@ -425,6 +429,38 @@ pub(super) fn json_string_field(bytes: &[u8], field: &str, last: bool) -> Option
         .next()?
         .ok()
         .flatten()
+}
+
+/// The `skills` runtime command's answer, rebuilt from this machine for a
+/// local session. The daemon refuses that command while a turn runs ("Session
+/// is busy"), so a panel attached mid-turn would otherwise show no modes or
+/// skills until the turn ends. Same shape as the daemon's snapshot: skills
+/// resolved for the session's working directory, and the persisted pins.
+pub(super) fn local_skill_catalog(home: &Path, session_id: &str) -> Option<serde_json::Value> {
+    let path = home.join("sessions").join(format!("{session_id}.json"));
+    let record = std::fs::metadata(&path)
+        .ok()
+        .and_then(|metadata| read_persisted_session(&path, metadata.len()));
+    let working_dir = record
+        .as_ref()
+        .and_then(|record| record.working_dir.as_deref())
+        .map(Path::new);
+    let registry = jcode_base::skill::SkillRegistry::load_for_working_dir(working_dir).ok()?;
+    let mut skills = registry.list();
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    let skills: Vec<_> = skills
+        .into_iter()
+        .map(|skill| {
+            serde_json::json!({
+                "name": skill.name, "description": skill.description,
+                "icon": skill.icon, "mode": skill.is_mode(),
+            })
+        })
+        .collect();
+    let pinned = record
+        .map(|record| record.pinned_modes())
+        .unwrap_or_default();
+    Some(serde_json::json!({"skills": skills, "pinned_skills": pinned}))
 }
 
 /// Session transcripts can be hundreds of megabytes, while the sidebar only
