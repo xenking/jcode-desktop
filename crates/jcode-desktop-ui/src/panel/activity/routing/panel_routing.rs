@@ -276,7 +276,8 @@ impl Panel {
         window.focus(&self.routing_trigger_focus, cx);
     }
 
-    /// The popover above the composer: one line per row, never wrapped.
+    /// The popover above the composer: a definite width so a long row wraps
+    /// onto more lines instead of being cut, and a scroll when it outgrows the window.
     pub(super) fn render_routing_popover(
         &mut self,
         cx: &mut Context<Self>,
@@ -298,7 +299,8 @@ impl Panel {
                         .debug_selector(|| "routing-popover".into())
                         .track_focus(&self.routing_popover_focus)
                         .key_context(crate::menu::CONTEXT)
-                        .max_w(px(460.))
+                        .w(px(460.))
+                        .max_w_full()
                         .max_h_full()
                         .px_3()
                         .py_2()
@@ -319,20 +321,32 @@ impl Panel {
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .child("Account routing"),
                         )
-                        .children(rows.into_iter().enumerate().map(|(index, row)| {
+                        .child(
                             div()
-                                .debug_selector(move || format!("routing-popover-row-{index}"))
-                                .flex_none()
-                                .min_w_0()
-                                .line_height(px(16.))
-                                .truncate()
-                                .font_family(theme.FONT_MONO)
-                                .text_color(match row.tone {
-                                    Tone::Plain => theme.TEXT_DIM,
-                                    Tone::Warn => theme.WARN,
-                                })
-                                .child(row.text)
-                        })),
+                                .id("routing-popover-rows")
+                                .debug_selector(|| "routing-popover-rows".into())
+                                .min_h_0()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .overflow_y_scroll()
+                                .children(rows.into_iter().enumerate().map(|(index, row)| {
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("routing-popover-row-{index}")
+                                        })
+                                        .flex_none()
+                                        .min_w_0()
+                                        .line_height(px(16.))
+                                        .whitespace_normal()
+                                        .font_family(theme.FONT_MONO)
+                                        .text_color(match row.tone {
+                                            Tone::Plain => theme.TEXT_DIM,
+                                            Tone::Warn => theme.WARN,
+                                        })
+                                        .child(row.text)
+                                })),
+                        ),
                     px(5.),
                 )
                 .at_composer()
@@ -551,3 +565,7 @@ impl Panel {
 #[cfg(test)]
 #[path = "panel_routing_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "panel_routing_popover_tests.rs"]
+mod popover_tests;
