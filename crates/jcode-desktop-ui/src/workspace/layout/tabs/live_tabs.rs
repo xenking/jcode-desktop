@@ -587,7 +587,7 @@ impl Workspace {
             }))
             .child(
                 gpui::svg()
-                    .data(include_bytes!("../../../assets/icons/pencil.svg"))
+                    .data(include_bytes!("../../../../../../assets/icons/pencil.svg"))
                     .size(px(12.0))
                     .text_color(Theme::global().TEXT_DIM),
             )

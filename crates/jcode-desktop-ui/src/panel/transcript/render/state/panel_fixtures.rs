@@ -458,7 +458,7 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
             Item::User("Make these changes easier to review.".into()),
             Item::Assistant(format!(
                 "The title now has a clearer fallback and a Unicode-safe length limit.\n\n```diff\n{}```",
-                include_str!("../../../assets/previews/change-review.diff")
+                include_str!("../../../../../../../assets/previews/change-review.diff")
             )),
         ];
     }
@@ -567,7 +567,7 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
             Item::User("Show me different fonts directly in this chat.".into()),
             Item::Assistant(format!(
                 "Here are live font pairings. Click inside to interact.\n\n```html-preview\n{}\n```",
-                include_str!("../../../assets/previews/font-pairings.html")
+                include_str!("../../../../../../../assets/previews/font-pairings.html")
             )),
         ];
     }

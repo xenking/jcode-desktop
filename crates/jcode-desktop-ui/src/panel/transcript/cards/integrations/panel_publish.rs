@@ -133,7 +133,7 @@ impl Panel {
                         .gap_2()
                         .child(
                             gpui::svg()
-                                .data(include_bytes!("../../../assets/icons/publish.svg")
+                                .data(include_bytes!("../../../../../../../assets/icons/publish.svg")
                                     as &'static [u8])
                                 .text_color(headline_color)
                                 .flex_none()

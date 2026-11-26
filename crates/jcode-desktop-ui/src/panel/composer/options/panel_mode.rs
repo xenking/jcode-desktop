@@ -276,7 +276,7 @@ mod tests {
         assert!(vcx.did_prompt_for_paths());
         let directory = tempfile::tempdir().unwrap();
         let photo = directory.path().join("screenshot.png");
-        std::fs::write(&photo, include_bytes!("../../../assets/previews/image-preview.png")).unwrap();
+        std::fs::write(&photo, include_bytes!("../../../../../../assets/previews/image-preview.png")).unwrap();
         vcx.simulate_path_prompt_response(|options| {
             assert!(options.files && options.multiple);
             Some(vec![photo])

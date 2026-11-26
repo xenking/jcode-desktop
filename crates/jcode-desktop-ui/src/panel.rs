@@ -41,21 +41,21 @@ mod runtime_commands;
 #[path = "panel/commands/panel_commands.rs"]
 mod desktop_commands;
 
-#[path = "panel_chrome.rs"]
+#[path = "panel/activity/chrome/panel_chrome.rs"]
 mod chrome;
-#[path = "panel_classify.rs"]
+#[path = "panel/transcript/render/state/panel_classify.rs"]
 mod classify;
-#[path = "panel_turn.rs"]
+#[path = "panel/activity/session/panel_turn.rs"]
 mod turn;
 use turn::{AutoRetry, StopNotice};
-#[path = "panel_meter.rs"]
+#[path = "panel/activity/chrome/panel_meter.rs"]
 pub(crate) mod meter;
-#[path = "panel_facade.rs"]
+#[path = "panel/activity/session/panel_facade.rs"]
 mod facade;
-#[path = "panel_fixtures.rs"]
+#[path = "panel/transcript/render/state/panel_fixtures.rs"]
 mod fixtures;
 use fixtures::{demo_items, demo_tool_times, screenshot_fixture_for};
-#[path = "panel_labels.rs"]
+#[path = "panel/activity/chrome/panel_labels.rs"]
 mod labels;
 #[path = "panel/transcript/cards/panel_todo_card.rs"]
 mod todo_card;
@@ -67,7 +67,7 @@ use labels::*;
 use todo_card::*;
 use tool_summary::*;
 pub(crate) use crate::accounts::pretty_provider_name;
-#[path = "panel_todoist.rs"]
+#[path = "panel/transcript/cards/integrations/panel_todoist.rs"]
 mod todoist;
 #[path = "panel/transcript/render/panel_render.rs"]
 mod render;
@@ -77,11 +77,11 @@ pub use items::{AssistantOutputPhase, Item, TodoCardPayload, Transcript, Transcr
 use items::*;
 #[path = "panel/commands/panel_slash.rs"]
 mod slash;
-#[path = "panel_events.rs"]
+#[path = "panel/activity/session/panel_events.rs"]
 mod events;
 #[path = "panel/transcript/render/panel_rows.rs"]
 mod rows;
-#[path = "panel_construct.rs"]
+#[path = "panel/activity/session/panel_construct.rs"]
 mod construct;
 #[path = "panel/history/panel_history_load.rs"]
 mod history_load;
@@ -91,14 +91,14 @@ mod scroll;
 mod draft;
 #[path = "panel/composer/panel_pickers.rs"]
 mod pickers;
-#[path = "panel_status.rs"]
+#[path = "panel/activity/session/panel_status.rs"]
 mod status;
-#[path = "panel_focus.rs"]
+#[path = "panel/activity/chrome/panel_focus.rs"]
 mod focus;
 #[path = "panel/activity/panel_live.rs"]
 pub(crate) mod live;
 use live::Live;
-#[path = "panel_clean_chat.rs"]
+#[path = "panel/activity/session/panel_clean_chat.rs"]
 mod clean_chat;
 #[path = "panel/transcript/render/panel_assistant_output.rs"]
 mod assistant_output;
@@ -113,11 +113,11 @@ mod command_workflow_tests;
 mod slash_send_tests;
 
 #[cfg(test)]
-#[path = "panel_rewind_tests.rs"]
+#[path = "panel/history/panel_rewind_tests.rs"]
 mod rewind_tests;
 
 
-#[path = "panel_menu.rs"]
+#[path = "panel/activity/chrome/panel_menu.rs"]
 mod overlay_keys;
 
 #[cfg(test)]
@@ -133,18 +133,18 @@ mod applet_interaction_tests;
 mod selection_tests;
 
 #[cfg(test)]
-#[path = "panel_file_drop_tests.rs"]
+#[path = "panel/composer/options/panel_file_drop_tests.rs"]
 mod file_drop_tests;
 
 #[cfg(test)]
-#[path = "panel_memory_tests.rs"]
+#[path = "panel/transcript/render/state/panel_memory_tests.rs"]
 mod memory_tests;
 
 #[cfg(test)]
 #[path = "panel/history/panel_provisional_history_tests.rs"]
 mod provisional_history_tests;
 
-#[path = "panel_reveal.rs"]
+#[path = "panel/activity/chrome/panel_reveal.rs"]
 mod reveal;
 pub(crate) use reveal::PreviewScroll;
 
@@ -198,37 +198,37 @@ mod cache_miss;
 pub(crate) mod cache_timer;
 #[path = "panel/composer/panel_composer.rs"]
 mod composer;
-#[path = "panel_context_usage.rs"]
+#[path = "panel/activity/usage/panel_context_usage.rs"]
 mod context_usage;
-#[path = "panel_decision.rs"]
+#[path = "panel/activity/routing/panel_decision.rs"]
 mod decision;
-#[path = "panel_decision_tests.rs"]
+#[path = "panel/activity/routing/panel_decision_tests.rs"]
 #[cfg(test)]
 mod decision_tests;
 #[path = "panel/composer/panel_fork_prompt.rs"]
 mod fork_prompt;
-#[path = "panel_rig_hud.rs"]
+#[path = "panel/transcript/cards/integrations/panel_rig_hud.rs"]
 mod rig_hud;
-#[path = "panel_routing.rs"]
+#[path = "panel/activity/routing/panel_routing.rs"]
 mod account_routing;
 #[path = "panel/composer/side_question/panel_side_question.rs"]
 mod side_question;
-#[path = "panel_session_status.rs"]
+#[path = "panel/activity/session/panel_session_status.rs"]
 mod session_status;
-#[path = "panel_swarm_card.rs"]
+#[path = "panel/transcript/cards/integrations/panel_swarm_card.rs"]
 mod swarm_card;
-#[path = "panel_swarm_indicator.rs"]
+#[path = "panel/transcript/cards/integrations/panel_swarm_indicator.rs"]
 mod swarm_indicator;
 pub(crate) use swarm_indicator::OpenSwarmWorker;
 #[path = "panel/documents/review/panel_diff.rs"]
 mod diff_review;
-#[path = "panel_effort.rs"]
+#[path = "panel/composer/options/panel_effort.rs"]
 mod effort_switch;
-#[path = "panel_model_switch.rs"]
+#[path = "panel/composer/options/panel_model_switch.rs"]
 mod model_switch;
-#[path = "panel_speed.rs"]
+#[path = "panel/composer/options/panel_speed.rs"]
 mod speed;
-#[path = "panel_mode.rs"]
+#[path = "panel/composer/options/panel_mode.rs"]
 mod mode_switch;
 // One disclosure model for every truncated line: tool titles, errors, output,
 // prompts, notices, background tasks and swarm lines.
@@ -249,7 +249,7 @@ mod image_preview;
 mod latest;
 #[path = "panel/login/panel_login.rs"]
 mod login;
-#[path = "panel_preview.rs"]
+#[path = "panel/transcript/render/state/panel_preview.rs"]
 mod preview;
 #[path = "panel/composer/panel_prompt.rs"]
 mod prompt;
@@ -260,9 +260,9 @@ mod recovery;
 #[cfg(test)]
 #[path = "panel/scroll/panel_scroll_momentum_tests.rs"]
 mod scroll_momentum_tests;
-#[path = "panel_shortcuts.rs"]
+#[path = "panel/composer/options/panel_shortcuts.rs"]
 pub(crate) mod shortcuts;
-#[path = "panel_startup.rs"]
+#[path = "panel/activity/session/panel_startup.rs"]
 mod startup;
 #[path = "panel/activity/panel_stop_reason.rs"]
 mod stop_reason;
@@ -274,7 +274,7 @@ mod stream_scroll_tests;
 pub use startup::StartupLayout;
 #[path = "panel/applets/panel_applet.rs"]
 pub(crate) mod applet_panel;
-#[path = "panel_demo_replay.rs"]
+#[path = "panel/transcript/render/state/panel_demo_replay.rs"]
 pub(crate) mod demo_replay;
 #[path = "panel/transcript/cards/panel_gmail_draft_card.rs"]
 mod gmail_draft_card;
@@ -284,20 +284,20 @@ mod gmail_read_card;
 mod mcp_list_card;
 #[path = "panel/openrig/panel_openrig.rs"]
 pub(crate) mod openrig;
-#[path = "panel_orchestration.rs"]
+#[path = "panel/transcript/cards/integrations/panel_orchestration.rs"]
 pub(crate) mod orchestration;
-#[path = "panel_response_stats.rs"]
+#[path = "panel/activity/usage/panel_response_stats.rs"]
 mod response_stats;
 #[path = "panel/documents/panel_side_document.rs"]
 mod side_document;
-#[path = "panel_tab_outline.rs"]
+#[path = "panel/activity/chrome/panel_tab_outline.rs"]
 mod tab_outline;
 #[path = "panel/transcript/cards/panel_user_response.rs"]
 mod user_response;
 pub(crate) use tab_outline::{TabRing, tab_corner_radius};
 #[path = "panel/transcript/tools/panel_tool_streaming.rs"]
 mod tool_streaming;
-#[path = "panel_usage.rs"]
+#[path = "panel/activity/usage/panel_usage.rs"]
 pub(crate) mod usage;
 #[path = "panel/voice/panel_voice_state.rs"]
 mod voice_state;
@@ -760,7 +760,7 @@ impl TranscriptMeasurements {
 mod measurement_tests;
 
 #[cfg(test)]
-#[path = "panel_sound_tests.rs"]
+#[path = "panel/activity/chrome/panel_sound_tests.rs"]
 mod sound_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -815,7 +815,7 @@ impl TodoistPanelState {
     }
 }
 
-#[path = "panel_publish.rs"]
+#[path = "panel/transcript/cards/integrations/panel_publish.rs"]
 mod publish_panel;
 
 impl Panel {
@@ -1782,7 +1782,7 @@ mod expandable_tests;
 #[path = "panel/transcript/render/panel_row_state_tests.rs"]
 mod row_state_tests;
 #[cfg(test)]
-#[path = "panel_fresh_session_tests.rs"]
+#[path = "panel/activity/session/panel_fresh_session_tests.rs"]
 mod fresh_session_tests;
 #[cfg(test)]
 #[path = "panel/images/panel_image_flicker_tests.rs"]
@@ -1791,14 +1791,14 @@ mod image_flicker_tests;
 #[path = "panel/images/panel_image_transcript_tests.rs"]
 mod image_transcript_tests;
 #[cfg(test)]
-#[path = "panel_startup_lifecycle_tests.rs"]
+#[path = "panel/activity/session/panel_startup_lifecycle_tests.rs"]
 mod startup_lifecycle_tests;
 #[cfg(test)]
-#[path = "panel_turn_completion_tests.rs"]
+#[path = "panel/activity/session/panel_turn_completion_tests.rs"]
 mod turn_completion_tests;
 
 #[cfg(test)]
-#[path = "panel_tests.rs"]
+#[path = "panel/activity/session/panel_tests.rs"]
 mod tests;
 
 
@@ -1806,13 +1806,13 @@ mod tests;
 /// (comma-separated, by panel index) overrides `JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT` so
 /// a multi-panel capture can show varied sessions instead of one repeated fixture.
 #[cfg(test)]
-#[path = "panel_responsive_tests.rs"]
+#[path = "panel/activity/chrome/panel_responsive_tests.rs"]
 mod responsive_tests;
 
 #[cfg(test)]
-#[path = "panel_derived_chrome_tests.rs"]
+#[path = "panel/activity/chrome/panel_derived_chrome_tests.rs"]
 mod derived_chrome_tests;
 
 #[cfg(test)]
-#[path = "panel_todoist_tests.rs"]
+#[path = "panel/transcript/cards/integrations/panel_todoist_tests.rs"]
 mod todoist_tests;

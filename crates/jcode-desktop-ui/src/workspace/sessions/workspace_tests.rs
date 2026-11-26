@@ -157,15 +157,15 @@ pub(super) fn fake_gmail_provider(cx: &mut gpui::VisualTestContext) {
     });
 }
 
-#[path = "workspace_session_catalog_tests.rs"]
+#[path = "../sidebar/catalog/workspace_session_catalog_tests.rs"]
 mod session_catalog;
-#[path = "workspace_sidebar_tests.rs"]
+#[path = "../sidebar/catalog/workspace_sidebar_tests.rs"]
 mod sidebar;
-#[path = "workspace/layout/workspace_folder_strip_tests.rs"]
+#[path = "../layout/workspace_folder_strip_tests.rs"]
 mod folder_strip;
-#[path = "workspace/layout/workspace_shortcut_tests.rs"]
+#[path = "../layout/workspace_shortcut_tests.rs"]
 mod shortcut;
-#[path = "workspace_tutorial_tests.rs"]
+#[path = "../onboarding/workspace_tutorial_tests.rs"]
 mod tutorial;
-#[path = "workspace_accounts_panel_tests.rs"]
+#[path = "../sidebar/accounts/workspace_accounts_panel_tests.rs"]
 mod accounts_panel;

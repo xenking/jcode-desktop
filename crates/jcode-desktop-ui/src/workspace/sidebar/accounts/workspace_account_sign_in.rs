@@ -1446,7 +1446,7 @@ impl Workspace {
                     .when(busy, |el| el.opacity(0.5))
                     .child(
                         gpui::svg()
-                            .data(include_bytes!("../../../assets/icons/arrow-right.svg"))
+                            .data(include_bytes!("../../../../../../assets/icons/arrow-right.svg"))
                             .size(px(15.0))
                             .text_color(theme.BG),
                     )

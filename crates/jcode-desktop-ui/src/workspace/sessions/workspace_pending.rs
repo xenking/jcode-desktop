@@ -419,7 +419,7 @@ impl Workspace {
                                 .text_color(theme.TEXT)
                                 .child(
                                     gpui::svg()
-                                        .data(include_bytes!("../../../assets/icons/cloud.svg"))
+                                        .data(include_bytes!("../../../../../assets/icons/cloud.svg"))
                                         .w(px(22.))
                                         .h(px(16.))
                                         .text_color(theme.TEXT_DIM),
@@ -485,7 +485,7 @@ impl Workspace {
                                 .pt(px(32.))
                                 .child(
                                     gpui::svg()
-                                        .data(include_bytes!("../../../assets/icons/cloud.svg"))
+                                        .data(include_bytes!("../../../../../assets/icons/cloud.svg"))
                                         .w(px(300.))
                                         .h(px(188.))
                                         .text_color(theme.TEXT)

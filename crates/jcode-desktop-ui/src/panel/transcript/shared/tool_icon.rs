@@ -173,7 +173,7 @@ fn normalized_name(name: &str) -> &str {
 fn icon_data(name: &str) -> &'static [u8] {
     macro_rules! icon {
         ($name:literal) => {
-            include_bytes!(concat!("../../../assets/icons/tools/", $name, ".svg"))
+            include_bytes!(concat!("../../../../../../assets/icons/tools/", $name, ".svg"))
                 as &'static [u8]
         };
     }

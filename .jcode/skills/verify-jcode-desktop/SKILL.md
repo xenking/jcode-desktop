@@ -97,7 +97,7 @@ python3 scripts/verify-jcode-desktop.py drive --run "$RUN" --action click --para
 
 Actions: `list/open_session/state/click/set_composer/send/press_key/search/expand_tool/wait_for`.
 Parameters follow `scripts/accept-native-control.py` and
-`crates/jcode-desktop-ui/src/workspace_control.rs`. Read
+`crates/jcode-desktop-ui/src/workspace/controls/workspace_control.rs`. Read
 `visible_transcript_items[].selector` before tool/row actions. Tool clicks use
 `tool:<call_id>`. `expand_tool` takes the call ID **without** `tool:`. Ask selectors
 come from `panel.ask.option_selectors`. Row selectors include a revision and must

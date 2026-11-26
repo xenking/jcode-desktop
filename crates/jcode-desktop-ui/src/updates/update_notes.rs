@@ -363,7 +363,7 @@ fn shot_in(shots: &[(&str, u32, u32, &'static [u8])], version: &str, index: usiz
 }
 
 pub(crate) fn fallback() -> &'static str {
-    include_str!("../../../CHANGELOG.md")
+    include_str!("../../../../CHANGELOG.md")
 }
 
 #[cfg(test)]

@@ -46,7 +46,7 @@ impl Icon {
     fn data(self) -> &'static [u8] {
         macro_rules! icon {
             ($name:literal) => {
-                include_bytes!(concat!("../../../assets/icons/swarm/", $name, ".svg"))
+                include_bytes!(concat!("../../../../../../../assets/icons/swarm/", $name, ".svg"))
                     as &'static [u8]
             };
         }
@@ -59,7 +59,7 @@ impl Icon {
             Self::Idle => icon!("idle"),
             Self::Thinking => icon!("thinking"),
             Self::Tool => icon!("tool"),
-            Self::Background => include_bytes!("../../../assets/icons/tools/bg.svg"),
+            Self::Background => include_bytes!("../../../../../../../assets/icons/tools/bg.svg"),
             Self::Waiting => icon!("waiting"),
             Self::Ask => icon!("ask"),
             Self::Workers => icon!("workers"),

@@ -9,7 +9,7 @@
 mod control_tests;
 
 #[cfg(test)]
-#[path = "workspace_file_editor_tests.rs"]
+#[path = "workspace/surfaces/workspace_file_editor_tests.rs"]
 mod file_editor_tests;
 
 #[cfg(test)]
@@ -22,7 +22,7 @@ mod control;
 #[path = "workspace/controls/workspace_commands.rs"]
 mod commands;
 
-#[path = "workspace_account_sign_in.rs"]
+#[path = "workspace/sidebar/accounts/workspace_account_sign_in.rs"]
 mod account_sign_in;
 
 #[path = "workspace/applets/workspace_applets.rs"]
@@ -30,7 +30,7 @@ pub(crate) mod applets;
 
 #[path = "workspace/applets/workspace_applet_surfaces.rs"]
 mod applet_surfaces;
-#[path = "workspace_side_panel.rs"]
+#[path = "workspace/layout/panels/workspace_side_panel.rs"]
 mod side_panel;
 
 #[path = "workspace/surfaces/workspace_screens.rs"]
@@ -42,7 +42,7 @@ mod resume_view;
 
 #[path = "workspace/controls/workspace_menu.rs"]
 mod menu;
-#[path = "workspace_single_panel.rs"]
+#[path = "workspace/layout/panels/workspace_single_panel.rs"]
 mod single_panel;
 #[path = "workspace/lifecycle/workspace_window_launch.rs"]
 mod window_launch;
@@ -54,11 +54,11 @@ mod boot;
 mod snapshot;
 #[path = "workspace/lifecycle/workspace_updates.rs"]
 mod runtime_updates;
-#[path = "workspace_sessions.rs"]
+#[path = "workspace/sessions/workspace_sessions.rs"]
 mod sessions;
 #[path = "workspace/navigation/workspace_navigation.rs"]
 mod navigation;
-#[path = "workspace_panels.rs"]
+#[path = "workspace/layout/panels/workspace_panels.rs"]
 mod panels;
 #[path = "workspace/controls/workspace_toggles.rs"]
 mod toggles;
@@ -68,7 +68,7 @@ mod strip_view;
 mod sidebar_view;
 #[path = "workspace/controls/workspace_settings_view.rs"]
 mod settings_view;
-#[path = "workspace_chrome_view.rs"]
+#[path = "workspace/layout/panels/workspace_chrome_view.rs"]
 mod chrome_view;
 #[path = "workspace/layout/workspace_strip_gesture.rs"]
 mod strip_gesture;
@@ -88,7 +88,7 @@ use working_dirs::*;
 #[path = "workspace/voice/workspace_global_voice.rs"]
 mod global_voice;
 
-#[path = "workspace_panel_window.rs"]
+#[path = "workspace/layout/panels/workspace_panel_window.rs"]
 pub(crate) mod panel_window;
 
 #[path = "workspace/surfaces/workspace_preview.rs"]
@@ -103,15 +103,15 @@ mod publish_panel;
 #[path = "workspace/directories/workspace_switch_directory.rs"]
 mod switch_directory;
 
-#[path = "workspace_responsive.rs"]
+#[path = "workspace/layout/panels/workspace_responsive.rs"]
 mod responsive;
-#[path = "workspace_files.rs"]
+#[path = "workspace/surfaces/workspace_files.rs"]
 pub(crate) mod files;
 
 #[path = "workspace/lifecycle/workspace_notifications.rs"]
 mod notifications;
 
-#[path = "workspace_change_review.rs"]
+#[path = "workspace/surfaces/workspace_change_review.rs"]
 pub(crate) mod change_review;
 
 #[path = "workspace/sidebar/accounts/sidebar_account_menu.rs"]
@@ -193,29 +193,29 @@ mod housekeeping;
 #[path = "workspace/navigation/closing_navigation_tests.rs"]
 mod closing_navigation_tests;
 #[cfg(test)]
-#[path = "fps_header_tests.rs"]
+#[path = "workspace/layout/panels/fps_header_tests.rs"]
 mod fps_header_tests;
 #[cfg(test)]
-#[path = "hidden_animation_tests.rs"]
+#[path = "workspace/layout/panels/hidden_animation_tests.rs"]
 mod hidden_animation_tests;
 #[path = "workspace/navigation/workspace_map_gesture.rs"]
 mod map_gesture;
 #[path = "workspace/navigation/workspace_map_motion.rs"]
 mod map_motion;
 #[cfg(test)]
-#[path = "workspace_nav_profile_tests.rs"]
+#[path = "workspace/layout/gestures/workspace_nav_profile_tests.rs"]
 mod nav_profile_tests;
 #[cfg(test)]
 #[path = "workspace/navigation/navigation_map_tests.rs"]
 mod navigation_map_tests;
 #[path = "workspace/navigation/navigation_state.rs"]
 mod navigation_state;
-#[path = "workspace_openrig.rs"]
+#[path = "workspace/remotes/workspace_openrig.rs"]
 mod openrig;
 #[path = "workspace/remotes/workspace_fleet_session.rs"]
 mod fleet_session;
 #[cfg(test)]
-#[path = "panel_cache_tests.rs"]
+#[path = "workspace/remotes/panel_cache_tests.rs"]
 pub(crate) mod panel_cache_tests;
 #[cfg(test)]
 #[path = "workspace/remotes/workspace_remote_tests.rs"]
@@ -224,10 +224,10 @@ mod remote_tests;
 pub(crate) mod machines;
 #[path = "workspace/remotes/workspace_remotes.rs"]
 mod remotes;
-#[path = "workspace_scroll_snap.rs"]
+#[path = "workspace/layout/gestures/workspace_scroll_snap.rs"]
 mod scroll_snap;
 #[cfg(test)]
-#[path = "super_action_behavior_tests.rs"]
+#[path = "workspace/layout/gestures/super_action_behavior_tests.rs"]
 mod super_action_behavior_tests;
 #[path = "workspace/voice/workspace_voice.rs"]
 mod voice;
@@ -237,12 +237,12 @@ mod window_navigation;
 #[path = "workspace/navigation/window_navigation_tests.rs"]
 mod window_navigation_tests;
 #[cfg(test)]
-#[path = "workspace_lone_panel_tests.rs"]
+#[path = "workspace/layout/panels/workspace_lone_panel_tests.rs"]
 mod workspace_lone_panel_tests;
 
-#[path = "workspace_login_rows.rs"]
+#[path = "workspace/sidebar/accounts/workspace_login_rows.rs"]
 mod login_rows;
-#[path = "workspace_usage_reset.rs"]
+#[path = "workspace/sidebar/accounts/workspace_usage_reset.rs"]
 mod usage_reset;
 
 #[path = "workspace/directories/workspace_rename.rs"]
@@ -260,7 +260,7 @@ use folder_picker::FolderPicker;
 #[path = "workspace/directories/workspace_default_directory_tests.rs"]
 mod default_directory_tests;
 #[cfg(test)]
-#[path = "workspace_modal_tests.rs"]
+#[path = "workspace/layout/panels/workspace_modal_tests.rs"]
 mod modal_tests;
 
 #[cfg(test)]
@@ -358,7 +358,7 @@ const FOLDER_RIGHT_MARGIN: f32 = 0.0;
 #[path = "workspace/directories/folder_surface.rs"]
 mod folder_surface;
 
-#[path = "live_tabs.rs"]
+#[path = "workspace/layout/tabs/live_tabs.rs"]
 mod live_tabs;
 #[path = "workspace/lifecycle/workspace_version.rs"]
 mod version;
@@ -369,41 +369,41 @@ mod sidebar_roller;
 mod sidebar_search_button;
 
 #[cfg(test)]
-#[path = "panel_surface_tests.rs"]
+#[path = "workspace/layout/panels/panel_surface_tests.rs"]
 mod panel_surface_tests;
 
 #[cfg(test)]
-#[path = "hover_scroll_tests.rs"]
+#[path = "workspace/layout/gestures/hover_scroll_tests.rs"]
 mod hover_scroll_tests;
 
 #[cfg(test)]
-#[path = "focus_follow_tests.rs"]
+#[path = "workspace/layout/gestures/focus_follow_tests.rs"]
 mod focus_follow_tests;
 #[path = "workspace/remotes/workspace_pull.rs"]
 mod workspace_pull;
 #[cfg(test)]
-#[path = "workspace_scroll_tests.rs"]
+#[path = "workspace/layout/gestures/workspace_scroll_tests.rs"]
 mod workspace_scroll_tests;
 
 #[cfg(test)]
-#[path = "workspace_orchestration_tests.rs"]
+#[path = "workspace/remotes/workspace_orchestration_tests.rs"]
 mod workspace_orchestration_tests;
 
-#[path = "tutorial.rs"]
+#[path = "workspace/onboarding/tutorial.rs"]
 mod tutorial;
 
-#[path = "onboarding_simulator.rs"]
+#[path = "workspace/onboarding/onboarding_simulator.rs"]
 mod onboarding_simulator;
 
-#[path = "workspace_beta_notice.rs"]
+#[path = "workspace/onboarding/workspace_beta_notice.rs"]
 mod beta_notice;
 
 #[cfg(test)]
-#[path = "tutorial_geometry_tests.rs"]
+#[path = "workspace/onboarding/tutorial_geometry_tests.rs"]
 mod tutorial_geometry_tests;
 
 #[cfg(test)]
-#[path = "tutorial_minimalism_tests.rs"]
+#[path = "workspace/onboarding/tutorial_minimalism_tests.rs"]
 mod tutorial_minimalism_tests;
 
 const STRIP_COUNT: usize = 4;
@@ -1435,25 +1435,25 @@ fn sidebar_enabled(
 }
 
 #[cfg(test)]
-#[path = "workspace_tests.rs"]
+#[path = "workspace/sessions/workspace_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "startup_tests.rs"]
+#[path = "workspace/lifecycle/startup_tests.rs"]
 mod startup_tests;
 
-#[path = "workspace_pending.rs"]
+#[path = "workspace/sessions/workspace_pending.rs"]
 mod pending;
 #[cfg(test)]
-#[path = "workspace_pending_tests.rs"]
+#[path = "workspace/sessions/workspace_pending_tests.rs"]
 mod pending_tests;
-#[path = "workspace_sounds.rs"]
+#[path = "workspace/lifecycle/workspace_sounds.rs"]
 mod sound_settings;
 #[path = "workspace/voice/workspace_voice_settings.rs"]
 mod voice_settings;
 
 #[cfg(test)]
-#[path = "workspace_login_tests.rs"]
+#[path = "workspace/sidebar/accounts/workspace_login_tests.rs"]
 mod login_tests;
 
 

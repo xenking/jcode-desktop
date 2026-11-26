@@ -228,7 +228,7 @@ impl Panel {
                 ))
                 .child(
                     gpui::svg()
-                        .data(include_bytes!("../../../assets/icons/comment.svg") as &'static [u8])
+                        .data(include_bytes!("../../../../../../assets/icons/comment.svg") as &'static [u8])
                         .text_color(color)
                         .size(px(chrome::BAR_ICON)),
                 ),

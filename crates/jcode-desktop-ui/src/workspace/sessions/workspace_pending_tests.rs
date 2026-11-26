@@ -82,7 +82,7 @@ fn add_image(input: &Entity<PromptInput>, cx: &mut gpui::VisualTestContext) {
         snapshot.attachments.push(crate::input::AttachmentSnapshot {
             media_type: "image/png".into(),
             encoded: base64::engine::general_purpose::STANDARD
-                .encode(include_bytes!("../../../assets/previews/image-preview.png")),
+                .encode(include_bytes!("../../../../../assets/previews/image-preview.png")),
             label: "pending image".into(),
         });
         input.restore(snapshot, cx);

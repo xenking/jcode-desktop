@@ -35,7 +35,7 @@ macro_rules! mode_icons {
 
             pub(crate) fn render(self, size: f32, ink: Rgba) -> Svg {
                 let data = match self {
-                    $(Self::$variant => include_bytes!(concat!("../../../assets/icons/", $path)).as_slice(),)*
+                    $(Self::$variant => include_bytes!(concat!("../../../../../../assets/icons/", $path)).as_slice(),)*
                 };
                 svg().data(data).size(px(size)).flex_none().text_color(ink)
             }

@@ -1531,7 +1531,7 @@ mod tests {
     /// user sees in the TUI, and the rest is ordinary history.
     fn live_catalog() -> Vec<SessionInfo> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/swarm_view_fixtures/live_session_catalog.json");
+            .join("src/workspace/sidebar/catalog/swarm/fixtures/live_session_catalog.json");
         let snapshot: serde_json::Value =
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         serde_json::from_value(snapshot["sessions"].clone()).unwrap()

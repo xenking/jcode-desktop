@@ -1,6 +1,8 @@
 //! Jcode Desktop: a spatial, niri-inspired canvas of Jcode sessions.
 
+#[path = "panel/transcript/shared/ack.rs"]
 mod ack;
+#[path = "workspace/sidebar/chrome/shared/account_status.rs"]
 mod account_status;
 #[path = "applets/applet_host.rs"]
 mod applet_host;
@@ -12,16 +14,21 @@ mod applet_surface;
 mod applet_view;
 #[path = "host/application_menu.rs"]
 mod application_menu;
+#[path = "host/diagnostics/background_probe.rs"]
 mod background_probe;
+#[path = "host/platform/build_info.rs"]
 mod build_info;
 #[path = "applets/bundled_applets.rs"]
 mod bundled_applets;
+#[path = "updates/changelog.rs"]
 mod changelog;
 #[path = "media/clipboard_image.rs"]
 mod clipboard_image;
+#[path = "documents/code_block/mod.rs"]
 mod code_block;
 #[path = "documents/code_editor.rs"]
 mod code_editor;
+#[path = "panel/composer/support/commands.rs"]
 mod commands;
 #[cfg(unix)]
 #[path = "host/desktop_control.rs"]
@@ -32,11 +39,17 @@ mod diff_block;
 mod diff_review_content;
 #[path = "documents/diff_view.rs"]
 mod diff_view;
+#[path = "panel/composer/support/effort.rs"]
 mod effort;
+#[path = "panel/composer/support/effort_icon.rs"]
 mod effort_icon;
+#[path = "panel/composer/support/speed_icon.rs"]
 mod speed_icon;
+#[path = "panel/composer/support/example_prompts.rs"]
 mod example_prompts;
+#[path = "host/control/fixture_control_targets.rs"]
 mod fixture_control_targets;
+#[path = "host/diagnostics/fps_counter.rs"]
 mod fps_counter;
 #[path = "documents/html_preview.rs"]
 mod html_preview;
@@ -45,60 +58,85 @@ mod image_chip;
 #[path = "media/image_modal.rs"]
 mod image_modal;
 #[cfg(target_os = "macos")]
+#[path = "host/platform/ime_log.rs"]
 mod ime_log;
 #[path = "media/inline_image.rs"]
 mod inline_image;
 mod input;
+#[path = "host/platform/keyboard.rs"]
 mod keyboard;
+#[path = "workspace/layout/chrome/menu.rs"]
 mod menu;
+#[path = "workspace/layout/chrome/modal_layer.rs"]
 mod modal_layer;
+#[path = "workspace/sidebar/chrome/shared/live_profile.rs"]
 mod live_profile;
 mod markdown;
 #[path = "documents/markdown_inline_code.rs"]
 mod markdown_inline_code;
+#[path = "panel/transcript/shared/memory.rs"]
 pub mod memory;
+#[path = "panel/composer/support/mode_catalog.rs"]
 mod mode_catalog;
 #[path = "documents/native_mermaid.rs"]
 mod native_mermaid;
 #[cfg(test)]
 #[path = "documents/native_mermaid_integration_tests.rs"]
 mod native_mermaid_integration_tests;
+#[path = "workspace/sidebar/catalog/swarm/openrig_feed.rs"]
 mod openrig_feed;
 mod panel;
 mod panel_item;
 #[path = "documents/pdf_viewer.rs"]
 mod pdf_viewer;
+#[path = "host/diagnostics/performance.rs"]
 mod performance;
+#[path = "panel/transcript/shared/persisted_history.rs"]
 mod persisted_history;
+#[path = "workspace/layout/chrome/popover.rs"]
 mod popover;
 #[path = "host/preview_control.rs"]
 mod preview_control;
+#[path = "host/control/preview_state.rs"]
 pub mod preview_state;
 #[path = "media/prompt_images.rs"]
 mod prompt_images;
+#[path = "workspace/sidebar/chrome/shared/provider_mark.rs"]
 mod provider_mark;
+#[path = "workspace/surfaces/publishing/publish.rs"]
 mod publish;
 #[path = "host/restart_spawn.rs"]
 mod restart_spawn;
+#[path = "host/audio/sound_events.rs"]
 mod sound_events;
+#[path = "host/audio/sounds.rs"]
 mod sounds;
+#[path = "workspace/sidebar/catalog/swarm/swarm_glyph.rs"]
 mod swarm_glyph;
+#[path = "workspace/sidebar/catalog/swarm/swarm_view.rs"]
 mod swarm_view;
 mod terminal;
 #[cfg(test)]
+#[path = "input/tests/test_input.rs"]
 mod test_input;
+#[path = "panel/transcript/shared/tool_icon.rs"]
 mod tool_icon;
+#[path = "panel/transcript/shared/transcript_scroll.rs"]
 mod transcript_scroll;
+#[path = "host/control/ui_actions.rs"]
 mod ui_actions;
 #[cfg(unix)]
 #[path = "host/unix_listener_ready.rs"]
 mod unix_listener_ready;
+#[path = "updates/update_entry.rs"]
 pub mod update_entry;
+#[path = "updates/update_notes.rs"]
 mod update_notes;
 mod updates;
 #[path = "host/window_caption.rs"]
 mod window_caption;
 mod workspace;
+#[path = "workspace/controls/workspace_command_parse.rs"]
 mod workspace_command_parse;
 
 // The GPUI-free harness bridge and its transports live in their own crate so
