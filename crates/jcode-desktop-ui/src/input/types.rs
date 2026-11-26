@@ -10,6 +10,11 @@ pub(super) enum Action {
     Attach,
     File(PathBuf),
     Skill(String),
+    /// Open the MCP submenu, and its way back.
+    Mcp,
+    McpBack,
+    /// A configured MCP server. Listed for reference; choosing it does nothing.
+    McpServer(String),
 }
 
 /// A file or skill the draft references through a chip.

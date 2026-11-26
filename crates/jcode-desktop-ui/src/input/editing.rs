@@ -62,6 +62,9 @@ impl PromptInput {
         if self.step_picker_effort(1, cx) {
             return;
         }
+        if self.sel.cursor() == self.content.len() && self.enter_selected_mcp(cx) {
+            return;
+        }
         if self.sel.range.is_empty() {
             self.move_to(self.next_boundary(self.sel.range.end), cx);
         } else {

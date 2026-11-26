@@ -11,16 +11,15 @@ pub(super) struct SuggestionsCache {
     rows: Arc<Vec<CommandSuggestion>>,
 }
 
-/// Longest name the grid gives its own column, in characters.
-const GRID_NAME_CHARS: usize = 28;
-/// Share of the row the name column may take, so descriptions keep the rest.
-const GRID_NAME_SHARE: f32 = 0.4;
-const GRID_ICON: f32 = 18.0;
-const GRID_GAP: f32 = 12.0;
-const GRID_TEXT: f32 = 12.0;
+/// Height of a name-and-description row. Fixed, so a row is one line and a
+/// list of them has the same height before and after it is measured.
+const LEAN_ROW: f32 = 32.0;
+/// How far past its edge a picker list lays rows out on the first frame. More
+/// than any popup is tall, so every visible row is measured, not estimated.
+const PICKER_OVERDRAW: f32 = 600.0;
 
-/// What a grid row shows after its name: the kind tag and the description on
-/// one line. `None` for rows that are not plain text commands, skills or modes
+/// What a name-and-description row shows after its name: the kind tag and the
+/// description on one line. `None` for rows that are not plain text commands, skills or modes
 /// (model, effort and speed rows lay themselves out).
 pub(super) fn grid_description(row: &CommandSuggestion) -> Option<String> {
     if row.toggle.is_some()
@@ -42,13 +41,27 @@ pub(super) fn grid_description(row: &CommandSuggestion) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// The name a grid row shows in its name column.
-fn grid_label(row: &CommandSuggestion) -> &str {
-    match row.value.strip_prefix("/mode ") {
-        Some("off") => "Clear all",
-        Some(name) => name,
-        None => &row.value,
+/// A row's background and name ink. Name-and-description rows lighten under
+/// the selection and keep their ink; the others (models, efforts) still invert.
+pub(super) fn row_paint(lean: bool, selected: bool, mode: bool, theme: &crate::theme::Palette) -> (gpui::Rgba, gpui::Rgba) {
+    use crate::theme::Ink;
+    match (lean, selected) {
+        (true, true) => (theme.wash(Ink::Text, 0.08), theme.TEXT),
+        (true, false) => (theme.wash(Ink::Text, 0.0), if mode { theme.TEXT } else { theme.TEXT_DIM }),
+        (false, true) => (theme.TEXT, theme.BG),
+        (false, false) => (theme.HEADER_BG, theme.TEXT_DIM),
     }
+}
+
+/// Choosing it replaces the rows under the pointer.
+fn changes_the_list(action: &Action) -> bool {
+    matches!(action, Action::Mcp | Action::McpBack)
+}
+
+/// The list a picker popup scrolls. It lays out far past its own height on the
+/// first frame, so the popup is as tall then as it will ever be.
+pub(super) fn picker_list() -> gpui::ListState {
+    gpui::ListState::new(0, gpui::ListAlignment::Top, px(PICKER_OVERDRAW))
 }
 
 impl PromptInput {
@@ -711,46 +724,6 @@ impl PromptInput {
         rows
     }
 
-    /// Width of the name column every grid row shares: the widest name in the
-    /// list (capped), plus the icon slot when any row has an icon. Descriptions
-    /// start right after it, so they share one x whatever the row holds.
-    fn grid_name_column(&self, window: &Window, row_width: Pixels) -> (Pixels, bool) {
-        let rows = self.command_suggestions();
-        let grid = || rows.iter().filter(|row| grid_description(row).is_some());
-        let longest = grid()
-            .map(|row| grid_label(row).chars().count())
-            .max()
-            .unwrap_or(0)
-            .min(GRID_NAME_CHARS);
-        let any_icon = grid().any(|row| {
-            row.value.starts_with("/mode ")
-                || matches!(
-                    row.context_action,
-                    Some(
-                        Action::File(_)
-                            | Action::Browse
-                            | Action::Attach
-                    )
-                )
-        });
-        let cell = window
-            .text_system()
-            .shape_line(
-                "M".into(),
-                px(GRID_TEXT),
-                &[gpui::TextRun {
-                    len: 1,
-                    font: gpui::font(Theme::global().FONT_MONO),
-                    ..Default::default()
-                }],
-                None,
-            )
-            .width;
-        let icon = if any_icon { px(GRID_ICON + GRID_GAP) } else { px(0.) };
-        let text = (cell * longest as f32 + px(2.)).min(row_width * GRID_NAME_SHARE);
-        (icon + text, any_icon)
-    }
-
     pub(super) fn render_command_row(
         &self,
         index: usize,
@@ -765,20 +738,20 @@ impl PromptInput {
         let compact = row_width < px(430.);
         let grid_help = grid_description(&suggestion);
         let grid = grid_help.is_some();
-        let (name_column, icon_slot) = grid
-            .then(|| self.grid_name_column(window, row_width))
-            .map_or((None, false), |(width, icon)| (Some(width), icon));
         let is_toggle = suggestion.toggle.is_some();
         let selected = index == self.command_selection;
         let active_choice = suggestion.active_choice;
-        let ink = if selected {
-            Theme::global().BG
-        } else {
-            Theme::global().TEXT_DIM
-        };
         let model = suggestion.value.strip_prefix("/model ");
         let mode = suggestion.value.strip_prefix("/mode ");
         let speed = crate::speed_icon::command_tier(&suggestion.value);
+        // Name-and-description rows (modes, skills, tools, commands): one fixed
+        // line, proportional type, and a selection that lightens the row
+        // instead of inverting it.
+        let lean = grid || mode.is_some() || suggestion.context_action.is_some();
+        let theme = Theme::global();
+        let (fill, ink) = row_paint(lean, selected, mode.is_some(), theme);
+        let opens_submenu = suggestion.context_action == Some(Action::Mcp);
+        let list_change = suggestion.context_action.clone().filter(changes_the_list);
         let draft_target = crate::fixture_control_targets::draft_session().then(|| {
             model
                 .map(|spec| self.model_details.get(spec).map_or(spec, |route| route.model.as_str()))
@@ -791,7 +764,9 @@ impl PromptInput {
             .or_else(|| match suggestion.context_action.as_ref()? {
                 Action::File(_) => Some(crate::mode_catalog::ModeIcon::Document),
                 Action::Browse => Some(crate::mode_catalog::ModeIcon::Search),
-                Action::Attach => Some(crate::mode_catalog::ModeIcon::Document),
+                Action::Attach => Some(crate::mode_catalog::ModeIcon::Paperclip),
+                Action::Mcp | Action::McpServer(_) => Some(crate::mode_catalog::ModeIcon::Plug),
+                Action::McpBack => Some(crate::mode_catalog::ModeIcon::ChevronLeft),
                 Action::Skill(_) => None,
             });
         let mode_target = mode.map(str::to_owned);
@@ -967,9 +942,8 @@ impl PromptInput {
                     .justify_between()
                     .when(compact && model.is_some(), |row| row.gap_1().px_2())
                     .when(!compact || model.is_none(), |row| row.gap_3().px_3())
-                    .py_1p5()
-                    .when(suggestion.context_action.is_some(), |row| row.rounded_full())
-                    .when(suggestion.context_action.is_none(), |row| row.rounded_md())
+                    .when(lean, |row| row.h(px(LEAN_ROW)).rounded_full())
+                    .when(!lean, |row| row.py_1p5().rounded_md())
                     .when(model.is_some() || speed.is_some() || suggestion.value.starts_with("/effort "), |row| {
                         row.border_1().border_color(match (active_choice, selected) {
                             (true, true) => crate::theme::to_hsla(Theme::global().BG),
@@ -977,15 +951,12 @@ impl PromptInput {
                             (false, _) => gpui::transparent_black(),
                         })
                     })
-                    .bg(if selected {
-                        Theme::global().TEXT
-                    } else {
-                        Theme::global().HEADER_BG
-                    })
-                    .when(!selected, |row| {
+                    .bg(fill)
+                    .when(!selected && !lean, |row| {
                         row.hover(|style| style.bg(Theme::global().INPUT_BG))
                     })
-                    .text_size(px(12.0))
+                    .text_size(px(if lean { 13.0 } else { 12.0 }))
+                    .when(lean, |row| row.font_family(theme.FONT_UI))
                     .text_color(ink)
                     .cursor_pointer()
                     .when_some(speed_tooltip, |row, detail| {
@@ -1004,12 +975,9 @@ impl PromptInput {
                             .overflow_hidden()
                             .items_center()
                             .when(!grid, |row| row.flex_1())
-                            .when_some(name_column, |row, width| row.flex_none().w(width))
+                            .when(grid, |row| row.max_w(relative(0.55)))
                             .when(compact && model.is_some(), |row| row.gap_1())
                             .when(!compact || model.is_none(), |row| row.gap_3())
-                            .when(icon_slot && mode_icon.is_none(), |row| {
-                                row.child(div().w(px(GRID_ICON)).flex_none())
-                            })
                             .children(logo)
                             .children(effort_mark)
                             .children(speed.map(|tier| div().flex_none()
@@ -1026,7 +994,7 @@ impl PromptInput {
                                         .justify_center()
                                         .child(icon.render(
                                             16.0,
-                                            if mode.is_some() && !selected {
+                                            if mode.is_some() {
                                                 icon.tint(Theme::global())
                                             } else {
                                                 ink
@@ -1034,7 +1002,7 @@ impl PromptInput {
                                         ))
                                 }),
                             )
-                            .font_family(if model.is_some() || speed.is_some() || stage_row {
+                            .font_family(if model.is_some() || speed.is_some() || stage_row || lean {
                                 Theme::global().FONT_UI
                             } else {
                                 Theme::global().FONT_MONO
@@ -1043,14 +1011,14 @@ impl PromptInput {
                             .when(selected, |label| {
                                 label
                                     .debug_selector(|| "picker-keyboard-focus".into())
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    // A bolder name would push the description along.
+                                    .when(!lean, |label| label.font_weight(gpui::FontWeight::SEMIBOLD))
                             })
                             .child(
                                 div()
                                     .flex()
                                     .flex_col()
                                     .min_w_0()
-                                    .when(grid, |column| column.flex_1())
                                     .gap_1()
                                     .child(
                                         div()
@@ -1083,7 +1051,7 @@ impl PromptInput {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_color(if selected {
+                            .text_color(if selected && !lean {
                                 ink
                             } else {
                                 Theme::global().TEXT_FAINT
@@ -1129,13 +1097,28 @@ impl PromptInput {
                                             crate::mode_catalog::ModeIcon::Check.render(12.0, ink),
                                         )
                                 })
-                                .when(mode.is_none() && selected, |marker| {
+                                .when(opens_submenu, |marker| {
+                                    marker.debug_selector(|| "picker-submenu-chevron".into()).child(
+                                        crate::mode_catalog::ModeIcon::ChevronRight
+                                            .render(14.0, Theme::global().TEXT_DIM),
+                                    )
+                                })
+                                .when(!lean && selected, |marker| {
                                     marker
                                         .debug_selector(|| "slash-command-selected".into())
                                         .child("✓")
                                 })
                         }),
                     )
+                    .when_some(list_change, |row, action| {
+                        row.on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.apply_context_action(action.clone(), event.modifiers.alt, window, cx);
+                            }),
+                        )
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -1143,7 +1126,12 @@ impl PromptInput {
                             window.focus(&this.focus_handle, cx);
                             if let Some(action) = suggestion.context_action.clone() {
                                 this.command_selection = index;
-                                this.apply_context_action(action, event.modifiers.alt, window, cx);
+                                // These swap the whole list. Done on press, the list
+                                // shrinks under the held button and the release lands
+                                // outside the popup, which dismisses it. They run on release.
+                                if !changes_the_list(&action) {
+                                    this.apply_context_action(action, event.modifiers.alt, window, cx);
+                                }
                                 return;
                             }
                             if this.embedded_command_token().is_some() {

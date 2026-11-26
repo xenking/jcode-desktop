@@ -1,6 +1,7 @@
-//! The skill and mode picker lays its rows out as one grid: names share a
-//! column and every description starts at the same x, at any window width.
+//! The skill and mode picker draws each row as one fixed line, the name and
+//! then its description, at any window width.
 use super::*;
+use super::model_picker::row_paint;
 
 struct Fixture(Entity<PromptInput>);
 
@@ -58,33 +59,38 @@ fn open_picker(
 }
 
 #[gpui::test]
-fn descriptions_start_at_one_x_on_single_lines_at_every_width(cx: &mut gpui::TestAppContext) {
+fn each_row_is_one_line_with_its_description_right_after_the_name(cx: &mut gpui::TestAppContext) {
     for width in [300., 360., 520., 900., 1400.] {
         for selected in [0, 2, 4] {
             let (_input, vcx) = open_picker(cx, width, selected);
-            let mut starts = Vec::new();
-            let mut heights = Vec::new();
             for index in 0..5 {
-                let row = vcx
-                    .debug_bounds(Box::leak(format!("slash-command-row-{index}").into_boxed_str()))
-                    .unwrap_or_else(|| panic!("row {index} painted at {width}"));
-                let help = vcx
-                    .debug_bounds(Box::leak(format!("picker-help-{index}").into_boxed_str()))
-                    .unwrap_or_else(|| panic!("description {index} painted at {width}"));
+                let mut bounds = |selector: &str| {
+                    vcx.debug_bounds(Box::leak(format!("{selector}-{index}").into_boxed_str()))
+                        .unwrap_or_else(|| panic!("{selector} {index} painted at {width}"))
+                };
+                let (row, name, help) =
+                    (bounds("slash-command-row"), bounds("picker-name"), bounds("picker-help"));
+                assert_eq!(row.size.height, px(32.), "row {index} at {width} is not one line");
                 assert!(help.right() <= row.right(), "clipped at {width}: {help:?} in {row:?}");
-                starts.push(help.left());
-                heights.push(row.size.height);
+                assert!(
+                    help.left() >= name.right() && help.left() - name.right() < px(40.),
+                    "description {index} is not beside its name at {width}: {name:?} {help:?}"
+                );
             }
-            assert!(
-                starts.windows(2).all(|pair| pair[0] == pair[1]),
-                "descriptions start at different x at width {width}, selected {selected}: {starts:?}"
-            );
-            assert!(
-                heights.windows(2).all(|pair| pair[0] == pair[1]),
-                "a description wrapped at width {width}, selected {selected}: {heights:?}"
-            );
         }
     }
+}
+
+#[test]
+fn selecting_a_name_and_description_row_lightens_it_and_keeps_its_ink() {
+    let theme = crate::theme::Theme::global();
+    let (idle_fill, idle_ink) = row_paint(true, false, true, theme);
+    let (fill, ink) = row_paint(true, true, true, theme);
+    assert_eq!(ink, idle_ink, "the name keeps its colour under the selection");
+    assert_ne!(ink, theme.BG, "no dark text on a bright bar");
+    assert!(fill.a > idle_fill.a && fill.a < 0.2, "a faint wash, not a solid bar: {fill:?}");
+    // Rows that still invert (models, efforts) are untouched.
+    assert_eq!(row_paint(false, true, false, theme), (theme.TEXT, theme.BG));
 }
 
 #[gpui::test]

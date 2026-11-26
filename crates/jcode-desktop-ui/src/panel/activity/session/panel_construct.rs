@@ -334,6 +334,7 @@ impl Panel {
             account_label: usage_fixture.then(|| "work@example.com".into()),
             reasoning_effort: effort_fixture.then(|| "high".into()),
             skills: Vec::new(),
+            mcp_servers: None,
             active_skill: None,
             pinned_modes: Vec::new(),
             mode_multiselect: false,
@@ -689,6 +690,8 @@ impl Panel {
                     cx,
                 );
             }
+            // Read ahead, so the `+` menu has its MCP row on the first frame.
+            this.load_mcp_servers(cx);
             if this.is_pending_session() {
                 this.draft_session = DraftSession::Unrequested;
                 this.status = "Starting session · you can type now".into();

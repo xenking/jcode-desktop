@@ -137,6 +137,10 @@ mod selection_tests;
 mod file_drop_tests;
 
 #[cfg(test)]
+#[path = "panel/composer/options/panel_plus_menu_tests.rs"]
+mod plus_menu_tests;
+
+#[cfg(test)]
 #[path = "panel/transcript/render/state/panel_memory_tests.rs"]
 mod memory_tests;
 
@@ -415,6 +419,9 @@ pub struct Panel {
     /// Reasoning effort, e.g. `high`, when the provider exposes it.
     pub reasoning_effort: Option<String>,
     skills: Vec<(String, String)>,
+    /// The MCP servers this machine is configured to run, as of the last time
+    /// the `+` menu opened. `None` before the first read lands.
+    mcp_servers: Option<Vec<crate::input::mcp_servers::Server>>,
     active_skill: Option<String>,
     pinned_modes: Vec<String>,
     mode_multiselect: bool,

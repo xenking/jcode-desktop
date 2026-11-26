@@ -7,6 +7,9 @@ impl Panel {
         self.swarm_list_open = false;
         self.routing_popover = None;
         self.select_background_job(None, cx);
+        if kind == PickerKind::Context {
+            self.load_mcp_servers(cx);
+        }
         let settings = self.input.read(cx).picker_settings();
         let models = self.available_models.clone();
         let deferred = self.session_deferred();
@@ -91,6 +94,7 @@ impl Panel {
                         cx.notify();
                     });
                 }, cx);
+                input.set_mcp_servers(self.mcp_servers.clone(), cx);
             }
             input
         });

@@ -37,6 +37,8 @@ use layout::{PromptLayout, selection_quads};
 pub(crate) mod file_drop;
 #[path = "input/context/picker.rs"]
 mod context_picker;
+#[path = "input/context/mcp.rs"]
+pub(crate) mod mcp_servers;
 #[path = "input/context/image_paths.rs"]
 mod image_paths;
 #[path = "input/model/menu.rs"]
@@ -522,6 +524,9 @@ impl PromptInput {
         if self.step_picker_effort(-1, cx) {
             return;
         }
+        if self.content.is_empty() && self.leave_mcp(cx) {
+            return;
+        }
         if self.sel.range.is_empty() {
             self.move_to(self.previous_boundary(self.sel.cursor()), cx);
         } else {
@@ -633,6 +638,9 @@ impl PromptInput {
             || self.content.trim() == "/model"
             || self.content.starts_with("/model ");
         if in_model_menu && self.model_stage_back(cx) {
+            return;
+        }
+        if self.leave_mcp(cx) {
             return;
         }
         if self.picker_prefix.is_none()

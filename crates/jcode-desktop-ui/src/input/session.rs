@@ -771,6 +771,7 @@ impl PromptInput {
             self.set_command_models(fallback_models, cx);
         }
         self.picker_prefix = Some(prefix);
+        self.command_scroll = model_picker::picker_list();
         self.model_stage = Default::default();
         self.picker_effort = None;
         self.suggestions_revision += 1;

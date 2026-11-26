@@ -9,11 +9,19 @@ impl Panel {
                 {"name": "selfdev", "description": "Work on Jcode"},
                 {"name": "swarm", "description": "Coordinate agents"},
                 {"name": "poteto-mode", "description": "Concise development style with deliberate subagents, plain prose, simple code and verified work. Use for requests to work in this style.", "icon": "crown"},
+                {"name": "plan", "description": "Generate an implementation plan", "mode": true},
+                {"name": "debug", "description": "Pinpoint the root cause of an issue", "mode": true},
+                {"name": "multitask", "description": "Orchestrate multiple subagents in parallel", "mode": true},
+                {"name": "ask", "description": "Answer questions without making edits", "mode": true},
                 {"name": "quiet", "description": "Keep output brief", "mode": true, "icon": "moon"},
                 {"name": "verify-jcode", "description": "Verify the real CLI and TUI after a behavior or rendering change by driving an isolated instance and inspecting its frames"},
                 {"name": "write-guide", "description": "Write product documentation"}
             ]}), message: String::new(),
         }, cx);
+        self.mcp_servers = Some(vec![
+            crate::input::mcp_servers::Server { name: "docs".into(), summary: "3 tools: search, fetch, read".into() },
+            crate::input::mcp_servers::Server { name: "tracker".into(), summary: "disabled · local server".into() },
+        ]);
     }
 
     pub(super) fn load_draft_skills(&mut self, cx: &mut Context<Self>) {
@@ -47,6 +55,34 @@ impl Panel {
                 panel.mode_catalog = catalog;
                 panel.sync_mode_menu(cx);
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Read the MCP files off the UI thread for the `+` menu's MCP submenu.
+    /// A remote session runs its servers elsewhere, so this machine's files
+    /// say nothing about them.
+    pub(in crate::panel) fn load_mcp_servers(&mut self, cx: &mut Context<Self>) {
+        if crate::harness::is_remote_session(&self.session_id) {
+            self.mcp_servers = Some(Vec::new());
+            return;
+        }
+        // Tests and offline captures keep out of the developer's real MCP files.
+        if cfg!(test) || crate::harness::screenshot_mode() {
+            return;
+        }
+        let root = self.composer_context_root().map(std::path::Path::to_path_buf);
+        let servers = cx
+            .background_executor()
+            .spawn(async move { crate::input::mcp_servers::load(root.as_deref()) });
+        cx.spawn(async move |panel, cx| {
+            let servers = servers.await;
+            let _ = panel.update(cx, |panel, cx| {
+                panel.mcp_servers = Some(servers.clone());
+                if let Some((PickerKind::Context, search)) = &panel.picker_search {
+                    search.update(cx, |input, cx| input.set_mcp_servers(Some(servers), cx));
+                }
             });
         })
         .detach();

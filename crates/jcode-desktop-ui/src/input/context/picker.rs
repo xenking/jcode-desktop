@@ -24,6 +24,10 @@ pub(super) struct Picker {
     indexing: Option<gpui::Task<()>>,
     open: bool,
     target: Option<Target>,
+    /// The configured MCP servers, once read. `None` until the first read lands.
+    mcp: Option<Vec<mcp_servers::Server>>,
+    /// The MCP submenu replaces the list while it is open.
+    mcp_open: bool,
 }
 
 #[derive(Clone)]
@@ -100,6 +104,74 @@ impl PromptInput {
         });
     }
 
+    /// The configured servers, read off the UI thread by the owner.
+    pub(crate) fn set_mcp_servers(
+        &mut self,
+        servers: Option<Vec<mcp_servers::Server>>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(picker) = &mut self.context_picker {
+            picker.mcp = servers;
+            self.suggestions_revision += 1;
+            cx.notify();
+        }
+    }
+
+    /// The submenu: a way back, then one row per server with its tools.
+    fn mcp_rows(&self, query: &str) -> Vec<CommandSuggestion> {
+        let servers = self.context_picker.as_ref().and_then(|picker| picker.mcp.as_ref());
+        let query = query.trim().to_lowercase();
+        let mut rows = vec![row("Back".into(), String::new(), None, Action::McpBack)];
+        let listed: Vec<_> = servers
+            .into_iter()
+            .flatten()
+            .filter(|server| server.name.to_lowercase().contains(&query))
+            .map(|server| {
+                row(
+                    server.name.clone(),
+                    server.summary.clone(),
+                    None,
+                    Action::McpServer(server.name.clone()),
+                )
+            })
+            .collect();
+        if listed.is_empty() {
+            let note = if servers.is_some_and(|servers| !servers.is_empty()) {
+                "No MCP server matches"
+            } else {
+                "No MCP servers configured"
+            };
+            rows.push(row(note.into(), String::new(), None, Action::McpServer(String::new())));
+        }
+        rows.extend(listed);
+        rows
+    }
+
+    /// Open or leave the MCP submenu. False when it was already so.
+    pub(super) fn set_mcp_open(&mut self, open: bool, cx: &mut Context<Self>) -> bool {
+        let Some(picker) = self.context_picker.as_mut().filter(|p| p.mcp_open != open) else {
+            return false;
+        };
+        picker.mcp_open = open;
+        self.suggestions_revision += 1;
+        self.set_content(String::new(), cx);
+        true
+    }
+
+    /// Esc and ← inside the submenu step back to the list.
+    pub(super) fn leave_mcp(&mut self, cx: &mut Context<Self>) -> bool {
+        self.set_mcp_open(false, cx)
+    }
+
+    /// → on the MCP row opens it, as Enter does.
+    pub(super) fn enter_selected_mcp(&mut self, cx: &mut Context<Self>) -> bool {
+        let on_mcp = self
+            .command_suggestions()
+            .get(self.command_selection)
+            .is_some_and(|row| row.context_action == Some(Action::Mcp));
+        on_mcp && self.set_mcp_open(true, cx)
+    }
+
     pub(super) fn standalone_context(&self) -> bool {
         self.context_picker
             .as_ref()
@@ -170,10 +242,13 @@ impl PromptInput {
             (self.mention_token()?.1, true)
         };
         let mut rows = Vec::new();
+        if !files_only && picker.mcp_open {
+            return Some(self.mcp_rows(query));
+        }
         if !files_only {
             let query = query.trim_start_matches('/').trim().to_lowercase();
             let mut in_skills = false;
-            let (skills, mut head): (Vec<_>, Vec<_>) = mode_suggestions(
+            let (mut skills, mut head): (Vec<_>, Vec<_>) = mode_suggestions(
                 &format!("/mode {query}"),
                 &self.command_skills,
                 &self.current_modes,
@@ -195,23 +270,29 @@ impl PromptInput {
             });
             let mut tools = Vec::new();
             if "attach images".contains(&query) {
-                tools.push(row(
-                    "Attach…".into(),
-                    "Choose files or images".into(),
-                    None,
-                    Action::Attach,
-                ));
+                tools.push(row("Attach…".into(), String::new(), None, Action::Attach));
             }
             if picker.root.is_some() && "files workspace project".contains(&query) {
-                tools.push(row(
-                    "Files".into(),
-                    "Search this workspace".into(),
-                    None,
-                    Action::Browse,
-                ));
+                tools.push(row("Files".into(), String::new(), None, Action::Browse));
             }
-            // Modes first, then a separator before the tools and the long skill list.
+            // Only a machine whose MCP files name a server has anything to open.
+            if picker.mcp.as_ref().is_some_and(|servers| !servers.is_empty())
+                && "mcp servers".contains(&query)
+            {
+                tools.push(row("MCP".into(), String::new(), None, Action::Mcp));
+            }
+            // Groups carry no titles: modes, then tools, then the long skill
+            // list, each after a separator.
+            for row in head.iter_mut().chain(skills.iter_mut()) {
+                row.header = None;
+            }
             if let Some(first) = tools.first_mut().filter(|_| !head.is_empty()) {
+                first.header = Some(String::new());
+            }
+            if let Some(first) = skills
+                .first_mut()
+                .filter(|_| !head.is_empty() || !tools.is_empty())
+            {
                 first.header = Some(String::new());
             }
             head.extend(tools);
@@ -252,6 +333,15 @@ impl PromptInput {
                 self.set_content("@".into(), cx);
                 return;
             }
+            Action::Mcp => {
+                self.set_mcp_open(true, cx);
+                return;
+            }
+            Action::McpBack => {
+                self.set_mcp_open(false, cx);
+                return;
+            }
+            Action::McpServer(_) => return,
             Action::Skill(name) if !alternate || name == "off" => {
                 self.toggle_mode_row(&name, window, cx);
                 None
@@ -312,7 +402,9 @@ impl PromptInput {
                 };
                 self.insert_context(DraftContext::File { path, contents }, range, window, cx);
             }
-            Action::Browse => unreachable!("browse stays in the picker"),
+            Action::Browse | Action::Mcp | Action::McpBack | Action::McpServer(_) => {
+                unreachable!("these stay in the picker")
+            }
         }
     }
 
