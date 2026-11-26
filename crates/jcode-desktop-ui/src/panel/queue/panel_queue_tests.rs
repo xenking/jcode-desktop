@@ -30,6 +30,99 @@ fn effort_command_during_running_turn_is_immediate_not_a_steer(cx: &mut gpui::Te
 use serde_json::json;
 
 #[gpui::test]
+fn editing_fifo_prompt_keeps_fifo_mode(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode::Queue;
+    let (_, vcx, commands) = queue_edit_panel(cx, vec![editing_test_prompt("a", "first", Queue)]);
+    let edit = vcx.debug_bounds("remote-queue-edit-0").unwrap();
+    vcx.simulate_click(edit.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("queue-edit-mode-fifo").is_some());
+    let save = vcx.debug_bounds("queue-edit-save").unwrap();
+    vcx.simulate_click(save.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    let sent = drain_commands(&commands);
+    assert!(sent.iter().any(|command| matches!(command, Command::EditQueuedPrompt { prompt_id, .. } if prompt_id == "a")));
+    assert!(!sent.iter().any(|command| matches!(command, Command::SetQueuedPromptMode { .. })));
+}
+
+#[gpui::test]
+fn legacy_fifo_combines_when_batch_is_explicit(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("legacy-batch".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    panel.update(cx, |panel, cx| {
+        panel.submit_or_queue("first [#image 1]".into(), vec![("image/png".into(), "one".into())], true, cx);
+        panel.submit_or_queue("second [#image 1]".into(), vec![("image/png".into(), "two".into())], true, cx);
+        panel.interrupt_queue_section(jcode_sdk::api::QueuedPromptMode::Queue, cx);
+    });
+    assert!(matches!(commands.try_recv(), Ok(Command::Send { content, images, .. }) if content == "first [#image 1]\n\nsecond [#image 2]" && images.len() == 2 && images[0].1 == "one" && images[1].1 == "two"));
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn legacy_fifo_does_not_merge_without_explicit_batch(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("legacy-fifo".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    panel.update(cx, |panel, cx| {
+        panel.submit_or_queue("first".into(), vec![("image/png".into(), "one".into())], true, cx);
+        panel.submit_or_queue("second".into(), vec![("image/png".into(), "two".into())], true, cx);
+        panel.status = "idle".into();
+        panel.send_queued_prompts(cx);
+    });
+    assert!(matches!(commands.try_recv(), Ok(Command::Send { content, images, .. }) if content == "first" && images[0].1 == "one"));
+    panel.read_with(cx, |panel, _| {
+        assert_eq!(panel.prompt_queue.prompts.len(), 1);
+        assert_eq!(panel.prompt_queue.prompts[0].content, "second");
+        assert_eq!(panel.prompt_queue.prompts[0].images[0].1, "two");
+    });
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn ctrl_enter_queues_two_fifo_prompts_until_explicit_batch(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode::Queue;
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("fifo-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel.prompt_queue.remote_supported = true;
+        panel
+    });
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        window.focus(&panel.read(cx).input.read(cx).editor_focus(), cx);
+    });
+    for text in ["first", "second"] {
+        vcx.simulate_input(text);
+        vcx.simulate_keystrokes("ctrl-enter");
+    }
+    vcx.run_until_parked();
+    let prompts: Vec<_> = (0..2).map(|_| match commands.try_recv().unwrap() {
+        Command::QueuePrompt { prompt, .. } => prompt,
+        _ => panic!("expected queue command"),
+    }).collect();
+    assert_eq!(prompts.iter().map(|p| p.content.as_str()).collect::<Vec<_>>(), ["first", "second"]);
+    assert!(prompts.iter().all(|p| p.mode == Queue));
+    assert!(commands.try_recv().is_err(), "queueing does not interrupt or batch");
+    assert!(vcx.debug_bounds("queue-section-fifo").is_some());
+    let send = vcx.debug_bounds("queue-send-all-fifo").expect("send batch");
+    vcx.simulate_click(send.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { ids, .. }) if ids == prompts.iter().map(|p| p.client_id.clone()).collect::<Vec<_>>()));
+}
+
+#[gpui::test]
 fn queued_skill_is_preserved_per_prompt_in_daemon_queue(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let panel = cx.new(|cx| {
@@ -360,6 +453,7 @@ fn queued_image_uses_chip_and_opens_preview(cx: &mut gpui::TestAppContext) {
             images: vec![(image.media_type, image.data)],
             files: vec![],
             after_yield: true,
+            fifo_queue: false,
             send_now: false,
         });
         panel
@@ -417,6 +511,7 @@ fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) 
             images: remote.images,
             files: vec![],
             after_yield: false,
+            fifo_queue: false,
             send_now: false,
         });
         cx.notify();
@@ -492,7 +587,7 @@ fn daemon_queue_modes_and_pickup_are_not_duplicated(cx: &mut gpui::TestAppContex
         _ => panic!("expected queued prompt"),
     };
     assert_eq!(first.mode, jcode_sdk::api::QueuedPromptMode::Steer);
-    assert_eq!(second.mode, jcode_sdk::api::QueuedPromptMode::AfterYield);
+    assert_eq!(second.mode, jcode_sdk::api::QueuedPromptMode::Queue);
     panel.update(cx, |panel, cx| {
         panel.apply(&event(json!({"ev":"queued_prompts", "prompts":[first, second]})), cx);
         panel.apply(&event(json!({"ev":"soft_interrupt_injected", "content":"steer me", "point":"D", "client_ids":[first.client_id]})), cx);
@@ -553,6 +648,7 @@ fn pending_connection_prompts_remain_separate_daemon_turns(cx: &mut gpui::TestAp
                 images: vec![],
                 files: vec![],
                 after_yield: true,
+            fifo_queue: false,
                 send_now: false,
             },
             QueuedPrompt {
@@ -561,6 +657,7 @@ fn pending_connection_prompts_remain_separate_daemon_turns(cx: &mut gpui::TestAp
                 images: vec![],
                 files: vec![],
                 after_yield: true,
+            fifo_queue: false,
                 send_now: false,
             },
         ];
@@ -951,7 +1048,7 @@ fn enter_while_pending_promotes_only_the_new_prompt_once_connected(
     assert_eq!(queued.len(), 2, "both prompts reach the daemon queue");
     let after_yield = queued.iter().find(|p| p.content == "after yield prompt").unwrap();
     let now = queued.iter().find(|p| p.content == "send this now").unwrap();
-    assert_eq!(after_yield.mode, jcode_sdk::api::QueuedPromptMode::AfterYield);
+    assert_eq!(after_yield.mode, jcode_sdk::api::QueuedPromptMode::Queue);
     let interrupts: Vec<_> = sent
         .iter()
         .filter_map(|command| match command {
@@ -1209,13 +1306,16 @@ fn ctrl_enter_queues_until_completion_and_enter_still_sends(cx: &mut gpui::TestA
     vcx.run_until_parked();
     assert!(
         matches!(commands.try_recv(), Ok(Command::Send { content, images, .. })
-        if content == "first queued prompt\n\nsecond queued prompt" && images.is_empty())
+        if content == "first queued prompt" && images.is_empty())
     );
     assert!(
         commands.try_recv().is_err(),
         "duplicate completion must not replay the queue"
     );
-    assert!(vcx.debug_bounds("prompt-queue").is_none());
+    panel.read_with(vcx, |p, _| {
+        assert_eq!(p.prompt_queue.prompts.len(), 1);
+        assert_eq!(p.prompt_queue.prompts[0].content, "second queued prompt");
+    });
 
     vcx.simulate_input("send immediately");
     vcx.simulate_keystrokes("enter");

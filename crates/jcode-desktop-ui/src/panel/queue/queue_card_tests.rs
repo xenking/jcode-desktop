@@ -442,6 +442,7 @@ fn paused_queue_is_labelled_in_the_header_and_resumes(cx: &mut gpui::TestAppCont
                 images: vec![],
                 active_skill: None,
                 after_yield: true,
+                fifo_queue: false,
                 send_now: false,
             });
         }
@@ -490,6 +491,7 @@ fn reconnect_waits_neutrally_then_flushes_the_queue(cx: &mut gpui::TestAppContex
             images: vec![],
             active_skill: None,
             after_yield: true,
+            fifo_queue: false,
             send_now: false,
         });
         panel

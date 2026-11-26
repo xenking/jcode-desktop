@@ -43,9 +43,13 @@ fn startup_enter_and_ctrl_enter_queue_until_attached_history_ready(cx: &mut gpui
     });
     assert!(
         matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images, .. })
-        if session_id == "session-ready" && content == "first startup prompt\n\nsecond startup prompt" && images.is_empty())
+        if session_id == "session-ready" && content == "first startup prompt" && images.is_empty())
     );
     assert!(commands.try_recv().is_err(), "readiness cannot send twice");
+    panel.read_with(vcx, |p, _| {
+        assert_eq!(p.prompt_queue.prompts.len(), 1);
+        assert_eq!(p.prompt_queue.prompts[0].content, "second startup prompt");
+    });
 }
 
 #[gpui::test]

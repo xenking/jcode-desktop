@@ -116,6 +116,8 @@ struct QueuedPrompt {
     active_skill: Option<String>,
     #[serde(default = "default_follow_up")]
     after_yield: bool,
+    #[serde(default)]
+    fifo_queue: bool,
     /// Sent with plain Enter over a visible queue: deliver this prompt now,
     /// as soon as it can reach the runtime, without promoting the others.
     #[serde(default)]
@@ -126,6 +128,37 @@ struct QueuedPrompt {
 
 fn default_follow_up() -> bool {
     true
+}
+
+struct Delivery;
+
+impl Delivery {
+    fn mode(after_yield: bool, fifo_queue: bool) -> jcode_sdk::api::QueuedPromptMode {
+        if fifo_queue {
+            jcode_sdk::api::QueuedPromptMode::Queue
+        } else if after_yield {
+            jcode_sdk::api::QueuedPromptMode::AfterYield
+        } else {
+            jcode_sdk::api::QueuedPromptMode::Steer
+        }
+    }
+
+    fn combine(prompts: Vec<QueuedPrompt>) -> (String, Vec<(String, String)>, Vec<crate::input::SubmittedFile>) {
+        let mut content = Vec::new();
+        let mut images = Vec::new();
+        let mut files = Vec::new();
+        for prompt in prompts {
+            let mut text = prompt.content;
+            for n in (1..=prompt.images.len()).rev() {
+                text = text.replace(&format!("[#image {n}]"), &format!("[#image {}]", n + images.len()));
+                text = text.replace(&format!("[image {n}]"), &format!("[image {}]", n + images.len()));
+            }
+            content.push(text);
+            images.extend(prompt.images);
+            files.extend(prompt.files);
+        }
+        (content.join("\n\n"), images, files)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -151,8 +184,8 @@ struct QueuedPromptEditState {
     phase: QueueEditPhase,
     active_skill: Option<String>,
     after_yield: bool,
+    fifo_queue: bool,
 }
-
 
 impl Panel {
     pub(crate) fn set_queue_mutations_supported(
@@ -212,7 +245,7 @@ impl Panel {
         self.open_queue_editor(
             QueueEditTarget::Remote(prompt.client_id),
             (prompt.content, prompt.images, prompt.attachments),
-            (prompt.active_skill, after_yield),
+            (prompt.active_skill, after_yield, prompt.mode == jcode_sdk::api::QueuedPromptMode::Queue),
             Some(window),
             cx,
         );
@@ -225,7 +258,7 @@ impl Panel {
         self.open_queue_editor(
             QueueEditTarget::Local(index),
             (prompt.content, prompt.images, Files::wire(&prompt.files)),
-            (prompt.active_skill, prompt.after_yield),
+            (prompt.active_skill, prompt.after_yield, prompt.fifo_queue),
             Some(window),
             cx,
         );
@@ -236,7 +269,7 @@ impl Panel {
         &mut self,
         target: QueueEditTarget,
         (content, images, attachments): (String, Vec<(String, String)>, Vec<jcode_sdk::api::Attachment>),
-        (active_skill, after_yield): (Option<String>, bool),
+        (active_skill, after_yield, fifo_queue): (Option<String>, bool, bool),
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) {
@@ -261,6 +294,7 @@ impl Panel {
             phase: QueueEditPhase::Editing,
             active_skill,
             after_yield,
+            fifo_queue,
         });
         cx.notify();
     }
@@ -282,10 +316,13 @@ impl Panel {
             return;
         }
         let after_yield = edit.after_yield;
+        let fifo_queue = edit.fifo_queue;
         match edit.target.clone() {
             QueueEditTarget::Remote(prompt_id) => {
                 edit.phase = QueueEditPhase::Saving;
-                let mode = if after_yield {
+                let mode = if fifo_queue {
+                    jcode_sdk::api::QueuedPromptMode::Queue
+                } else if after_yield {
                     jcode_sdk::api::QueuedPromptMode::AfterYield
                 } else {
                     jcode_sdk::api::QueuedPromptMode::Steer
@@ -314,6 +351,7 @@ impl Panel {
                     prompt.content = content;
                     prompt.images = images;
                     prompt.after_yield = after_yield;
+                    prompt.fifo_queue = fifo_queue;
                     // Local entries carry their bytes, as do files pasted into
                     // the editor, so every attachment converts.
                     prompt.files = Files::captured(&attachments);
@@ -358,7 +396,7 @@ impl Panel {
             self.prompt_queue.queued_edit = Some(edit);
             return;
         }
-        self.send_remote_prompt_with_attachments(content, images, attachments, edit.after_yield, edit.active_skill, cx);
+        self.send_remote_prompt_with_attachments(content, images, attachments, Delivery::mode(edit.after_yield, edit.fifo_queue), edit.active_skill, cx);
         self.focus_input(window, cx);
     }
 
@@ -770,7 +808,7 @@ impl Panel {
         self.open_queue_editor(
             QueueEditTarget::Remote(prompt.client_id),
             (prompt.content, prompt.images, prompt.attachments),
-            (prompt.active_skill, after_yield),
+            (prompt.active_skill, after_yield, prompt.mode == jcode_sdk::api::QueuedPromptMode::Queue),
             None,
             cx,
         );
@@ -818,6 +856,7 @@ impl Panel {
                     files,
                     active_skill: self.active_skill.clone(),
                     after_yield: true,
+                    fifo_queue: queued,
                     send_now: false,
                 });
                 self.prompt_queue.paused = false;
@@ -847,7 +886,7 @@ impl Panel {
                 content,
                 images,
                 files,
-                queued || self.prompt_queue.default_after_yield,
+                Delivery::mode(self.prompt_queue.default_after_yield, queued),
                 self.active_skill.clone(),
                 cx,
             );
@@ -867,6 +906,7 @@ impl Panel {
                 files,
                 active_skill: self.active_skill.clone(),
                 after_yield: queued || self.prompt_queue.default_after_yield,
+                fifo_queue: queued,
                 send_now: false,
             });
             self.prompt_queue.paused = false;
@@ -899,7 +939,7 @@ impl Panel {
         mode: jcode_sdk::api::QueuedPromptMode,
         cx: &mut Context<Self>,
     ) {
-        use jcode_sdk::api::QueuedPromptMode::{AfterYield, Steer};
+        use jcode_sdk::api::QueuedPromptMode::{AfterYield, Queue, Steer};
         if !self.queue_connection_ready()
             || !self.prompt_queue.remote.iter().any(|prompt| {
                 prompt.client_id == client_id
@@ -911,7 +951,7 @@ impl Panel {
         }
         self.prompt_queue.remote_failures.remove(client_id);
         match mode {
-            AfterYield => self.set_remote_queue_mode(client_id, Steer),
+            AfterYield | Queue => self.set_remote_queue_mode(client_id, Steer),
             Steer => self.bridge.send(Command::InterruptQueuedPrompt {
                 session_id: self.session_id.clone(),
                 client_id: client_id.to_owned(),
@@ -927,8 +967,9 @@ impl Panel {
         let Some(prompt) = self.prompt_queue.prompts.get_mut(index) else {
             return;
         };
-        if prompt.after_yield {
+        if prompt.after_yield || prompt.fifo_queue {
             prompt.after_yield = false;
+            prompt.fifo_queue = false;
             cx.notify();
         } else {
             self.send_queued_prompt_now(index, cx);
@@ -941,6 +982,30 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         if !self.queue_connection_ready() {
+            return;
+        }
+        if !self.prompt_queue.remote_supported
+            && mode == jcode_sdk::api::QueuedPromptMode::Queue
+            && self.local_edit_index().is_none()
+            && self.prompt_queue.prompts.iter().filter(|p| p.fifo_queue).all(|p| p.active_skill.is_none())
+        {
+            let mut prompts = Vec::new();
+            let mut index = 0;
+            while index < self.prompt_queue.prompts.len() {
+                if !self.prompt_queue.prompts[index].fifo_queue {
+                    index += 1;
+                    continue;
+                }
+                let prompt = self.prompt_queue.prompts.remove(index);
+                self.local_queue_removed(index);
+                prompts.push(prompt);
+            }
+            if !prompts.is_empty() {
+                let (content, images, files) = Delivery::combine(prompts);
+                self.prompt_queue.paused = false;
+                self.send_prompt_with_skill_files(content, images, files, None, cx);
+                cx.notify();
+            }
             return;
         }
         let mut ids = Vec::new();
@@ -957,10 +1022,9 @@ impl Panel {
                 ids.push(prompt.client_id.clone());
             }
         }
-        let after_yield = mode == jcode_sdk::api::QueuedPromptMode::AfterYield;
         let mut index = 0;
         while let Some(prompt) = self.prompt_queue.prompts.get(index) {
-            if prompt.after_yield != after_yield || self.local_edit_index() == Some(index) {
+            if Delivery::mode(prompt.after_yield, prompt.fifo_queue) != mode || self.local_edit_index() == Some(index) {
                 index += 1;
                 continue;
             }
@@ -971,7 +1035,7 @@ impl Panel {
                     prompt.content,
                     prompt.images,
                     prompt.files,
-                    prompt.after_yield,
+                    Delivery::mode(prompt.after_yield, prompt.fifo_queue),
                     prompt.active_skill,
                     cx,
                 ));
@@ -998,7 +1062,7 @@ impl Panel {
         // interrupt can name them. The batch covers prompts marked to send
         // now, so the flush must not interrupt them separately.
         if !self.prompt_queue.prompts.is_empty() {
-            self.flush_local_queue(cx);
+            self.flush_local_queue(cx, true);
         }
         if !self.prompt_queue.prompts.is_empty() {
             // Still held locally (history not loaded yet): finish on reconnect.
@@ -1041,7 +1105,7 @@ impl Panel {
             && !self.prompt_queue.waiting_for_connection
             && !self.queue_transport_lost();
         if reachable && self.prompt_queue.remote_supported {
-            let id = self.send_remote_prompt_with_files(content, images, files, true, self.active_skill.clone(), cx);
+            let id = self.send_remote_prompt_with_files(content, images, files, jcode_sdk::api::QueuedPromptMode::AfterYield, self.active_skill.clone(), cx);
             self.interrupt_queued_prompts(vec![id], cx);
         } else if reachable && self.history_loaded && self.active_skill.is_none() {
             // A legacy runtime has no daemon queue to name a prompt in. A
@@ -1058,6 +1122,7 @@ impl Panel {
                 files,
                 active_skill: self.active_skill.clone(),
                 after_yield: true,
+                fifo_queue: false,
                 send_now: true,
             });
             self.prompt_queue.paused = false;
@@ -1116,11 +1181,11 @@ impl Panel {
         content: String,
         images: Vec<(String, String)>,
         files: Vec<crate::input::SubmittedFile>,
-        after_yield: bool,
+        mode: jcode_sdk::api::QueuedPromptMode,
         active_skill: Option<String>,
         cx: &mut Context<Self>,
     ) -> String {
-        self.send_remote_prompt_with_attachments(content, images, Files::wire(&files), after_yield, active_skill, cx)
+        self.send_remote_prompt_with_attachments(content, images, Files::wire(&files), mode, active_skill, cx)
     }
 
     /// Hand a prompt to the daemon queue and return its client id.
@@ -1129,7 +1194,7 @@ impl Panel {
         content: String,
         images: Vec<(String, String)>,
         attachments: Vec<jcode_sdk::api::Attachment>,
-        after_yield: bool,
+        mode: jcode_sdk::api::QueuedPromptMode,
         active_skill: Option<String>,
         cx: &mut Context<Self>,
     ) -> String {
@@ -1155,11 +1220,7 @@ impl Panel {
             content,
             images,
             attachments,
-            mode: if after_yield {
-                jcode_sdk::api::QueuedPromptMode::AfterYield
-            } else {
-                jcode_sdk::api::QueuedPromptMode::Steer
-            },
+            mode,
             editing: false,
         };
         let history_count = self
@@ -1250,6 +1311,7 @@ impl Panel {
                 files,
                 active_skill: None,
                 after_yield: false,
+                fifo_queue: false,
                 send_now: false,
             });
             crate::sounds::play(crate::sounds::Cue::Sent, cx);
@@ -1547,13 +1609,13 @@ impl Panel {
     }
 
     pub(super) fn send_queued_prompts(&mut self, cx: &mut Context<Self>) {
-        let send_now = self.flush_local_queue(cx);
+        let send_now = self.flush_local_queue(cx, false);
         self.interrupt_queued_prompts(send_now, cx);
     }
 
     /// Move deliverable local prompts to the runtime. Returns the daemon ids
     /// of prompts the user asked to send now, for the caller to interrupt.
-    fn flush_local_queue(&mut self, cx: &mut Context<Self>) -> Vec<String> {
+    fn flush_local_queue(&mut self, cx: &mut Context<Self>, batch: bool) -> Vec<String> {
         // A message open for editing keeps its place: the local queue waits
         // until the edit is saved or cancelled, then resumes.
         if self.local_edit_index().is_some() {
@@ -1604,7 +1666,13 @@ impl Panel {
         {
             return Vec::new();
         }
-        let prompts = std::mem::take(&mut self.prompt_queue.prompts);
+        let prompts = if self.prompt_queue.remote_supported || batch {
+            std::mem::take(&mut self.prompt_queue.prompts)
+        } else {
+            let count = self.prompt_queue.prompts.iter().position(|prompt| prompt.fifo_queue)
+                .map_or(self.prompt_queue.prompts.len(), |index| index.max(1));
+            self.prompt_queue.prompts.drain(..count).collect()
+        };
         self.prompt_queue.waiting_for_connection = false;
         if prompts.is_empty() {
             return Vec::new();
@@ -1618,7 +1686,7 @@ impl Panel {
                     prompt.content,
                     prompt.images,
                     prompt.files,
-                    prompt.after_yield,
+                    Delivery::mode(prompt.after_yield, prompt.fifo_queue),
                     prompt.active_skill,
                     cx,
                 );
@@ -1631,17 +1699,7 @@ impl Panel {
         }
         // Legacy daemons have only the local queue. Keep their historical
         // behavior of combining prompts into one follow-up turn.
-        let content = prompts
-            .iter()
-            .map(|p| p.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let mut images = Vec::new();
-        let mut files = Vec::new();
-        for prompt in prompts {
-            images.extend(prompt.images);
-            files.extend(prompt.files);
-        }
+        let (content, images, files) = Delivery::combine(prompts);
         self.prompt_queue.paused = false;
         self.prompt_queue.auto_poke.start(self.items.len());
         self.send_prompt_with_skill_files(content, images, files, None, cx);

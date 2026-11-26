@@ -72,6 +72,9 @@ impl Panel {
                         jcode_sdk::api::QueuedPromptMode::AfterYield => {
                             jcode_sdk::api::QueuedPromptMode::Steer
                         }
+                        jcode_sdk::api::QueuedPromptMode::Queue => {
+                            jcode_sdk::api::QueuedPromptMode::Steer
+                        }
                     };
                     self.bridge.send(Command::SetQueuedPromptMode {
                         session_id: self.session_id.clone(),
@@ -95,7 +98,8 @@ impl Panel {
                 ("up" | "down", true) => {}
                 ("m", false) => {
                     self.prompt_queue.prompts[index].after_yield =
-                        !self.prompt_queue.prompts[index].after_yield
+                        !self.prompt_queue.prompts[index].after_yield;
+                    self.prompt_queue.prompts[index].fifo_queue = false;
                 }
                 _ => return false,
             },
@@ -149,8 +153,9 @@ impl Panel {
         let queue = &self.prompt_queue;
         let steered = self.queue_section(QueuedPromptMode::Steer, cx);
         let after_yield = self.queue_section(QueuedPromptMode::AfterYield, cx);
-        let split = steered.is_some() && after_yield.is_some();
-        if steered.is_none() && after_yield.is_none() {
+        let fifo = self.queue_section(QueuedPromptMode::Queue, cx);
+        let split = [steered.is_some(), after_yield.is_some(), fifo.is_some()].into_iter().filter(|present| *present).count() > 1;
+        if steered.is_none() && after_yield.is_none() && fifo.is_none() {
             return None;
         }
         let theme = Theme::global();
@@ -199,7 +204,8 @@ impl Panel {
                         .track_scroll(&self.queue_items_scroll)
                         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                         .children(steered)
-                        .children(after_yield),
+                        .children(after_yield)
+                        .children(fifo),
                 )
                 .into_any_element(),
         )
@@ -212,7 +218,9 @@ impl Panel {
     ) -> Option<gpui::AnyElement> {
         let queue = &self.prompt_queue;
         let after_yield = mode == QueuedPromptMode::AfterYield;
-        let (section_id, button_id, title) = if after_yield {
+        let (section_id, button_id, title) = if mode == QueuedPromptMode::Queue {
+            ("queue-section-fifo", "queue-send-all-fifo", "Queue")
+        } else if after_yield {
             (
                 "queue-section-after-yield",
                 "queue-send-all-after-yield",
@@ -238,13 +246,13 @@ impl Panel {
             .prompts
             .iter()
             .enumerate()
-            .filter(|(_, prompt)| prompt.after_yield == after_yield);
+            .filter(|(_, prompt)| Delivery::mode(prompt.after_yield, prompt.fifo_queue) == mode);
         let orphan_edit = queue.queued_edit.as_ref().filter(|edit| {
-            edit.after_yield == after_yield
+            Delivery::mode(edit.after_yield, edit.fifo_queue) == mode
                 && matches!(&edit.target, QueueEditTarget::Remote(id)
                 if !queue.remote.iter().any(|prompt| &prompt.client_id == id))
         });
-        let legacy = !after_yield && !queue.steered.is_empty();
+        let legacy = mode == QueuedPromptMode::Steer && !queue.steered.is_empty();
         let has_local = local.clone().next().is_some();
         let has_pending = pending.clone().next().is_some();
         if remote.clone().next().is_none()
@@ -393,7 +401,7 @@ impl Panel {
         let selected = self.prompt_queue.card_menu.as_deref() == Some(&key);
         let preview = self.render_queued_content(&prompt.content, &prompt.images, cx);
         let key_text = key.clone();
-        let send_label = Kit::send_label(prompt.after_yield);
+        let send_label = Kit::send_label(prompt.after_yield || prompt.fifo_queue);
         let theme = Theme::global();
         let group: SharedString = format!("queue-row-local-{index}").into();
         div()
@@ -690,7 +698,7 @@ impl Panel {
                         el.child(queue_row_action(
                             SharedString::from(format!("queue-row-send-now-{row_index}")),
                             SEND,
-                            Kit::send_label(mode == QueuedPromptMode::AfterYield),
+                            Kit::send_label(mode != QueuedPromptMode::Steer),
                             group.clone(),
                             selected,
                             cx.listener(move |this, _, _, cx| {
@@ -818,10 +826,11 @@ impl Panel {
                     )
                     .children(
                         [
-                            (false, "queue-edit-mode-steer", "Steer"),
-                            (true, "queue-edit-mode-after-yield", "After yield"),
+                            (QueuedPromptMode::Steer, "queue-edit-mode-steer", "Steer"),
+                            (QueuedPromptMode::AfterYield, "queue-edit-mode-after-yield", "After yield"),
+                            (QueuedPromptMode::Queue, "queue-edit-mode-fifo", "Queue"),
                         ]
-                        .map(|(after_yield, selector, label)| {
+                        .map(|(mode, selector, label)| {
                             Kit::pill(
                                 selector,
                                 label,
@@ -829,18 +838,19 @@ impl Panel {
                                     if let Some(edit) = this.prompt_queue.queued_edit.as_mut()
                                         && edit.phase != QueueEditPhase::Saving
                                     {
-                                        edit.after_yield = after_yield;
+                                        edit.after_yield = mode == QueuedPromptMode::AfterYield;
+                                        edit.fifo_queue = mode == QueuedPromptMode::Queue;
                                         cx.notify();
                                     }
                                     cx.stop_propagation();
                                 }),
                             )
-                            .bg(if edit.after_yield == after_yield {
+                            .bg(if Delivery::mode(edit.after_yield, edit.fifo_queue) == mode {
                                 theme.TOOL_BG
                             } else {
                                 theme.QUOTE_BG
                             })
-                            .when(edit.after_yield == after_yield, |el| {
+                            .when(Delivery::mode(edit.after_yield, edit.fifo_queue) == mode, |el| {
                                 el.text_color(theme.TEXT)
                             })
                             .when(saving, |el| el.opacity(0.6))

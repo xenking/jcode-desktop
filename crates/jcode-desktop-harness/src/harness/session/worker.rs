@@ -545,6 +545,16 @@ pub(in crate::harness) fn session_worker_with_connector(
                         }
                     }
                     SessionCommand::QueuePrompt(prompt) => {
+                        if prompt.mode == jcode_sdk::api::QueuedPromptMode::Queue
+                            && !client.supports("queued_prompt_fifo_v1")
+                        {
+                            let _ = updates.send(Update::QueuePromptFailed {
+                                session_id: session_id.clone(),
+                                client_id: prompt.client_id,
+                                reason: "This runtime does not support FIFO queued prompts".into(),
+                            });
+                            continue;
+                        }
                         if let Some(reason) = unsupported_attachments(&client, &prompt.attachments)
                         {
                             let _ = updates.send(Update::QueuePromptFailed {

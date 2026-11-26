@@ -327,6 +327,23 @@ mod socket_tests {
     }
 
     #[test]
+    fn old_bridge_does_not_receive_fifo_prompt() {
+        let worker = Worker::new(|_| vec![]);
+        worker.commands.send(SessionCommand::QueuePrompt(jcode_sdk::api::QueuedPrompt {
+            active_skill: None,
+            client_id: "fifo-id".into(),
+            content: "keep me".into(),
+            images: vec![("image/png".into(), "aW1hZ2U=".into())],
+            attachments: vec![],
+            mode: jcode_sdk::api::QueuedPromptMode::Queue,
+            editing: false,
+        })).unwrap();
+        worker.wait_for(|update| matches!(update, Update::QueuePromptFailed { client_id, reason, .. } if client_id == "fifo-id" && reason.contains("FIFO")));
+        worker.send("plain prompt", vec![]);
+        assert!(matches!(worker.request(), ApiRequest::SendMessage { content, .. } if content == "plain prompt"));
+    }
+
+    #[test]
     fn old_bridge_does_not_receive_a_prompt_it_would_strip() {
         let worker = Worker::with_attachments(false, |_| vec![]);
         worker
