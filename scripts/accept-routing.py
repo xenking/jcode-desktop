@@ -162,11 +162,14 @@ class Fixture(VERIFY.Instance):
         assert chip["account"] == "opencode-go:second", chip
         frames["chip"] = self.screenshot("chip.png")
 
-        # `/acct status` answers in the transcript, a bad command explains itself.
+        # `/acct status` answers in the account popover, never the transcript; a bad command
+        # explains itself there too.
+        before = self.transcript_text()
         self.command("/acct status")
-        self.wait(lambda: "routing: auto" in self.transcript_text(), "the /acct status answer")
+        self.wait(lambda: any("routing: auto" in row for row in self.routing()["popover"] or []), "the /acct status answer")
         self.command("/acct pin")
-        self.wait(lambda: "Usage: /acct" in self.transcript_text(), "the /acct usage error")
+        self.wait(lambda: any("Usage: /acct" in row for row in self.routing()["popover"] or []), "the /acct usage error")
+        assert self.transcript_text() == before, "an /acct answer must not enter the transcript"
         frames["acct"] = self.screenshot("acct.png")
 
         # The routing view the accounts sidebar reads, over the real bridge: accounts with live

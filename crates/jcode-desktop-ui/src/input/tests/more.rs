@@ -537,6 +537,8 @@ fn model_groups_expand_with_enter_without_submitting_and_preserve_exact_routes(
     let window = input_window(cx);
     let routes: Vec<_> = (1..=5)
         .map(|n| jcode_sdk::ModelRouteInfo {
+            account: None,
+            icon: None,
             speed_options: Vec::new(),
             reasoning_efforts: None,
             model: format!("atlas-{n}"),
@@ -612,6 +614,8 @@ fn model_group_refresh_reveals_selected_choice_if_it_falls_below_top_three(
             .map(|n| {
                 let model = format!("atlas-{n}");
                 jcode_sdk::ModelRouteInfo {
+                    account: None,
+                    icon: None,
                     speed_options: Vec::new(),
                     reasoning_efforts: None,
                     usage: Some(jcode_sdk::ModelUsage {
@@ -652,6 +656,8 @@ fn model_group_refresh_reveals_selected_choice_if_it_falls_below_top_three(
 fn model_usage_ranking_preserves_the_highlighted_choice_on_refresh(cx: &mut TestAppContext) {
     let window = input_window(cx);
     let route = |model: &str, count| jcode_sdk::ModelRouteInfo {
+        account: None,
+        icon: None,
         speed_options: Vec::new(),
         reasoning_efforts: None,
         model: model.into(),

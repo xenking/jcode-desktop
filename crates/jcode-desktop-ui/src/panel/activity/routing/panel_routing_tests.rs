@@ -71,9 +71,13 @@ fn a_gate_replaces_the_text_slot_and_a_digit_answers_it(cx: &mut gpui::TestAppCo
     vcx.run_until_parked();
     focus_panel(&panel, vcx);
 
-    assert!(vcx.debug_bounds("routing-gate-card").is_some(), "the card paints");
     assert!(
-        vcx.debug_bounds("composer-text-slot").is_none() && vcx.debug_bounds("composer-tabs").is_some(),
+        vcx.debug_bounds("routing-gate-card").is_some(),
+        "the card paints"
+    );
+    assert!(
+        vcx.debug_bounds("composer-text-slot").is_none()
+            && vcx.debug_bounds("composer-tabs").is_some(),
         "the gate replaces only the text slot and leaves the composer bar"
     );
     for row in [
@@ -82,7 +86,10 @@ fn a_gate_replaces_the_text_slot_and_a_digit_answers_it(cx: &mut gpui::TestAppCo
         "routing-gate-row-2",
         "routing-gate-row-3",
     ] {
-        assert!(vcx.debug_bounds(row).is_some(), "{row} paints: three options and Cancel");
+        assert!(
+            vcx.debug_bounds(row).is_some(),
+            "{row} paints: three options and Cancel"
+        );
     }
     assert!(vcx.debug_bounds("routing-gate-row-4").is_none());
 
@@ -109,7 +116,9 @@ fn enter_answers_the_focused_switch_and_escape_cancels(cx: &mut gpui::TestAppCon
     vcx.run_until_parked();
     assert_eq!(
         answers(&commands),
-        vec![RoutingGateChoice::Switch { account: "claude:spare".into() }]
+        vec![RoutingGateChoice::Switch {
+            account: "claude:spare".into()
+        }]
     );
 
     // A refused answer reopens the card with the reason, and Escape cancels.
@@ -117,7 +126,10 @@ fn enter_answers_the_focused_switch_and_escape_cancels(cx: &mut gpui::TestAppCon
         panel.routing_gate_answer_settled("g1", Err("No routing gate g1 is waiting".into()), cx)
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("routing-gate-error").is_some(), "the reason is shown");
+    assert!(
+        vcx.debug_bounds("routing-gate-error").is_some(),
+        "the reason is shown"
+    );
     vcx.simulate_keystrokes("down down escape");
     vcx.run_until_parked();
     assert_eq!(answers(&commands), vec![RoutingGateChoice::Cancel]);
@@ -137,7 +149,10 @@ fn a_click_answers_its_row_and_a_second_click_waits_for_the_daemon(cx: &mut gpui
     let cancel = vcx.debug_bounds("routing-gate-row-3").unwrap();
     vcx.simulate_click(cancel.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
-    assert!(answers(&commands).is_empty(), "no second answer while one is in flight");
+    assert!(
+        answers(&commands).is_empty(),
+        "no second answer while one is in flight"
+    );
 }
 
 #[gpui::test]
@@ -154,7 +169,10 @@ fn the_card_closes_when_the_daemon_closes_the_gate_and_not_for_another(
         )
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("routing-gate-card").is_some(), "another gate's close is not ours");
+    assert!(
+        vcx.debug_bounds("routing-gate-card").is_some(),
+        "another gate's close is not ours"
+    );
 
     panel.update(vcx, |panel, cx| {
         panel.apply(
@@ -164,7 +182,10 @@ fn the_card_closes_when_the_daemon_closes_the_gate_and_not_for_another(
     });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("routing-gate-card").is_none());
-    assert!(vcx.debug_bounds("composer-text-slot").is_some(), "the composer returns");
+    assert!(
+        vcx.debug_bounds("composer-text-slot").is_some(),
+        "the composer returns"
+    );
 }
 
 #[gpui::test]
@@ -173,7 +194,10 @@ fn a_finished_turn_cannot_leave_a_gate_open(cx: &mut gpui::TestAppContext) {
     panel.update(vcx, |panel, cx| panel.apply(&gate_event("g1"), cx));
     vcx.run_until_parked();
     panel.update(vcx, |panel, cx| {
-        panel.apply(&event(serde_json::json!({"ev":"turn_done","session_id":"session-a"})), cx)
+        panel.apply(
+            &event(serde_json::json!({"ev":"turn_done","session_id":"session-a"})),
+            cx,
+        )
     });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("routing-gate-card").is_none());
@@ -184,16 +208,28 @@ fn the_chip_names_the_account_with_a_warning_marker_and_a_pending_move(
     cx: &mut gpui::TestAppContext,
 ) {
     let (panel, vcx, _commands) = panel_with_bridge(cx);
-    assert!(vcx.debug_bounds("composer-routing-chip").is_none(), "no chip before a decision");
+    assert!(
+        vcx.debug_bounds("composer-routing-chip").is_none(),
+        "no chip before a decision"
+    );
 
-    panel.update(vcx, |panel, cx| panel.apply(&decision("claude:team", &[], None), cx));
+    panel.update(vcx, |panel, cx| {
+        panel.apply(&decision("claude:team", &[], None), cx)
+    });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("composer-routing-account").is_some());
     assert!(vcx.debug_bounds("composer-routing-warning").is_none());
     assert!(vcx.debug_bounds("composer-routing-pending").is_none());
 
     panel.update(vcx, |panel, cx| {
-        panel.apply(&decision("claude:team", &["budget hf 90 of 100"], Some("claude:spare")), cx)
+        panel.apply(
+            &decision(
+                "claude:team",
+                &["budget hf 90 of 100"],
+                Some("claude:spare"),
+            ),
+            cx,
+        )
     });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("composer-routing-warning").is_some());
@@ -201,10 +237,17 @@ fn the_chip_names_the_account_with_a_warning_marker_and_a_pending_move(
     panel.read_with(vcx, |panel, _| {
         assert_eq!(
             panel.routing_chip.as_ref().unwrap().label(),
-            "claude:team ⚠ → claude:spare"
+            format!(
+                "{} claude:team ⚠ → {} claude:spare",
+                jcode_session_types::account_icon::account_icon("claude:team", None),
+                jcode_session_types::account_icon::account_icon("claude:spare", None),
+            )
         );
         assert!(
-            !panel.items.iter().any(|item| matches!(item, Item::Assistant(text) if text.starts_with("Routing: now on"))),
+            !panel
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::SwarmWorkerNotice(_))),
             "a warning or pending move is not an account change"
         );
     });
@@ -217,11 +260,15 @@ fn moving_to_another_account_is_announced_once(cx: &mut gpui::TestAppContext) {
         panel
             .items
             .iter()
-            .filter(|item| matches!(item, Item::Assistant(text) if text.starts_with("Routing: now on")))
+            .filter(|item| matches!(item, Item::SwarmWorkerNotice(text) if text.starts_with("Account: ")))
             .count()
     };
-    panel.update(vcx, |panel, cx| panel.apply(&decision("claude:team", &[], None), cx));
-    panel.read_with(vcx, |panel, _| assert_eq!(announcements(panel), 0, "the first decision is not a move"));
+    panel.update(vcx, |panel, cx| {
+        panel.apply(&decision("claude:team", &[], None), cx)
+    });
+    panel.read_with(vcx, |panel, _| {
+        assert_eq!(announcements(panel), 0, "the first decision is not a move")
+    });
     panel.update(vcx, |panel, cx| {
         panel.apply(&decision("claude:spare", &[], None), cx);
         panel.apply(&decision("claude:spare", &[], None), cx);
@@ -229,6 +276,18 @@ fn moving_to_another_account_is_announced_once(cx: &mut gpui::TestAppContext) {
     panel.read_with(vcx, |panel, _| {
         assert_eq!(announcements(panel), 1);
         assert_eq!(panel.routing_chip.as_ref().unwrap().account, "claude:spare");
+        let Some(Item::SwarmWorkerNotice(notice)) = panel.items.last() else {
+            panic!("the move is one notice row");
+        };
+        let icon = |account| jcode_session_types::account_icon::account_icon(account, None);
+        assert_eq!(
+            notice,
+            &format!(
+                "Account: {} claude:team → {} claude:spare (priority 1)",
+                icon("claude:team"),
+                icon("claude:spare")
+            )
+        );
     });
 }
 
@@ -238,7 +297,10 @@ fn acct_sends_the_parsed_intent_and_a_bad_command_explains_itself(cx: &mut gpui:
     panel.update(vcx, |panel, cx| {
         assert!(panel.handle_acct_command("/acct hold claude:team 2h", cx));
         assert!(panel.handle_acct_command("/acct nonsense", cx));
-        assert!(!panel.handle_acct_command("/account", cx), "other commands are not ours");
+        assert!(
+            !panel.handle_acct_command("/account", cx),
+            "other commands are not ours"
+        );
     });
     let sent: Vec<_> = commands
         .try_iter()
@@ -258,15 +320,109 @@ fn acct_sends_the_parsed_intent_and_a_bad_command_explains_itself(cx: &mut gpui:
         )]
     );
     panel.read_with(vcx, |panel, _| {
-        assert!(matches!(panel.items.last(), Some(Item::Error(text)) if text.contains("Usage: /acct")));
+        let popover = panel
+            .routing_popover
+            .as_ref()
+            .expect("the usage error shows in the popover");
+        assert!(
+            popover
+                .rows(None)
+                .iter()
+                .any(|row| row.text.contains("Usage: /acct"))
+        );
+        assert!(
+            panel.items.is_empty(),
+            "no transcript item for an /acct answer"
+        );
     });
 
     panel.update(vcx, |panel, cx| {
         panel.routing_intent_reply(Ok("Routing auto · holding claude:team".into()), cx)
     });
     panel.read_with(vcx, |panel, _| {
-        assert!(matches!(panel.items.last(), Some(Item::Assistant(text)) if text.contains("holding claude:team")));
+        let rows = panel.routing_popover.as_ref().unwrap().rows(None);
+        assert!(
+            rows.iter()
+                .any(|row| row.text.contains("holding claude:team"))
+        );
+        assert!(panel.items.is_empty());
     });
+}
+
+fn status_requests(commands: &std::sync::mpsc::Receiver<Bridge>) -> usize {
+    commands
+        .try_iter()
+        .filter(|command| {
+            matches!(
+                command,
+                Bridge::RoutingIntent {
+                    action: jcode_session_types::routing::RoutingIntentAction::Status,
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
+#[gpui::test]
+fn the_chip_click_toggles_a_popover_and_the_status_table_never_enters_the_transcript(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx, commands) = panel_with_bridge(cx);
+    panel.update(vcx, |panel, cx| {
+        panel.apply(&decision("claude:claude-fox", &[], None), cx)
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("routing-popover").is_none());
+
+    let chip = vcx.debug_bounds("composer-routing-chip").expect("chip");
+    vcx.simulate_click(chip.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert_eq!(
+        status_requests(&commands),
+        1,
+        "one click asks for the table once"
+    );
+    assert!(
+        vcx.debug_bounds("routing-popover").is_some(),
+        "the click opens the popover"
+    );
+
+    let table = "routing: auto\nthis session: claude:claude-fox\n* \u{1f98a} claude:claude-fox  subscription  priority 2";
+    for _ in 0..3 {
+        panel.update(vcx, |panel, cx| {
+            panel.routing_intent_reply(Ok(table.into()), cx)
+        });
+    }
+    vcx.run_until_parked();
+    panel.read_with(vcx, |panel, _| {
+        assert!(
+            panel.items.is_empty(),
+            "the table is never a transcript item: {:?}",
+            panel.items.len()
+        );
+        let rows = panel
+            .routing_popover
+            .as_ref()
+            .unwrap()
+            .rows(panel.routing_chip.as_ref());
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.text == "routing: auto")
+                .count(),
+            1
+        );
+    });
+    assert!(vcx.debug_bounds("routing-popover-row-0").is_some());
+
+    let chip = vcx.debug_bounds("composer-routing-chip").expect("chip");
+    vcx.simulate_click(chip.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(
+        vcx.debug_bounds("routing-popover").is_none(),
+        "a second click closes it"
+    );
+    assert_eq!(status_requests(&commands), 0);
 }
 
 #[gpui::test]
@@ -278,7 +434,9 @@ fn acct_is_a_registered_command(_cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn an_opening_gate_takes_the_keyboard_so_keys_answer_without_a_click(cx: &mut gpui::TestAppContext) {
+fn an_opening_gate_takes_the_keyboard_so_keys_answer_without_a_click(
+    cx: &mut gpui::TestAppContext,
+) {
     cx.update(crate::bind_workspace_keys);
     let (panel, vcx, commands) = panel_with_bridge(cx);
     vcx.update(|window, cx| window.blur(cx));
@@ -293,7 +451,9 @@ fn an_opening_gate_takes_the_keyboard_so_keys_answer_without_a_click(cx: &mut gp
     vcx.run_until_parked();
     assert_eq!(
         answers(&commands),
-        vec![RoutingGateChoice::Switch { account: "claude:spare".into() }],
+        vec![RoutingGateChoice::Switch {
+            account: "claude:spare".into()
+        }],
         "Enter answers the focused switch with no prior click"
     );
 }

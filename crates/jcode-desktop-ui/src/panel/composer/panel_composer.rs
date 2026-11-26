@@ -300,6 +300,7 @@ impl Panel {
             .flex_col()
             .children(self.render_context_usage(cx))
             .children(self.render_swarm_list(window, cx))
+            .children(self.render_routing_popover(cx))
             .children(strips)
             .children(ask)
             .children(routing_gate)
@@ -942,6 +943,8 @@ mod tests {
             panel.reasoning_effort = Some("high".into());
             panel.available_models = vec!["openai-oauth:gpt-5.6-sol".into()];
             let route = jcode_sdk::ModelRouteInfo {
+                account: None,
+                icon: None,
                 model: "gpt-5.6-sol".into(),
                 provider: "OpenAI".into(),
                 api_method: "openai-oauth".into(),

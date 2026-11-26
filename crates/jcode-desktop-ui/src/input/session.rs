@@ -348,6 +348,16 @@ impl PromptInput {
                 })
     }
 
+    /// The icon the daemon resolved for `account` (`provider:label`), when a
+    /// route names it.
+    pub fn route_icon(&self, account: &str) -> Option<String> {
+        let (_, routes) = self.applied_model_routes.as_ref()?;
+        routes
+            .iter()
+            .find(|route| route.account.as_deref() == Some(account))
+            .and_then(|route| route.icon.clone())
+    }
+
     pub fn set_model_routes(
         &mut self,
         mut models: Vec<String>,

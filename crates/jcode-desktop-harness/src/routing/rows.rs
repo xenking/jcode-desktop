@@ -38,6 +38,8 @@ pub struct BarRow {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyRow {
+    /// The key's account icon, shown before the title.
+    pub icon: String,
     /// `provider` for the unlabelled key, `provider · label` otherwise.
     pub title: String,
     pub active: bool,
@@ -70,7 +72,7 @@ impl SidebarRouting {
                     .keys
                     .iter()
                     .filter(|key| key.label.is_some() || !key.windows.is_empty())
-                    .map(|key| key_row(&provider.provider, key, now_unix))
+                    .map(|key| key_row(view, &provider.provider, key, now_unix))
             })
             .collect();
         let budgets = view.budgets.iter().map(budget_row).collect();
@@ -82,8 +84,13 @@ impl SidebarRouting {
     }
 }
 
-fn key_row(provider: &str, key: &RoutingKeyView, now_unix: i64) -> KeyRow {
+fn key_row(view: &RoutingView, provider: &str, key: &RoutingKeyView, now_unix: i64) -> KeyRow {
+    let id = match &key.label {
+        Some(label) => format!("{provider}:{label}"),
+        None => provider.to_string(),
+    };
     KeyRow {
+        icon: super::icon_for(Some(view), &id),
         title: match &key.label {
             Some(label) => format!("{provider} · {label}"),
             None => provider.to_string(),

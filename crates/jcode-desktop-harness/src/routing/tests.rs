@@ -12,17 +12,36 @@ fn chip(warnings: &[&str], pending: Option<&str>) -> RoutingChip {
     .unwrap()
 }
 
+fn icon(account: &str) -> String {
+    jcode_session_types::account_icon::account_icon(account, None)
+}
+
 #[test]
-fn chip_label_is_the_account_alone_until_something_is_pending_or_warned() {
-    assert_eq!(chip(&[], None).label(), "claude:team");
+fn chip_label_leads_with_the_icon_then_adds_the_warning_and_the_pending_move() {
+    let team = icon("claude:team");
+    let spare = icon("claude:spare");
+    assert_eq!(chip(&[], None).label(), format!("{team} claude:team"));
     assert_eq!(
         chip(&["budget hf 90 of 100"], None).label(),
-        "claude:team ⚠"
+        format!("{team} claude:team ⚠")
     );
-    assert_eq!(chip(&["a", "b", "c"], None).label(), "claude:team ⚠3");
+    assert_eq!(
+        chip(&["a", "b", "c"], None).label(),
+        format!("{team} claude:team ⚠3")
+    );
     assert_eq!(
         chip(&["a"], Some("claude:spare")).label(),
-        "claude:team ⚠ → claude:spare"
+        format!("{team} claude:team ⚠ → {spare} claude:spare")
+    );
+}
+
+#[test]
+fn a_configured_icon_replaces_the_default_in_the_label() {
+    let chip = chip(&[], Some("claude:spare"))
+        .with_icons(|account| (account == "claude:spare").then(|| "🚀".to_owned()));
+    assert_eq!(
+        chip.label(),
+        format!("{} claude:team → 🚀 claude:spare", icon("claude:team"))
     );
 }
 
@@ -48,11 +67,17 @@ fn chip_needs_an_account_and_strips_control_characters() {
 #[test]
 fn tooltip_explains_the_account_the_move_and_each_warning() {
     let lines = chip(&["budget hf-month 45 of 50"], Some("claude:spare")).tooltip();
-    assert_eq!(lines[0], "Running on claude:team");
+    assert_eq!(
+        lines[0],
+        format!("Running on {} claude:team", icon("claude:team"))
+    );
     assert_eq!(lines[1], "Why: priority 1");
     assert_eq!(
         lines[2],
-        "Moves to claude:spare at the next cache-cold turn"
+        format!(
+            "Moves to {} claude:spare at the next cache-cold turn",
+            icon("claude:spare")
+        )
     );
     assert_eq!(lines[3], "⚠ budget hf-month 45 of 50");
 }
@@ -156,4 +181,16 @@ fn the_screenshot_fixture_covers_keys_budgets_and_an_unknown_meter() {
     );
     assert!(fixture.budgets.iter().any(|budget| budget.used.is_none()));
     assert!(fixture.budgets.iter().any(|budget| budget.unit == "usd"));
+}
+
+#[test]
+fn a_configured_icon_wins_and_the_default_follows_the_label() {
+    let mut view = fixture();
+    view.accounts[0].icon = Some("🚀".into());
+    assert_eq!(icon_for(Some(&view), "claude:team"), "🚀");
+    assert_eq!(icon_for(Some(&view), "claude:claude-fox"), "🦊");
+    assert_eq!(
+        icon_for(None, "claude:team"),
+        icon_for(Some(&fixture()), "claude:team")
+    );
 }

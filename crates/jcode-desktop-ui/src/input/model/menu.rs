@@ -17,9 +17,24 @@ pub(super) struct ModelDetails {
     /// What the saved login behind this route is called (`team · Max 20x`),
     /// from the catalog. `None` for routes that are not a saved OAuth login.
     pub account_name: Option<String>,
+    /// The routing account (`provider:label`) behind the route, and its icon.
+    pub account: Option<String>,
+    pub icon: Option<String>,
 }
 
 impl ModelDetails {
+    /// The icon that leads the route's account group: the daemon's resolved
+    /// one, else the stable default for the account. `None` for routes that
+    /// name no account.
+    pub(super) fn account_icon(&self) -> Option<String> {
+        let account = self.account.as_deref()?;
+        Some(
+            self.icon
+                .clone()
+                .unwrap_or_else(|| jcode_session_types::account_icon::account_icon(account, None)),
+        )
+    }
+
     /// The fields model search matches words against.
     pub(super) fn search_text(&self) -> super::model_search::RouteText<'_> {
         super::model_search::RouteText {
@@ -86,6 +101,8 @@ pub(super) fn from_routes(routes: &[ModelRouteInfo]) -> HashMap<String, ModelDet
             usage: route.usage.clone(),
             speed_options: route.speed_options.clone(),
             account_name: route_account_name(&route.api_method, &route.detail),
+            account: route.account.clone(),
+            icon: route.icon.clone(),
         };
         match details.get(&spec) {
             Some(existing)
@@ -132,6 +149,8 @@ pub(crate) fn route_spec(route: &ModelRouteInfo) -> String {
         cheapness: None,
         usage: route.usage.clone(),
         speed_options: Vec::new(),
+        account: route.account.clone(),
+        icon: route.icon.clone(),
     });
     let spec = selection.routed_model_spec();
     selection.model.clear();
@@ -695,6 +714,8 @@ mod tests {
 
     fn route(model: &str, method: &str, count: u64) -> ModelRouteInfo {
         ModelRouteInfo {
+            account: None,
+            icon: None,
             speed_options: Vec::new(),
             reasoning_efforts: None,
             model: model.into(),
@@ -1036,6 +1057,8 @@ mod tests {
                     usage: Some(usage),
                     speed_options: Vec::new(),
                     account_name: None,
+                    account: None,
+                    icon: None,
                 },
             )
         })
@@ -1252,6 +1275,8 @@ mod grouping_performance_tests {
                         usage: None,
                         speed_options: Vec::new(),
                         account_name: None,
+                        account: None,
+                        icon: None,
                     },
                 )
             })

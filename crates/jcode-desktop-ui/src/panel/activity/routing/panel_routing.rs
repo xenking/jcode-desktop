@@ -5,14 +5,17 @@
 //! decision, answers a gate with the keys and rows every client shares, and
 //! sends routing intents typed as `/acct`.
 use super::*;
+use crate::input::popup::Popup;
+use crate::routing::popover::{RoutingPopover, Tone};
 use crate::routing::{GateCard, RoutingChip};
+use jcode_sdk::RoutingIntentAction;
 use jcode_session_types::routing::{RoutingGateChoice, RoutingGateOption};
 use jcode_session_types::routing_acct::parse_acct;
 use jcode_session_types::routing_gate::GateKey;
 
 impl Panel {
     /// Record the daemon's decision for the chip. A move to another account is
-    /// announced once in the transcript, with its reason.
+    /// announced once as a notice row, with its reason.
     pub(super) fn routing_decision(
         &mut self,
         account: &str,
@@ -29,14 +32,16 @@ impl Panel {
         ) else {
             return;
         };
+        let chip = self.with_account_icons(chip, cx);
         let moved = self
             .routing_chip
             .as_ref()
-            .is_some_and(|previous| previous.account != chip.account);
-        if moved {
-            self.items.push(Item::Assistant(format!(
-                "Routing: now on {} ({})",
-                chip.account,
+            .filter(|previous| previous.account != chip.account)
+            .map(RoutingChip::account_text);
+        if let Some(previous) = moved {
+            self.items.push(Item::SwarmWorkerNotice(format!(
+                "Account: {previous} → {} ({})",
+                chip.account_text(),
                 if chip.reason.is_empty() {
                     "no reason given"
                 } else {
@@ -44,10 +49,19 @@ impl Panel {
                 }
             )));
         }
+        let account = chip.account.clone();
+        self.input
+            .update(cx, |input, cx| input.set_current_account(Some(account), cx));
         if self.routing_chip.as_ref() != Some(&chip) {
             self.routing_chip = Some(chip);
             cx.notify();
         }
+    }
+
+    /// The chip with the routes' configured icons in place of the defaults.
+    fn with_account_icons(&self, chip: RoutingChip, cx: &App) -> RoutingChip {
+        let input = self.input.read(cx);
+        chip.with_icons(|account| input.route_icon(account))
     }
 
     pub(super) fn open_routing_gate(
@@ -202,99 +216,201 @@ impl Panel {
     }
 
     /// `/acct`: steer routing for this session. Returns false for any other input.
+    /// Every answer, errors included, shows in the account popover.
     pub(super) fn handle_acct_command(&mut self, trimmed: &str, cx: &mut Context<Self>) -> bool {
         let action = match parse_acct(trimmed) {
             Ok(Some(action)) => action,
             Ok(None) => return false,
             Err(usage) => {
-                self.items.push(Item::Error(usage));
-                cx.notify();
+                self.routing_intent_reply(Err(usage), cx);
                 return true;
             }
         };
+        self.send_routing_intent(action, cx);
+        true
+    }
+
+    fn send_routing_intent(&mut self, action: RoutingIntentAction, cx: &mut Context<Self>) {
         if self.is_pending_session() {
-            self.items.push(Item::Error(
-                "Account routing needs a started session. Send a message first.".into(),
-            ));
+            self.routing_intent_reply(
+                Err("Account routing needs a started session. Send a message first.".into()),
+                cx,
+            );
         } else {
             self.bridge.send(Command::RoutingIntent {
                 session_id: self.session_id.clone(),
                 action,
             });
+            cx.notify();
         }
-        cx.notify();
-        true
     }
 
-    /// Print the daemon's answer to a routing intent.
+    /// Show the daemon's answer to a routing intent in the account popover.
+    /// Routing text is never a transcript item.
     pub(crate) fn routing_intent_reply(
         &mut self,
         result: Result<String, String>,
         cx: &mut Context<Self>,
     ) {
-        self.items.push(match result {
-            Ok(text) => Item::Assistant(format!("```text\n{}\n```", text.trim_end())),
-            Err(error) => Item::Error(error),
-        });
-        self.stick_to_bottom = true;
-        self.transcript_measurements.invalidate();
+        self.swarm_list_open = false;
+        self.routing_popover.get_or_insert_default().show(result);
         cx.notify();
     }
 
+    /// The chip click: open the popover and ask for the table, or close it.
+    fn toggle_routing_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.routing_popover.is_some() {
+            self.close_routing_popover(window, cx);
+            return;
+        }
+        if self.picker_search.take().is_some() {
+            self.model_picker_open = false;
+        }
+        self.swarm_list_open = false;
+        self.composer_popover_trigger = Some(self.routing_trigger_focus.clone());
+        self.routing_popover = Some(RoutingPopover::awaiting_status());
+        window.focus(&self.routing_popover_focus, cx);
+        self.send_routing_intent(RoutingIntentAction::Status, cx);
+        cx.notify();
+    }
+
+    pub(super) fn close_routing_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_composer_popover(&self.routing_popover_focus.clone(), false, window, cx);
+        window.focus(&self.routing_trigger_focus, cx);
+    }
+
+    /// The popover above the composer: one line per row, never wrapped.
+    pub(super) fn render_routing_popover(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let popover = self.routing_popover.as_ref()?;
+        let chip = self
+            .routing_chip
+            .clone()
+            .map(|chip| self.with_account_icons(chip, cx));
+        let rows = popover.rows(chip.as_ref());
+        let theme = Theme::global();
+        let owner = cx.weak_entity();
+        let focus = self.routing_popover_focus.clone();
+        Some(
+            gpui::deferred(
+                Popup::new(
+                    div()
+                        .id("routing-popover")
+                        .debug_selector(|| "routing-popover".into())
+                        .track_focus(&self.routing_popover_focus)
+                        .key_context(crate::menu::CONTEXT)
+                        .max_w(px(460.))
+                        .max_h_full()
+                        .px_3()
+                        .py_2()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .rounded_xl()
+                        .bg(theme.HEADER_BG)
+                        .border_1()
+                        .border_color(theme.PANEL_BORDER_FOCUS)
+                        .shadow_lg()
+                        .occlude()
+                        .text_size(px(11.))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(theme.TEXT)
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child("Account routing"),
+                        )
+                        .children(rows.into_iter().enumerate().map(|(index, row)| {
+                            div()
+                                .debug_selector(move || format!("routing-popover-row-{index}"))
+                                .flex_none()
+                                .min_w_0()
+                                .line_height(px(16.))
+                                .truncate()
+                                .font_family(theme.FONT_MONO)
+                                .text_color(match row.tone {
+                                    Tone::Plain => theme.TEXT_DIM,
+                                    Tone::Warn => theme.WARN,
+                                })
+                                .child(row.text)
+                        })),
+                    px(5.),
+                )
+                .at_composer()
+                .dismiss_outside(Some(std::rc::Rc::new(move |window, cx| {
+                    let _ = owner.update(cx, |panel, cx| {
+                        panel.dismiss_composer_popover(&focus, true, window, cx);
+                    });
+                }))),
+            )
+            .with_priority(1)
+            .into_any_element(),
+        )
+    }
+
     /// The account chip, or nothing before the first decision.
-    pub(super) fn render_routing_chip(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let chip = self.routing_chip.as_ref()?;
+    pub(super) fn render_routing_chip(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let chip = self.with_account_icons(self.routing_chip.clone()?, cx);
         let theme = Theme::global();
         let rows = chip.tooltip();
         let marker = chip.warning_marker();
-        let pending = chip.pending.clone();
+        let pending = chip.pending_text();
+        let account = chip.account_text();
         Some(
-            super::chrome::composer_pill("composer-routing-chip")
-                .relative()
-                .children(crate::fixture_control_targets::marker(
-                    || "routing-chip".into(),
-                    || Some(self.session_id.clone()),
-                ))
-                .flex_shrink_1()
-                .min_w_0()
-                .max_w(px(220.))
-                .overflow_hidden()
-                .px_2()
-                .gap_1()
-                .tooltip(move |_, cx| {
-                    cx.new(|_| super::meter::RowsTooltip {
-                        title: "Account routing".into(),
-                        rows: rows.clone(),
-                    })
-                    .into()
+            crate::keyboard::popover_trigger(
+                super::chrome::composer_pill("composer-routing-chip"),
+                &self.routing_trigger_focus,
+            )
+            .relative()
+            .children(crate::fixture_control_targets::marker(
+                || "routing-chip".into(),
+                || Some(self.session_id.clone()),
+            ))
+            .flex_shrink_1()
+            .min_w_0()
+            .max_w(px(220.))
+            .overflow_hidden()
+            .px_2()
+            .gap_1()
+            .tooltip(move |_, cx| {
+                cx.new(|_| super::meter::RowsTooltip {
+                    title: "Account routing".into(),
+                    rows: rows.clone(),
                 })
-                .on_click(cx.listener(|this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.handle_acct_command("/acct status", cx);
-                }))
-                .child(
-                    div()
-                        .debug_selector(|| "composer-routing-account".into())
-                        .min_w_0()
-                        .truncate()
-                        .child(chip.account.clone()),
-                )
-                .children(marker.map(|marker| {
-                    div()
-                        .debug_selector(|| "composer-routing-warning".into())
-                        .flex_none()
-                        .text_color(theme.WARN)
-                        .child(marker)
-                }))
-                .children(pending.map(|pending| {
-                    div()
-                        .debug_selector(|| "composer-routing-pending".into())
-                        .min_w_0()
-                        .truncate()
-                        .text_color(theme.ACCENT)
-                        .child(format!("→ {pending}"))
-                }))
-                .into_any_element(),
+                .into()
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                this.toggle_routing_popover(window, cx);
+            }))
+            .child(
+                div()
+                    .debug_selector(|| "composer-routing-account".into())
+                    .min_w_0()
+                    .truncate()
+                    .child(account),
+            )
+            .children(marker.map(|marker| {
+                div()
+                    .debug_selector(|| "composer-routing-warning".into())
+                    .flex_none()
+                    .text_color(theme.WARN)
+                    .child(marker)
+            }))
+            .children(pending.map(|pending| {
+                div()
+                    .debug_selector(|| "composer-routing-pending".into())
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.ACCENT)
+                    .child(format!("→ {pending}"))
+            }))
+            .into_any_element(),
         )
     }
 

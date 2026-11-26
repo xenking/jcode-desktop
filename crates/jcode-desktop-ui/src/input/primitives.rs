@@ -66,6 +66,8 @@ mod provider_route_spec_tests {
                         usage: None,
                         speed_options: Vec::new(),
                         account_name: None,
+                        account: None,
+                        icon: None,
                     },
                 )
             })
@@ -206,6 +208,7 @@ impl PromptInput {
             models: self.command_models.clone(),
             details: self.model_details.clone(),
             current_model: self.current_model.clone(),
+            current_account: self.current_account.clone(),
             effort_ladder: self.effort_ladder.clone(),
             current_effort: self.current_effort.clone(),
             skills: self.command_skills.clone(),
@@ -222,6 +225,7 @@ impl PromptInput {
         self.command_models = settings.models;
         self.model_details = settings.details;
         self.current_model = settings.current_model;
+        self.current_account = settings.current_account;
         self.effort_ladder = settings.effort_ladder;
         self.current_effort = settings.current_effort;
         self.command_skills = settings.skills;
@@ -392,6 +396,7 @@ impl PromptInput {
             expanded_model_groups: HashSet::new(),
             model_stage: Default::default(),
             current_model: None,
+            current_account: None,
             effort_ladder: crate::effort::ladder(None, None),
             current_effort: None,
             speed_picker: None,
@@ -650,6 +655,29 @@ impl PromptInput {
             self.suggestions_revision += 1;
             cx.notify();
         }
+    }
+
+    pub fn set_current_account(&mut self, account: Option<String>, cx: &mut Context<Self>) {
+        if self.current_account != account {
+            self.current_account = account;
+            self.suggestions_revision += 1;
+            cx.notify();
+        }
+    }
+
+    /// The picker spec of the serving model. A model several accounts offer
+    /// resolves to the route of the account the session runs on.
+    pub(super) fn current_model_spec(&self) -> Option<String> {
+        let model = self.current_model.as_deref()?;
+        let account = self.current_account.as_deref()?;
+        let mut serving = self.command_models.iter().filter(|spec| {
+            self.model_details.get(*spec).is_some_and(|route| {
+                route.account.as_deref() == Some(account)
+                    && (spec.as_str() == model || route.model == model)
+            })
+        });
+        let spec = serving.next()?;
+        serving.next().is_none().then(|| spec.clone())
     }
 
     pub(crate) fn set_serving_model(

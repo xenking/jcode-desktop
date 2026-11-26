@@ -359,6 +359,8 @@ fn footer_and_account_model_actions_share_slash_menu_without_new_windows(
                 auth_method: None,
                 account_label: None,
                 routes: vec![jcode_sdk::ModelRouteInfo {
+                    account: None,
+                    icon: None,
                     speed_options: Vec::new(),
                     reasoning_efforts: None,
                     model: "test".into(),

@@ -196,14 +196,18 @@ impl Workspace {
             // and credits. A provider without saved-login identities keeps the
             // compact single row below.
             let mut offered = 0;
-            let login_blocks = login_rows::login_blocks(account, &mut |reset| {
-                if !reset.offerable() {
-                    return None;
-                }
-                let reset_index = offered;
-                offered += 1;
-                Some(make_pill(reset_index, reset.clone(), reset.pill_label()))
-            })
+            let login_blocks = login_rows::login_blocks(
+                account,
+                &|label| self.account_icon(&account.id, label),
+                &mut |reset| {
+                    if !reset.offerable() {
+                        return None;
+                    }
+                    let reset_index = offered;
+                    offered += 1;
+                    Some(make_pill(reset_index, reset.clone(), reset.pill_label()))
+                },
+            )
             .filter(|_| available);
             let lists_logins = login_blocks.is_some();
             if let Some(blocks) = login_blocks {

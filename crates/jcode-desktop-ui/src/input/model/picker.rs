@@ -291,7 +291,9 @@ impl PromptInput {
     /// The route the active session is on, which stays listed even if hidden.
     fn current_route(&self) -> Option<&str> {
         model_menu::current_spec(
-            self.current_model.as_deref(),
+            self.current_model_spec()
+                .as_deref()
+                .or(self.current_model.as_deref()),
             &self.command_models,
             &self.model_details,
         )
@@ -301,6 +303,9 @@ impl PromptInput {
     /// levels opens step two instead of switching.
     fn model_rows(&self, query: &str) -> Vec<CommandSuggestion> {
         let current = self.current_route();
+        let serving = self
+            .current_model_spec()
+            .or_else(|| self.current_model.clone());
         let hidden: Vec<String> = crate::config::hidden_models()
             .into_iter()
             .filter(|hidden| Some(hidden.as_str()) != current)
@@ -310,7 +315,7 @@ impl PromptInput {
         let mut rows: Vec<CommandSuggestion> = model_menu::grouped_rows(
             &models,
             &self.model_details,
-            self.current_model.as_deref(),
+            serving.as_deref(),
             &self.expanded_model_groups,
             query,
         )
@@ -518,10 +523,13 @@ impl PromptInput {
             .iter()
             .map(|model| model_menu::group_key(model, &self.model_details))
             .collect();
+        let serving = self
+            .current_model_spec()
+            .or_else(|| self.current_model.clone());
         model_menu::grouped_rows(
             &self.command_models,
             &self.model_details,
-            self.current_model.as_deref(),
+            serving.as_deref(),
             &open,
             query,
         )
@@ -863,8 +871,38 @@ impl PromptInput {
                 })
                 .filter(|quota| !quota.is_empty());
             let label = header.clone();
-            base.child(logo_svg(parts.logo, &parts.provider, 13.0, faint))
-                .child(div().text_color(Theme::global().TEXT_DIM).child(label))
+            let detail = self.model_details.get(model);
+            // The account's icon leads its group, and the group the session
+            // runs on says so in words.
+            let icon = detail.and_then(model_menu::ModelDetails::account_icon);
+            let in_use = detail.is_some_and(|detail| {
+                detail.account.is_some() && detail.account == self.current_account
+            });
+            base.whitespace_nowrap()
+                .overflow_hidden()
+                .children(icon.map(|icon| {
+                    div()
+                        .debug_selector(move || format!("model-picker-account-icon-{index}"))
+                        .flex_none()
+                        .text_size(px(12.0))
+                        .child(icon)
+                }))
+                .child(logo_svg(parts.logo, &parts.provider, 13.0, faint))
+                .child(
+                    div()
+                        .debug_selector(move || format!("model-picker-group-label-{index}"))
+                        .min_w_0()
+                        .truncate()
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child(label),
+                )
+                .children(in_use.then(|| {
+                    div()
+                        .debug_selector(move || format!("model-picker-account-active-{index}"))
+                        .flex_none()
+                        .text_color(Theme::global().ACCENT)
+                        .child("active")
+                }))
                 .children(quota.map(|quota| header_quota(index, &quota)))
         });
         // Effort rows lead with the drawn level mark (never a text glyph),

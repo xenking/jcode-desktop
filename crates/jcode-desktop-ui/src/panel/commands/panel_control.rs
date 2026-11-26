@@ -229,6 +229,13 @@ impl Panel {
                 "pending": chip.pending,
                 "label": chip.label(),
             })),
+            "popover": self.routing_popover.as_ref().map(|popover| {
+                popover
+                    .rows(self.routing_chip.as_ref())
+                    .into_iter()
+                    .map(|row| row.text)
+                    .collect::<Vec<_>>()
+            }),
             "gate": self.routing_gate.as_ref().map(|gate| {
                 let view = gate.view();
                 serde_json::json!({

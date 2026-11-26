@@ -43,6 +43,17 @@ impl Panel {
                 self.open_picker_search(PickerKind::Context, cx);
                 return;
             }
+            Ok(fixture @ ("accounts" | "routing-popover")) => {
+                self.apply(&crate::harness::routing_fixture_runtime(&self.session_id), cx);
+                self.apply(&crate::harness::routing_fixture_decision(&self.session_id), cx);
+                if fixture == "accounts" {
+                    self.open_picker_search(PickerKind::Model, cx);
+                } else {
+                    let status = crate::harness::ROUTING_FIXTURE_STATUS;
+                    self.routing_intent_reply(Ok(status.into()), cx);
+                }
+                return;
+            }
             _ => return,
         };
         let mut event = crate::harness::composer_picker_fixture_runtime(&self.session_id, None);

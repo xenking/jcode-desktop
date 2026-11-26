@@ -51,6 +51,8 @@ impl Panel {
                 auth_method: None,
                 account_label: None,
                 routes: vec![jcode_sdk::ModelRouteInfo {
+                    account: None,
+                    icon: None,
                     speed_options: Vec::new(),
                     reasoning_efforts: None,
                     usage: None,

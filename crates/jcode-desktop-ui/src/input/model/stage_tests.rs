@@ -4,6 +4,8 @@ use gpui::{TestAppContext, WindowOptions};
 
 fn route(model: &str, provider: &str, method: &str) -> jcode_sdk::ModelRouteInfo {
     jcode_sdk::ModelRouteInfo {
+        account: None,
+        icon: None,
         speed_options: Vec::new(),
         reasoning_efforts: None,
         model: model.into(),

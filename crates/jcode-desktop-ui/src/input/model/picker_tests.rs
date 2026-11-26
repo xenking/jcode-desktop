@@ -16,6 +16,8 @@ impl Render for Fixture {
 fn routes(count: usize) -> Vec<jcode_sdk::ModelRouteInfo> {
     (0..count)
         .map(|index| jcode_sdk::ModelRouteInfo {
+            account: None,
+            icon: None,
             speed_options: Vec::new(),
             reasoning_efforts: None,
             model: format!("atlas-{index:04}"),
@@ -312,6 +314,8 @@ fn headers_show_quota_and_the_highlighted_row_offers_effort(cx: &mut gpui::TestA
     input.update_in(vcx, |input, window, cx| {
         window.focus(&input.focus_handle, cx);
         let route = jcode_sdk::ModelRouteInfo {
+            account: None,
+            icon: None,
             speed_options: Vec::new(),
             reasoning_efforts: None,
             model: "gpt-5.6-sol".into(),
@@ -349,4 +353,86 @@ fn headers_show_quota_and_the_highlighted_row_offers_effort(cx: &mut gpui::TestA
     input.read_with(vcx, |input, _| {
         assert_eq!(input.row_effort("openai-oauth:gpt-5.6-sol"), Some("medium"));
     });
+}
+
+fn account_routes() -> Vec<jcode_sdk::ModelRouteInfo> {
+    ["claude-otter", "claude-fox", "claude-panda"]
+        .into_iter()
+        .map(|label| jcode_sdk::ModelRouteInfo {
+            account: Some(format!("claude:{label}")),
+            icon: Some(
+                jcode_session_types::account_icon::account_icon(label, None)
+                    .replace("🦊", "🚀"),
+            ),
+            speed_options: Vec::new(),
+            reasoning_efforts: None,
+            model: "claude-opus-4-8".into(),
+            provider: "Anthropic".into(),
+            api_method: format!("claude-oauth@{label}"),
+            available: true,
+            detail: String::new(),
+            usage: None,
+        })
+        .collect()
+}
+
+#[gpui::test]
+fn the_same_model_lists_one_route_per_account_and_marks_the_serving_one(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (fixture, vcx) = cx.add_window_view(|_, cx| {
+        Fixture(cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {})))
+    });
+    let input = fixture.read_with(vcx, |fixture, _| fixture.0.clone());
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, size(px(1000.), px(900.)));
+    input.update(vcx, |input, cx| {
+        input.set_model_routes(
+            Vec::new(),
+            &account_routes(),
+            Some("claude-opus-4-8".into()),
+            cx,
+        );
+        input.set_current_account(Some("claude:claude-fox".into()), cx);
+        input.set_content("/model ".into(), cx);
+        let rows = input.command_suggestions();
+        let models: Vec<_> = rows.iter().filter(|row| row.value.starts_with("/model ")).collect();
+        assert_eq!(models.len(), 3, "one selectable route per account");
+        let specs: HashSet<_> = models.iter().map(|row| row.value.clone()).collect();
+        assert_eq!(specs.len(), 3, "each account has its own spec");
+        let active: Vec<_> = models.iter().filter(|row| row.active_choice).collect();
+        assert_eq!(active.len(), 1);
+        assert!(
+            active[0].value.contains("claude-fox"),
+            "the account the session runs on is the marked one: {}",
+            active[0].value
+        );
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    vcx.run_until_parked();
+    let icons: Vec<_> = (0..12)
+        .filter_map(|index| {
+            let selector =
+                Box::leak(format!("model-picker-account-icon-{index}").into_boxed_str()) as &'static str;
+            vcx.debug_bounds(selector)
+        })
+        .collect();
+    assert_eq!(icons.len(), 3, "every account group leads with its icon");
+    let active_marks = (0..12)
+        .filter(|index| {
+            let selector =
+                Box::leak(format!("model-picker-account-active-{index}").into_boxed_str()) as &'static str;
+            vcx.debug_bounds(selector).is_some()
+        })
+        .count();
+    assert_eq!(active_marks, 1, "only the serving account's group says active");
+    for index in 0..12 {
+        let label = Box::leak(format!("model-picker-group-label-{index}").into_boxed_str()) as &'static str;
+        let icon = Box::leak(format!("model-picker-account-icon-{index}").into_boxed_str()) as &'static str;
+        if let (Some(label), Some(icon)) = (vcx.debug_bounds(label), vcx.debug_bounds(icon)) {
+            assert!(icon.right() <= label.left(), "icon first: {icon:?} {label:?}");
+            assert_eq!(icon.top() < label.bottom() && label.top() < icon.bottom(), true, "one line");
+        }
+    }
 }

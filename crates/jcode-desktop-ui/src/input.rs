@@ -161,6 +161,9 @@ pub struct PromptInput {
     /// Which step of the two-step model picker is showing.
     model_stage: model_stage::ModelStage,
     current_model: Option<String>,
+    /// The account serving the session (`provider:label`): tells apart the
+    /// same model offered by several accounts.
+    current_account: Option<String>,
     /// Levels the serving model accepts, for the `/effort` menu.
     effort_ladder: Vec<&'static str>,
     current_effort: Option<String>,
@@ -212,6 +215,7 @@ pub(crate) struct PickerSettings {
     models: Vec<String>,
     details: HashMap<String, model_menu::ModelDetails>,
     current_model: Option<String>,
+    current_account: Option<String>,
     effort_ladder: Vec<&'static str>,
     current_effort: Option<String>,
     skills: Vec<(String, String)>,

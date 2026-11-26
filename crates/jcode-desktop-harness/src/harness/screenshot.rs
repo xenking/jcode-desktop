@@ -34,6 +34,8 @@ pub fn composer_picker_fixture_runtime(
             available: true,
             detail: String::new(),
             usage: None,
+            account: None,
+            icon: None,
             speed_options: [SpeedMode::Fast, SpeedMode::Ultrafast]
                 .into_iter()
                 .filter(|mode| model == "gpt-6.2-astra" || *mode == SpeedMode::Ultrafast)
@@ -62,6 +64,75 @@ pub fn composer_picker_fixture_runtime(
     }
 }
 
+/// Four accounts (three Claude logins, one ChatGPT) serving overlapping
+/// models, with the session on `claude:claude-fox`, for the routing screenshots.
+pub fn routing_fixture_runtime(session_id: &str) -> ApiEvent {
+    let route = |model: &str, provider: &str, method: &str, account: &str, icon: &str| {
+        jcode_sdk::ModelRouteInfo {
+            model: model.into(),
+            provider: provider.into(),
+            api_method: method.into(),
+            available: true,
+            detail: String::new(),
+            speed_options: Vec::new(),
+            reasoning_efforts: None,
+            usage: None,
+            account: Some(account.into()),
+            icon: Some(icon.into()),
+        }
+    };
+    let mut routes = Vec::new();
+    for (label, icon) in [("claude-otter", "🦦"), ("claude-fox", "🦊"), ("claude-panda", "🐼")] {
+        for model in ["claude-sonnet-5-5", "claude-opus-4-8"] {
+            routes.push(route(
+                model,
+                "Anthropic",
+                &format!("claude-oauth@{label}"),
+                &format!("claude:{label}"),
+                icon,
+            ));
+        }
+    }
+    routes.push(route(
+        "gpt-6.2-astra",
+        "OpenAI",
+        "openai-oauth@openai-otter",
+        "openai:openai-otter",
+        "🦦",
+    ));
+    ApiEvent::RuntimeInfo {
+        session_id: session_id.into(),
+        provider: Some("Anthropic".into()),
+        model: Some("claude-sonnet-5-5".into()),
+        auth_method: Some("claude-oauth@claude-fox".into()),
+        account_label: Some("claude-fox".into()),
+        reasoning_effort: None,
+        routes,
+        speed_mode: jcode_sdk::api::SpeedMode::Standard,
+        speed_options: Vec::new(),
+    }
+}
+
+/// The daemon's decision for the routing fixture.
+pub fn routing_fixture_decision(session_id: &str) -> ApiEvent {
+    ApiEvent::RoutingDecision {
+        session_id: session_id.into(),
+        account: "claude:claude-fox".into(),
+        reason: "behind pace, room would be lost at the reset".into(),
+        warnings: Vec::new(),
+        pending: None,
+    }
+}
+
+/// `/acct status` as the daemon words it for the routing fixture.
+pub const ROUTING_FIXTURE_STATUS: &str = "routing: auto
+this session: 🦊 claude:claude-fox
+paid: auto (config auto)
+  🦦 claude:claude-otter  subscription  priority 1
+* 🦊 claude:claude-fox  subscription  priority 2
+  🐼 claude:claude-panda  credits  priority 9
+  🦦 openai:openai-otter  subscription  priority 1";
+
 /// A bridge that answers from fixtures, so the screenshot harness can
 /// render the results screen without a daemon, an index, or a network.
 pub(super) fn run(update_tx: UpdateSender, command_rx: Receiver<Command>) {
@@ -87,6 +158,8 @@ pub(super) fn run(update_tx: UpdateSender, command_rx: Receiver<Command>) {
                 available: true,
                 detail: String::new(),
                 usage: None,
+                account: None,
+                icon: None,
             })
             .collect();
         let _ = update_tx.send(Update::DraftModels {

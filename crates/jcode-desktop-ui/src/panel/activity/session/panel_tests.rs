@@ -1125,6 +1125,8 @@ fn ansi_escapes_are_stripped_from_tool_output() {
 
 fn route(model: &str, api_method: &str) -> jcode_sdk::ModelRouteInfo {
     jcode_sdk::ModelRouteInfo {
+        account: None,
+        icon: None,
         speed_options: Vec::new(),
         reasoning_efforts: None,
         usage: None,

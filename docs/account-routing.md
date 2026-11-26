@@ -10,10 +10,14 @@ leaving the session. Everything here needs a runtime that advertises the
 
 A pill in the composer's status row names the account the session runs on.
 Hover it for the reason the policy chose it, the account a warm session will move
-to at its next cache-cold turn, and any warnings. A `⚠` after the name marks
-warnings (`⚠3` for three), and `→ name` marks a pending move. Click it to print
-`/acct status` into the transcript. When a decision moves the session to another
-account, the transcript says so once, with the reason.
+to at its next cache-cold turn, and any warnings. Every account leads with
+its own icon (an animal by default, `icon` under `[[routing.accounts]]` overrides
+it). A `⚠` after the name marks warnings (`⚠3` for three), and `→ name` marks a
+pending move. Click it to open the account popover above the composer: the same
+facts as the hover, then the daemon's `/acct status` table. Click again or press
+`Esc` to close it. Routing text never enters the transcript: every `/acct` answer,
+errors included, shows in the popover. When a decision moves the session to
+another account, a one-line notice row says so once, with the reason.
 
 ## Spending-limit gate
 
@@ -50,15 +54,26 @@ Type `/acct` in the composer.
 /acct unstick                  clear the hold
 ```
 
-Durations look like `30m`, `2h`, `1h30m` or `1d`. The answer prints in the
-transcript. A bad command explains the usage instead of being sent.
+Durations look like `30m`, `2h`, `1h30m` or `1d`. The answer shows in the account
+popover, not the transcript. A bad command explains the usage there instead of
+being sent.
+
+## Model picker
+
+A provider with several saved logins lists each login as its own group, led by the
+account's icon. The group the session runs on says `active`. Choosing a model under
+a group runs the session on that account. With `mode = "auto"` the runtime records
+a switch to that account, so automatic routing does not move the session back until
+you clear it with `/acct switch off`.
 
 ## Accounts sidebar
 
 Below the account rows, the sidebar lists labelled API keys with their usage
 windows and the budgets from `[[routing.budgets]]`.
 
-- **API keys.** One row per labelled key (`provider · label`) and per key that
+- **Logins.** Each saved login of a provider has its own block, led by the
+  account's icon.
+- **API keys.** One row per labelled key, led by its icon (`provider · label`) and per key that
   reports a window, with an `active` marker on the key requests use. Each window
   is a `name · percent · reset` line over a bar, coloured like the account rows:
   amber from 70 percent, red from 90.

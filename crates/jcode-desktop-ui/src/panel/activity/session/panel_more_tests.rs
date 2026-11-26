@@ -595,6 +595,8 @@ fn the_identity_footer_paints_after_runtime_info_and_token_events(
                     auth_method: None,
                     account_label: None,
                     routes: vec![jcode_sdk::ModelRouteInfo {
+                        account: None,
+                        icon: None,
                         speed_options: Vec::new(),
                         reasoning_efforts: None,
                         usage: None,

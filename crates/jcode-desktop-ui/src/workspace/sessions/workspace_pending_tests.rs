@@ -711,6 +711,8 @@ fn opening_the_model_picker_on_a_first_draft_does_not_create_a_session(
             Update::DraftModels {
                 current: Some("gpt-5.6-terra".into()),
                 routes: vec![jcode_sdk::ModelRouteInfo {
+                    account: None,
+                    icon: None,
                     speed_options: Vec::new(),
                     reasoning_efforts: None,
                     model: "gpt-5.6-terra".into(),
@@ -860,6 +862,8 @@ fn draft_model_effort_and_speed_reach_the_runtime_before_the_first_prompt(cx: &m
             routes: ["gpt-5.6-terra", "gpt-5.6-sol"]
                 .into_iter()
                 .map(|model| jcode_sdk::ModelRouteInfo {
+                    account: None,
+                    icon: None,
                     reasoning_efforts: None,
                     speed_options: if model == "gpt-5.6-sol" {
                         vec![SpeedOption { mode: SpeedMode::Fast, availability: SpeedAvailability::Available, reason: None }]
@@ -979,6 +983,8 @@ fn fable_draft(
                 routes: ["claude-opus-5-5", "claude-fable-5-2"]
                     .into_iter()
                     .map(|model| jcode_sdk::ModelRouteInfo {
+                        account: None,
+                        icon: None,
                         speed_options: Vec::new(),
                         reasoning_efforts: None,
                         model: model.into(),

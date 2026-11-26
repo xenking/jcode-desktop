@@ -17,6 +17,8 @@ fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
             input.set_content("valuable draft".into(), cx)
         });
         let route = |model: &str, method: &str| jcode_sdk::ModelRouteInfo {
+            account: None,
+            icon: None,
             speed_options: Vec::new(),
             reasoning_efforts: None,
             model: model.into(),
@@ -189,6 +191,8 @@ fn picker_switches_there_and_back_and_marks_row_states(cx: &mut gpui::TestAppCon
     });
     let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
     let route = |model: &str, provider: &str, method: &str| jcode_sdk::ModelRouteInfo {
+        account: None,
+        icon: None,
         speed_options: Vec::new(),
         reasoning_efforts: None,
         model: model.into(),

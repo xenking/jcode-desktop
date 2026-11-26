@@ -271,6 +271,8 @@ mod tests {
             usage: None,
             speed_options: Vec::new(),
             account_name: None,
+            account: None,
+            icon: None,
         }
     }
 

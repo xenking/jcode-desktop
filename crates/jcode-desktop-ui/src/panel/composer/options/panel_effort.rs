@@ -372,6 +372,8 @@ mod tests {
                     auth_method: None,
                     account_label: None,
                     routes: vec![jcode_sdk::ModelRouteInfo {
+                        account: None,
+                        icon: None,
                         speed_options: Vec::new(),
                         reasoning_efforts: None,
                         model: "claude-opus-5-5".into(),

@@ -169,11 +169,12 @@ pub(super) fn provider_credits(account: &Account) -> Option<gpui::Div> {
 /// The block for every login of `account`, or `None` for a provider without
 /// saved-login identities.
 ///
-/// `reset_pill` renders the redeem pill for a login's banked reset, or `None`
+/// `icon_for` names the icon of a login by its label. `reset_pill` renders the redeem pill for a login's banked reset, or `None`
 /// when that reset is not offerable. The pill sits inside the login's block, so
 /// it never floats below another login's.
 pub(super) fn login_blocks(
     account: &Account,
+    icon_for: &dyn Fn(&str) -> String,
     reset_pill: &mut dyn FnMut(&crate::accounts::BankedReset) -> Option<gpui::AnyElement>,
 ) -> Option<gpui::Div> {
     if !lists_logins(account) {
@@ -188,6 +189,10 @@ pub(super) fn login_blocks(
             .as_ref()
             .is_some_and(|identity| identity.active);
         let kind = report.identity.as_ref().map(|identity| identity.kind);
+        let icon = report
+            .identity
+            .as_ref()
+            .map(|identity| icon_for(&identity.label));
         let mut block = div()
             .debug_selector({
                 let id = id.clone();
@@ -203,6 +208,16 @@ pub(super) fn login_blocks(
                     .gap_2()
                     .h(px(14.0))
                     .line_height(px(14.0))
+                    .children(icon.map(|icon| {
+                        div()
+                            .debug_selector({
+                                let id = id.clone();
+                                move || format!("account-{id}-login-{login}-icon")
+                            })
+                            .flex_none()
+                            .text_size(px(10.0))
+                            .child(icon)
+                    }))
                     .child(
                         div()
                             .debug_selector({
@@ -329,6 +344,41 @@ mod tests {
         assert!(last.bottom() <= row.bottom(), "logins must not be clipped");
         // The provider row no longer borrows the first login's windows.
         assert!(vcx.debug_bounds("account-claude-limit-0").is_none());
+    }
+
+    #[gpui::test]
+    fn every_login_leads_with_its_account_icon_on_one_line(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            w.sidebar_view = SidebarView::Accounts;
+            let mut accounts = accounts::parse(
+                r#"{"providers":[{"id":"claude","display_name":"Claude","status":"available","auth_kind":"OAuth"}]}"#,
+            )
+            .unwrap();
+            accounts::merge_usage_for_tests(&mut accounts, THREE_CLAUDE_LOGINS);
+            w.accounts = accounts;
+            let mut view = crate::routing::fixture();
+            view.accounts[0].id = "claude:claude-fox".into();
+            view.accounts[0].icon = Some("🚀".into());
+            w.set_test_routing_view(view);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        for login in 0..3 {
+            let icon = vcx
+                .debug_bounds(selector(format!("account-claude-login-{login}-icon")))
+                .unwrap_or_else(|| panic!("login {login} has no icon"));
+            let name = vcx
+                .debug_bounds(selector(format!("account-claude-login-{login}-name")))
+                .unwrap();
+            assert!(icon.right() <= name.left(), "icon first: {icon:?} {name:?}");
+            assert!(icon.top() < name.bottom() && name.top() < icon.bottom(), "one line");
+        }
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.account_icon("claude", "claude-fox"), "🚀", "a configured icon wins");
+            assert_eq!(w.account_icon("claude", "claude-otter"), "🦦");
+        });
     }
 
     #[gpui::test]

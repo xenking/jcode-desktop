@@ -506,6 +506,11 @@ pub struct Panel {
     pending_approval: Option<clean_chat::PendingApproval>,
     /// The account serving this session, from the daemon's latest decision.
     routing_chip: Option<crate::routing::RoutingChip>,
+    /// The account popover opened from the chip, or by an `/acct` reply.
+    /// Routing text lives here, never in the transcript.
+    routing_popover: Option<crate::routing::popover::RoutingPopover>,
+    routing_popover_focus: FocusHandle,
+    routing_trigger_focus: FocusHandle,
     /// A spending limit holds the turn until the person answers.
     routing_gate: Option<crate::routing::GateCard>,
     rewind_selection: Option<history_paging::rewind::Selection>,
@@ -999,6 +1004,11 @@ impl Panel {
             .as_ref()
             .map(|(_, search)| search.read(cx).editor_focus())
             .or_else(|| self.swarm_list_open.then(|| self.swarm_list_focus.clone()))
+            .or_else(|| {
+                self.routing_popover
+                    .is_some()
+                    .then(|| self.routing_popover_focus.clone())
+            })
     }
 
     fn dismiss_composer_popover(

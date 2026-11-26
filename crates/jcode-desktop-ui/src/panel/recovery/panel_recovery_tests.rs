@@ -377,6 +377,8 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
                 account_label: None,
                 routes: vec![
                     jcode_sdk::ModelRouteInfo {
+                        account: None,
+                        icon: None,
                         speed_options: Vec::new(),
                         reasoning_efforts: None,
                         usage: None,
@@ -387,6 +389,8 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
                         detail: String::new(),
                     },
                     jcode_sdk::ModelRouteInfo {
+                        account: None,
+                        icon: None,
                         speed_options: Vec::new(),
                         reasoning_efforts: None,
                         usage: None,

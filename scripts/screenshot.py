@@ -36,7 +36,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
-    parser.add_argument("--composer-picker", choices=("model", "effort", "context"),
+    parser.add_argument("--composer-picker", choices=("model", "effort", "context", "accounts", "routing-popover"),
                         help="capture the offline composer picker on either supported platform")
     parser.add_argument("--cache-warning", action="store_true",
                         help="show a 1-hour Claude cache with 12 minutes left and a 98%% hit rate")

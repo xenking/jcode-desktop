@@ -26,6 +26,7 @@ impl Panel {
     fn menu_open(&self) -> bool {
         self.context_usage.is_open()
             || self.swarm_list_open
+            || self.routing_popover.is_some()
             || self.login.is_some()
             || self.recovery_picker_open
             || self.diff_review.is_some()
@@ -50,6 +51,8 @@ impl Panel {
         {
         } else if self.swarm_list_open {
             self.close_swarm_to_trigger(window, cx);
+        } else if self.routing_popover.is_some() {
+            self.close_routing_popover(window, cx);
         } else if self.login.is_some() {
             self.close_login_picker(cx);
             self.focus_input(window, cx);

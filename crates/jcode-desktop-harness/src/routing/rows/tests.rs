@@ -84,6 +84,14 @@ fn key_rows_show_label_active_marker_and_every_window_in_order() {
         ["opencode-go", "opencode-go · second", "opencode-go · idle"]
     );
     assert!(rows.keys[1].active && !rows.keys[0].active);
+    assert!(
+        rows.keys.iter().all(|row| !row.icon.is_empty()),
+        "every key row leads with an icon"
+    );
+    assert_eq!(
+        rows.keys[1].icon,
+        crate::routing::icon_for(None, "opencode-go:second")
+    );
     assert_eq!(rows.keys[0].windows[0].label, "5h · 12% · 2h 3m");
     assert_eq!(rows.keys[1].windows[0].label, "5h · 74% · 1h 0m");
     assert_eq!(

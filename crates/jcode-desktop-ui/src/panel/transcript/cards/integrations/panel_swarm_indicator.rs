@@ -309,6 +309,7 @@ impl Panel {
                         this.model_picker_open = false;
                     }
                     this.composer_popover_trigger = Some(this.swarm_trigger_focus.clone());
+                    this.routing_popover = None;
                     this.swarm_list_open = true;
                     this.swarm_finished_open = false;
                     this.swarm_list_scroll

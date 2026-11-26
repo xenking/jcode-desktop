@@ -5,6 +5,7 @@ impl Panel {
 
     pub(super) fn open_search(&mut self, kind: PickerKind, cx: &mut Context<Self>) {
         self.swarm_list_open = false;
+        self.routing_popover = None;
         self.select_background_job(None, cx);
         let settings = self.input.read(cx).picker_settings();
         let models = self.available_models.clone();
@@ -114,6 +115,7 @@ impl Panel {
             self.model_picker_open = false;
         } else {
             self.swarm_list_open = false;
+            self.routing_popover = None;
             self.select_background_job(None, cx);
         }
         self.composer_popover_trigger = None;

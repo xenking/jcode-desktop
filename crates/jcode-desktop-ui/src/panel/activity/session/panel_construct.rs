@@ -419,6 +419,9 @@ impl Panel {
             },
             pending_approval: None,
             routing_chip: None,
+            routing_popover: None,
+            routing_popover_focus: cx.focus_handle(),
+            routing_trigger_focus: cx.focus_handle(),
             routing_gate: None,
             expandable_viewport_height: px(0.),
             transcript_row_count: 0,
@@ -658,6 +661,8 @@ impl Panel {
                             _ => None,
                         };
                         jcode_sdk::ModelRouteInfo {
+                            account: None,
+                            icon: None,
                             speed_options: Vec::new(),
                             reasoning_efforts: None,
                             api_method: format!("{provider}-api-key"),
