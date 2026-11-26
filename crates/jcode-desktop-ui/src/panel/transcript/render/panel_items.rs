@@ -306,13 +306,6 @@ pub(super) struct TodoCardItem {
     pub(super) completion_confidence: Option<jcode_base::todo::ConfidenceState>,
 }
 
-impl TodoCardItem {
-    /// A todo the daemon made for one of the user's messages.
-    pub(super) fn is_request(&self) -> bool {
-        self.group.as_deref().map(str::trim) == Some(jcode_base::todo::REQUESTS_GROUP)
-    }
-}
-
 pub(super) fn deserialize_todo_stage<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<u32>, D::Error> {

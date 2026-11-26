@@ -29,37 +29,6 @@ fn todo_progress_counts_completed_over_total() {
     assert_eq!(progress.get("with"), Some(&(1, 3)));
 }
 
-#[test]
-fn request_todos_do_not_count_as_plan_work_or_name_a_session() {
-    let home = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(home.path().join("todos")).unwrap();
-    std::fs::write(
-        home.path().join("todos/asks.json"),
-        r#"[{"content":"Ask #1: Check","status":"pending","group":"requests"},{"content":"a","status":"completed"},{"content":"b","status":"pending"}]"#,
-    )
-    .unwrap();
-    std::fs::write(
-        home.path().join("todos/only-asks.json"),
-        r#"[{"content":"Ask #1: Check","status":"pending","group":"requests"}]"#,
-    )
-    .unwrap();
-    let session = |id: &str| {
-        serde_json::from_value::<SessionInfo>(
-            serde_json::json!({"session_id": id, "status": "idle"}),
-        )
-        .unwrap()
-    };
-    let sessions = [session("asks"), session("only-asks")];
-    let progress = todo_progress_in(home.path(), &sessions);
-    assert_eq!(progress.get("asks"), Some(&(1, 2)));
-    assert_eq!(progress.get("only-asks"), None);
-    let unfinished = unfinished_sessions_in(home.path(), &sessions);
-    assert_eq!(unfinished.len(), 1, "{unfinished:?}");
-    assert_eq!(unfinished[0].todos.len(), 1);
-    assert_eq!(unfinished[0].todos[0].content, "b");
-    assert_eq!(persisted_todo_title(home.path(), "only-asks"), None);
-}
-
 fn session_info(id: &str) -> SessionInfo {
     SessionInfo {
         user_connected: false,

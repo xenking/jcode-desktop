@@ -140,14 +140,6 @@ pub(super) struct PersistedTodoTitleItem {
     group: Option<String>,
 }
 
-impl PersistedTodoTitleItem {
-    /// A todo the daemon made for a user message. Dashboards count plan work,
-    /// so these neither name a session nor make it look unfinished.
-    fn is_request(&self) -> bool {
-        self.group.as_deref().map(str::trim) == Some(jcode_base::todo::REQUESTS_GROUP)
-    }
-}
-
 pub(super) fn catalog_todos_in(home: &Path, sessions: &[SessionInfo]) -> CatalogTodos {
     let mut out = CatalogTodos::default();
     let mut unfinished = Vec::new();
@@ -187,9 +179,7 @@ pub(super) fn catalog_todos_in(home: &Path, sessions: &[SessionInfo]) -> Catalog
 
 pub(super) fn read_todo_items(dir: &Path, id: &str) -> Option<Vec<PersistedTodoTitleItem>> {
     let bytes = std::fs::read(dir.join(format!("{id}.json"))).ok()?;
-    let mut todos: Vec<PersistedTodoTitleItem> = serde_json::from_slice(&bytes).ok()?;
-    todos.retain(|todo| !todo.is_request());
-    Some(todos)
+    serde_json::from_slice(&bytes).ok()
 }
 
 pub(super) fn unfinished_session(
@@ -384,12 +374,11 @@ pub(super) fn persisted_todo_title(home: &Path, session_id: &str) -> Option<Stri
         return None;
     }
     let todos_dir = home.join("todos");
-    let mut todos: Vec<PersistedTodoTitleItem> =
+    let todos: Vec<PersistedTodoTitleItem> =
         std::fs::read(todos_dir.join(format!("{session_id}.json")))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-    todos.retain(|todo| !todo.is_request());
     let plan: PersistedTodoTitlePlan =
         std::fs::read(todos_dir.join(format!("{session_id}-plan.json")))
             .ok()

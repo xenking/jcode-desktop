@@ -242,35 +242,6 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
             }),
         ];
     }
-    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("todos-requests") {
-        // The user's requests lead the card; the plan keeps its own phases.
-        let item = |content: &str, status: &str, group: &str, stage: Option<u32>| TodoCardItem {
-            content: content.into(),
-            status: status.into(),
-            group: Some(group.into()),
-            blocked_by: vec![],
-            confidence: None,
-            completion_confidence: None,
-            stage,
-            assigned_to: None,
-        };
-        return vec![
-            Item::User("Fix the build".into()),
-            Item::Assistant("The build is fixed. The quota check is done, and the tests are still running.".into()),
-            Item::Todos(TodoCardPayload {
-                todos: vec![
-                    item("Ask #1: Check the quota", "completed", "requests", None),
-                    item("Ask #2: Run the tests", "in_progress", "requests", None),
-                    item("Ask #3: Fix the build", "completed", "requests", None),
-                    item("Reproduce the failure", "completed", "Build", Some(1)),
-                    item("Patch the linker flags", "completed", "Build", Some(1)),
-                    item("Run the full suite", "in_progress", "Build", Some(2)),
-                ],
-                plan: TodoCardPlan::default(),
-                goals: Vec::new(),
-            }),
-        ];
-    }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("todos-completed") {
         return vec![
             Item::User("Keep the task group visible after the work finishes".into()),

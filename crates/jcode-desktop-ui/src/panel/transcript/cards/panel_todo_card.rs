@@ -251,15 +251,6 @@ pub(super) fn todo_goal_gate_segments(goal: &jcode_base::todo::TodoGoal) -> Vec<
     segments
 }
 
-/// Card order: the user's requests first, then phases in order, ungrouped last.
-pub(super) fn todo_group_order_key(stage: Option<u32>, group: Option<&str>) -> (bool, Option<u32>, bool) {
-    (
-        group != Some(jcode_base::todo::REQUESTS_GROUP),
-        stage,
-        group.is_none(),
-    )
-}
-
 pub(super) fn todo_goal_for_group<'a>(
     goals: &'a [jcode_base::todo::TodoGoal],
     group: Option<&str>,
@@ -361,17 +352,11 @@ pub(super) fn render_todo_card_with_style(
         .map(str::trim)
         .filter(|intention| !intention.is_empty())
         .map(str::to_owned);
-    // Requests are the user's asks, not plan progress: they get their own
-    // section but stay out of the plan's completion count.
-    let total = payload
-        .todos
-        .iter()
-        .filter(|todo| !todo.is_request())
-        .count();
+    let total = payload.todos.len();
     let completed = payload
         .todos
         .iter()
-        .filter(|todo| !todo.is_request() && todo.status == "completed")
+        .filter(|todo| todo.status == "completed")
         .count();
     let progress = if total == 0 {
         0.0
@@ -396,7 +381,7 @@ pub(super) fn render_todo_card_with_style(
             groups.push((stage, group, vec![todo]));
         }
     }
-    groups.sort_by_key(|(stage, group, _)| todo_group_order_key(*stage, *group));
+    groups.sort_by_key(|(stage, group, _)| (*stage, group.is_none()));
 
     let mut body = div()
         .id("todo-card-body-scroll")
@@ -607,7 +592,7 @@ pub(super) fn render_todo_card_with_style(
                                 let active = payload
                                     .todos
                                     .iter()
-                                    .filter(|todo| !todo.is_request() && todo.status != "cancelled")
+                                    .filter(|todo| todo.status != "cancelled")
                                     .count();
                                 format!("{completed}/{active}")
                             }),

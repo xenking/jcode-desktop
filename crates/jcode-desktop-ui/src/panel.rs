@@ -1148,12 +1148,12 @@ impl Panel {
                     payload
                         .todos
                         .iter()
-                        .filter(|todo| !todo.is_request() && todo.status == "completed")
+                        .filter(|todo| todo.status == "completed")
                         .count(),
                     payload
                         .todos
                         .iter()
-                        .filter(|todo| !todo.is_request() && todo.status != "cancelled")
+                        .filter(|todo| todo.status != "cancelled")
                         .count(),
                 )
             })
