@@ -49,5 +49,4 @@ are separate.
 ## Proof reporting
 
 Actual coverage lives in each run's `*-proof.json`, action log, images and
-cleanup receipts. The skill's [proof receipt](../proof.md) records its initial
-executed scope. Never count another platform or a different entry point as passed.
+cleanup receipts. Never count another platform or a different entry point as passed.

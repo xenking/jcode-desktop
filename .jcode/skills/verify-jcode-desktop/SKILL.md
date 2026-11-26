@@ -177,6 +177,5 @@ Executable: `scripts/verify-jcode-desktop.py`. Discover flags with subcommand
 python3 -m unittest discover -s scripts -p 'test_verify_jcode_desktop.py' -v
 ```
 
-See [the proof receipt](proof.md) for the executed scope and
-[the feature map](features/README.md) for other user paths and Linux harness reuse.
+See [the feature map](features/README.md) for other user paths and Linux harness reuse.
 Use `/maintain-verification-skill` as features or harness contracts change.
