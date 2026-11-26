@@ -168,6 +168,19 @@ impl Panel {
                 .pb(px(2.))
                 .text_size(px(12.))
                 .text_color(theme.TEXT)
+                .when(
+                    split && self.queue_connection_ready() && queue.queued_edit.is_none(),
+                    |el| {
+                        el.child(div().flex().justify_end().px_2().pt_1().child(Kit::pill(
+                            "queue-send-batch",
+                            "Send all as batch",
+                            cx.listener(|this, _, _, cx| {
+                                this.interrupt_all_queued_prompts(cx);
+                                cx.stop_propagation();
+                            }),
+                        )))
+                    },
+                )
                 .child(
                     div()
                         .id("prompt-queue-items")
@@ -982,5 +995,3 @@ fn queue_row_action(
         .child(Kit::icon(icon, 13.).text_color(theme.TEXT_DIM))
         .on_click(on_click)
 }
-
-

@@ -791,6 +791,43 @@ fn queue_send_all_now_only_interrupts_its_own_section(cx: &mut gpui::TestAppCont
 }
 
 #[gpui::test]
+fn split_queue_offers_explicit_batch_across_both_sections(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode::{AfterYield, Steer};
+    let (_, vcx, commands) = queue_edit_panel(
+        cx,
+        vec![
+            editing_test_prompt("a", "first", AfterYield),
+            editing_test_prompt("b", "second", Steer),
+            editing_test_prompt("c", "third", AfterYield),
+        ],
+    );
+    assert!(commands.try_recv().is_err());
+    let batch = vcx.debug_bounds("queue-send-batch").expect("batch action");
+    vcx.simulate_click(batch.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { ids, .. }) if ids == ["a", "b", "c"]));
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn batch_does_not_send_a_prompt_edited_by_another_client(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode::{AfterYield, Steer};
+    let mut held = editing_test_prompt("held", "editing", AfterYield);
+    held.editing = true;
+    let mut image = editing_test_prompt("image", "see [#image 1]", AfterYield);
+    image.images.push(("image/png".into(), "aW1hZ2U=".into()));
+    let (_, vcx, commands) = queue_edit_panel(
+        cx,
+        vec![held, editing_test_prompt("steer", "first", Steer), image],
+    );
+    let batch = vcx.debug_bounds("queue-send-batch").expect("batch action");
+    vcx.simulate_click(batch.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { ids, .. }) if ids == ["steer", "image"]));
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
 fn queue_edit_mode_is_staged_until_save(cx: &mut gpui::TestAppContext) {
     use jcode_sdk::api::QueuedPromptMode::{AfterYield, Steer};
     let (_, vcx, commands) =

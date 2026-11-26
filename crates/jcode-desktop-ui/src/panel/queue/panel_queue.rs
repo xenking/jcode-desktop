@@ -1013,7 +1013,7 @@ impl Panel {
             .iter()
             .chain(&self.prompt_queue.pending_remote)
         {
-            if !ids.contains(&prompt.client_id) {
+            if self.queued_remote_sendable(prompt) && !ids.contains(&prompt.client_id) {
                 ids.push(prompt.client_id.clone());
             }
         }
