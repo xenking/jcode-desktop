@@ -126,7 +126,8 @@ fn open_file_workspace<'a>(
 #[gpui::test]
 fn opened_source_file_takes_focus_and_is_listed_once(cx: &mut gpui::TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("main.rs");
+    // Opening canonicalizes paths, and macOS temp dirs sit behind /var.
+    let path = dir.path().canonicalize().unwrap().join("main.rs");
     std::fs::write(&path, "fn main() {}\n").unwrap();
     let (workspace, vcx) = open_file_workspace(&path, cx);
     let id = format!("file://{}", path.display());
@@ -161,7 +162,8 @@ fn opened_source_file_takes_focus_and_is_listed_once(cx: &mut gpui::TestAppConte
 #[gpui::test]
 fn opened_file_survives_hot_reload_snapshot(cx: &mut gpui::TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("main.rs");
+    // Opening canonicalizes paths, and macOS temp dirs sit behind /var.
+    let path = dir.path().canonicalize().unwrap().join("main.rs");
     std::fs::write(&path, "fn main() {}\n").unwrap();
     let (workspace, vcx) = open_file_workspace(&path, cx);
     let id = format!("file://{}", path.display());
