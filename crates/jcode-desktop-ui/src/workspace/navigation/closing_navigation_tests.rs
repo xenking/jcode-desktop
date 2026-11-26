@@ -349,7 +349,7 @@ fn all_super_shortcuts_have_handlers(cx: &mut gpui::TestAppContext) {
         ("super-shift-q", Box::new(Quit)),
     ];
     assert_eq!(
-        include_str!("lib.rs")
+        include_str!("../../lib.rs")
             .matches("KeyBinding::new(\"super-")
             .count(),
         cases.len(),

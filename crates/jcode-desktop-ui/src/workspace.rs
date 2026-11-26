@@ -56,25 +56,25 @@ mod snapshot;
 mod runtime_updates;
 #[path = "workspace_sessions.rs"]
 mod sessions;
-#[path = "workspace_navigation.rs"]
+#[path = "workspace/navigation/workspace_navigation.rs"]
 mod navigation;
 #[path = "workspace_panels.rs"]
 mod panels;
 #[path = "workspace_toggles.rs"]
 mod toggles;
-#[path = "workspace_strip_view.rs"]
+#[path = "workspace/layout/workspace_strip_view.rs"]
 mod strip_view;
-#[path = "sidebar_view.rs"]
+#[path = "workspace/sidebar/chrome/sidebar_view.rs"]
 mod sidebar_view;
 #[path = "workspace_settings_view.rs"]
 mod settings_view;
 #[path = "workspace_chrome_view.rs"]
 mod chrome_view;
-#[path = "workspace_strip_gesture.rs"]
+#[path = "workspace/layout/workspace_strip_gesture.rs"]
 mod strip_gesture;
-#[path = "workspace_strip_geometry.rs"]
+#[path = "workspace/layout/workspace_strip_geometry.rs"]
 mod strip_geometry;
-#[path = "workspace_sidebar_sessions.rs"]
+#[path = "workspace/sidebar/catalog/workspace_sidebar_sessions.rs"]
 mod sidebar_sessions;
 #[path = "workspace_working_dirs.rs"]
 mod working_dirs;
@@ -114,40 +114,40 @@ mod notifications;
 #[path = "workspace_change_review.rs"]
 pub(crate) mod change_review;
 
-#[path = "sidebar_account_menu.rs"]
+#[path = "workspace/sidebar/accounts/sidebar_account_menu.rs"]
 mod account_menu;
-#[path = "sidebar_jcode_account.rs"]
+#[path = "workspace/sidebar/accounts/sidebar_jcode_account.rs"]
 mod jcode_account;
-#[path = "sidebar_account.rs"]
+#[path = "workspace/sidebar/accounts/sidebar_account.rs"]
 mod sidebar_account;
-#[path = "sidebar_routing.rs"]
+#[path = "workspace/sidebar/accounts/sidebar_routing.rs"]
 mod sidebar_routing;
-#[path = "sidebar_collections.rs"]
+#[path = "workspace/sidebar/catalog/sidebar_collections.rs"]
 mod sidebar_collections;
-#[path = "sidebar_edits.rs"]
+#[path = "workspace/sidebar/catalog/sidebar_edits.rs"]
 mod sidebar_edits;
-#[path = "sidebar_gesture.rs"]
+#[path = "workspace/sidebar/chrome/sidebar_gesture.rs"]
 mod sidebar_gesture;
-#[path = "sidebar_header.rs"]
+#[path = "workspace/sidebar/chrome/sidebar_header.rs"]
 mod sidebar_header;
 #[cfg(test)]
-#[path = "sidebar_header_tests.rs"]
+#[path = "workspace/sidebar/chrome/sidebar_header_tests.rs"]
 mod sidebar_header_tests;
-#[path = "workspace_sidebar_metadata.rs"]
+#[path = "workspace/sidebar/catalog/workspace_sidebar_metadata.rs"]
 mod sidebar_metadata;
-#[path = "sidebar_projects.rs"]
+#[path = "workspace/sidebar/catalog/sidebar_projects.rs"]
 mod sidebar_projects;
-#[path = "sidebar_selection.rs"]
+#[path = "workspace/sidebar/chrome/sidebar_selection.rs"]
 mod sidebar_selection;
-#[path = "sidebar_session_catalog.rs"]
+#[path = "workspace/sidebar/catalog/sidebar_session_catalog.rs"]
 mod sidebar_session_catalog;
-#[path = "sidebar_swarm.rs"]
+#[path = "workspace/sidebar/catalog/sidebar_swarm.rs"]
 mod sidebar_swarm;
-#[path = "sidebar_worktrees.rs"]
+#[path = "workspace/sidebar/catalog/sidebar_worktrees.rs"]
 mod sidebar_worktrees;
-#[path = "sidebar_atoms.rs"]
+#[path = "workspace/sidebar/chrome/sidebar_atoms.rs"]
 mod sidebar_atoms;
-#[path = "sidebar_quick_actions.rs"]
+#[path = "workspace/sidebar/chrome/sidebar_quick_actions.rs"]
 mod sidebar_quick_actions;
 #[path = "workspace_stream_fixture.rs"]
 mod workspace_stream_fixture;
@@ -190,7 +190,7 @@ pub(crate) mod restart;
 mod housekeeping;
 
 #[cfg(test)]
-#[path = "closing_navigation_tests.rs"]
+#[path = "workspace/navigation/closing_navigation_tests.rs"]
 mod closing_navigation_tests;
 #[cfg(test)]
 #[path = "fps_header_tests.rs"]
@@ -198,17 +198,17 @@ mod fps_header_tests;
 #[cfg(test)]
 #[path = "hidden_animation_tests.rs"]
 mod hidden_animation_tests;
-#[path = "workspace_map_gesture.rs"]
+#[path = "workspace/navigation/workspace_map_gesture.rs"]
 mod map_gesture;
-#[path = "workspace_map_motion.rs"]
+#[path = "workspace/navigation/workspace_map_motion.rs"]
 mod map_motion;
 #[cfg(test)]
 #[path = "workspace_nav_profile_tests.rs"]
 mod nav_profile_tests;
 #[cfg(test)]
-#[path = "navigation_map_tests.rs"]
+#[path = "workspace/navigation/navigation_map_tests.rs"]
 mod navigation_map_tests;
-#[path = "navigation_state.rs"]
+#[path = "workspace/navigation/navigation_state.rs"]
 mod navigation_state;
 #[path = "workspace_openrig.rs"]
 mod openrig;
@@ -231,10 +231,10 @@ mod scroll_snap;
 mod super_action_behavior_tests;
 #[path = "workspace/voice/workspace_voice.rs"]
 mod voice;
-#[path = "window_navigation.rs"]
+#[path = "workspace/navigation/window_navigation.rs"]
 mod window_navigation;
 #[cfg(test)]
-#[path = "window_navigation_tests.rs"]
+#[path = "workspace/navigation/window_navigation_tests.rs"]
 mod window_navigation_tests;
 #[cfg(test)]
 #[path = "workspace_lone_panel_tests.rs"]
@@ -363,9 +363,9 @@ mod live_tabs;
 #[path = "workspace_version.rs"]
 mod version;
 
-#[path = "sidebar_roller.rs"]
+#[path = "workspace/sidebar/chrome/sidebar_roller.rs"]
 mod sidebar_roller;
-#[path = "sidebar_search_button.rs"]
+#[path = "workspace/sidebar/chrome/sidebar_search_button.rs"]
 mod sidebar_search_button;
 
 #[cfg(test)]

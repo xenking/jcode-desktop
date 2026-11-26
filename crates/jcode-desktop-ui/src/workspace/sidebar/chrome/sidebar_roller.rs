@@ -244,14 +244,14 @@ impl Workspace {
                 .child(
                     div().debug_selector(move || id.into()).child(
                         gpui::svg()
-                            .data(include_bytes!("../../../assets/icons/sections.svg").as_slice())
+                            .data(include_bytes!("../../../../../../assets/icons/sections.svg").as_slice())
                             .size(px(16.0))
                             .text_color(Theme::global().TEXT_DIM),
                     ),
                 );
         let toggle = IconButton::new("workspace-sidebar-toggle", "Hide sidebar")
             .icon(
-                include_bytes!("../../../assets/icons/menu.svg").as_slice(),
+                include_bytes!("../../../../../../assets/icons/menu.svg").as_slice(),
                 16.0,
             )
             .tooltip(Tooltip::text("Hide sidebar").key_hint("Ctrl+B"))

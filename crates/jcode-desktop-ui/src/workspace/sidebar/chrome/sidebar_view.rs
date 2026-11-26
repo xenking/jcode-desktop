@@ -1019,7 +1019,7 @@ impl Workspace {
                                                         this.sidebar_sessions_list.scroll_to(gpui::ListOffset { item_ix: sidebar_index, offset_in_item: px(0.0) });
                                                         cx.notify();
                                                     }))
-                                                    .child(gpui::svg().data(include_bytes!("../../../assets/icons/swarm.svg").as_slice()).size(px(9.0)).text_color(Theme::global().TEXT_DIM))
+                                                    .child(gpui::svg().data(include_bytes!("../../../../../../assets/icons/swarm.svg").as_slice()).size(px(9.0)).text_color(Theme::global().TEXT_DIM))
                                                     .child(div().debug_selector(move || format!("sidebar-agents-count-{sidebar_index}-{agent_working}")).child(agent_working.to_string())),
                                             ))
                                             // Idle rows keep the pin visible when pinned. Hovering
@@ -1047,7 +1047,7 @@ impl Workspace {
                                                         })
                                                         .child(
                                                             gpui::svg()
-                                                                .data(include_bytes!("../../../assets/icons/pin.svg").as_slice())
+                                                                .data(include_bytes!("../../../../../../assets/icons/pin.svg").as_slice())
                                                                 .size(px(11.0))
                                                                 .text_color(if pinned {
                                                                     Theme::global().ACCENT
@@ -1127,7 +1127,7 @@ impl Workspace {
                                                         .hover(|el| el.bg(Theme::global().TOOL_BG))
                                                         .tooltip(|_, cx| cx.new(|_| remotes::HeaderTooltip("Open session todos".into())).into())
                                                         .child(div().debug_selector(move || format!("sidebar-todos-icon-{sidebar_index}")).flex_none().child(
-                                                            gpui::svg().data(include_bytes!("../../../assets/icons/todo-check.svg").as_slice()).size(px(9.0)).text_color(if done == total { Theme::global().OK } else { Theme::global().TEXT_DIM })
+                                                            gpui::svg().data(include_bytes!("../../../../../../assets/icons/todo-check.svg").as_slice()).size(px(9.0)).text_color(if done == total { Theme::global().OK } else { Theme::global().TEXT_DIM })
                                                         ))
                                                         .child(div().min_w_0().truncate().child(format!("{done}/{total}"))),
                                                 ))

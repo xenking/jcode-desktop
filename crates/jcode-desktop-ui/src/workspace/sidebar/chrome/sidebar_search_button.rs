@@ -11,7 +11,7 @@ use crate::components::{IconButton, Tooltip};
 /// The search glyph, shared by both button shapes.
 fn search_icon(size: f32, color: impl Into<gpui::Hsla>) -> gpui::Svg {
     gpui::svg()
-        .data(include_bytes!("../../../assets/icons/tools/session_search.svg").as_slice())
+        .data(include_bytes!("../../../../../../assets/icons/tools/session_search.svg").as_slice())
         .size(px(size))
         .text_color(color)
 }

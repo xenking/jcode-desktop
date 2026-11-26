@@ -161,9 +161,9 @@ pub(super) fn fake_gmail_provider(cx: &mut gpui::VisualTestContext) {
 mod session_catalog;
 #[path = "workspace_sidebar_tests.rs"]
 mod sidebar;
-#[path = "workspace_folder_strip_tests.rs"]
+#[path = "workspace/layout/workspace_folder_strip_tests.rs"]
 mod folder_strip;
-#[path = "workspace_shortcut_tests.rs"]
+#[path = "workspace/layout/workspace_shortcut_tests.rs"]
 mod shortcut;
 #[path = "workspace_tutorial_tests.rs"]
 mod tutorial;

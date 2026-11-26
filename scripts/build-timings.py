@@ -31,7 +31,7 @@ DEFAULT_LOG = ROOT / "target" / "build-timings.jsonl"
 # name -> file to touch (None = no-op build)
 SCENARIOS: dict[str, str | None] = {
     "noop": None,
-    "ui-leaf": "crates/jcode-desktop-ui/src/sidebar_selection.rs",
+    "ui-leaf": "crates/jcode-desktop-ui/src/workspace/sidebar/chrome/sidebar_selection.rs",
     "ui-workspace": "crates/jcode-desktop-ui/src/workspace.rs",
     "api": "crates/jcode-desktop-api/src/lib.rs",
     "host": "src/main.rs",
