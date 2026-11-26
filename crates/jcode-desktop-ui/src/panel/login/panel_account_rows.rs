@@ -132,7 +132,7 @@ impl AccountRowView<'_> {
         let theme = Theme::global();
         let id = format!("login-reset-{key}");
         let selector = id.clone();
-        let label = banked_reset_label(reset);
+        let label = reset_pill_label(reset);
         let offerable = reset.offerable();
         let color = if offerable {
             theme.ACCENT

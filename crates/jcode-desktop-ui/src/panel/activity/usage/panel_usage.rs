@@ -1,9 +1,8 @@
 //! Compact, truthful context and credential quota meters for the session footer.
-use super::*;
 use super::meter::{MeterIds, MeterTooltip, RowsTooltip, meter_card, meter_row, usage_color};
-use crate::accounts::{Account, UsageLimit};
+use super::*;
 pub(crate) use crate::account_status::StatusAccounts;
-
+use crate::accounts::{Account, UsageLimit};
 
 /// Subscription quota shown when hovering the composer's method pill.
 #[derive(Clone, Debug, PartialEq)]
@@ -102,7 +101,6 @@ fn limit_row(index: usize, limit: &UsageLimit, theme: &Palette) -> gpui::AnyElem
     .into_any_element()
 }
 
-
 /// Footer pill order. Every credential with a reported figure gets one, and a
 /// credential with nothing to report gets none: a bare logo pill would read as
 /// a broken meter.
@@ -145,7 +143,7 @@ pub(crate) fn banked_reset_label(reset: &crate::accounts::BankedReset) -> String
             .map(|_| " · imported")
             .unwrap_or_default();
         return format!(
-            "{usable} usable / {} banked{expiry}{source}",
+            "{} saved · {usable} reported usable{expiry}{source}",
             reset.available_count
         );
     }
@@ -769,9 +767,11 @@ mod tests {
         let card = quota_card(&accounts[0], &chip);
         assert_eq!(card.method, "Anthropic · OAuth · claude-otter");
         assert!(
-            card.notes.iter().any(|note| note.contains("1 usable / 2")
-                && note.contains("expires")
-                && note.contains("imported")),
+            card.notes
+                .iter()
+                .any(|note| note.contains("2 saved · 1 reported usable")
+                    && note.contains("expires")
+                    && note.contains("imported")),
             "{:?}",
             card.notes
         );

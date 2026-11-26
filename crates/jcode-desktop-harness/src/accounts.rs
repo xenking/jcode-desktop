@@ -204,9 +204,35 @@ impl BankedReset {
     /// Worth offering: redeemable now. Availability can be inspected before
     /// limits bind, but neither provider's reset should be offered early.
     pub fn offerable(&self) -> bool {
-        self.session_reset_available
-            .unwrap_or(self.available_count > 0)
-            && self.limit_reached
+        let available = match (
+            self.provider,
+            self.session_reset_available,
+            self.usable_count,
+        ) {
+            (ResetProvider::Claude, None, Some(_)) => false,
+            (_, session, _) => session.unwrap_or(self.available_count > 0),
+        };
+        available && self.limit_reached
+    }
+
+    /// Why the pill cannot start a fresh provider review.
+    pub fn inactive_reason(&self) -> Option<&'static str> {
+        if self.offerable() {
+            return None;
+        }
+        match (
+            self.provider,
+            self.session_reset_available,
+            self.usable_count,
+        ) {
+            (ResetProvider::Claude, Some(false), _) => Some("Session reset unavailable"),
+            (ResetProvider::Claude, None, Some(_)) => Some("Session reset availability unknown"),
+            (ResetProvider::Claude, _, _) if !self.limit_reached => {
+                Some("Session limit not reached")
+            }
+            (_, _, _) if self.available_count == 0 => Some("No reset available"),
+            _ => Some("Limit not reached"),
+        }
     }
 
     /// Compact pill caption.
@@ -1190,6 +1216,34 @@ mod tests {
         assert!(openai.usage_reports[1].extra_info.is_empty());
         assert!(USAGE_ESTIMATE_NOTE.contains("not your ChatGPT bill"));
         assert!(USAGE_ESTIMATE_NOTE.contains("local midnight"));
+    }
+
+    #[test]
+    fn imported_saved_grants_are_not_a_live_session_offer() {
+        let reset = BankedReset::parse(&serde_json::json!({
+            "provider": "claude", "account_label": "claude-otter",
+            "available_count": 1, "usable_count": 1, "cached_source": "imported",
+            "session_reset_available": false, "limit_reached": false,
+            "grants": [{"status": "redeemed"}, {"status": "available"}]
+        }))
+        .unwrap();
+        assert!(!reset.offerable());
+        assert_eq!(reset.inactive_reason(), Some("Session reset unavailable"));
+        assert_eq!(reset.account_label.as_deref(), Some("claude-otter"));
+        let mut live = reset.clone();
+        live.session_reset_available = Some(true);
+        assert_eq!(live.inactive_reason(), Some("Session limit not reached"));
+        live.limit_reached = true;
+        assert!(live.offerable());
+        assert_eq!(live.inactive_reason(), None);
+        let mut unknown = reset;
+        unknown.session_reset_available = None;
+        unknown.limit_reached = true;
+        assert!(!unknown.offerable());
+        assert_eq!(
+            unknown.inactive_reason(),
+            Some("Session reset availability unknown")
+        );
     }
 
     #[test]

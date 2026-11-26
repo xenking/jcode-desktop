@@ -120,7 +120,6 @@ pub(super) struct DraggedAccount {
     pub(super) title: String,
 }
 
-
 pub(super) struct Groups {
     pub pooled: Vec<AccountRow>,
     pub manual: Vec<AccountRow>,
@@ -594,6 +593,14 @@ pub(super) fn banked_reset_label(reset: &BankedReset) -> String {
     super::super::usage::banked_reset_label(reset)
 }
 
+pub(super) fn reset_pill_label(reset: &BankedReset) -> String {
+    let status = reset
+        .inactive_reason()
+        .map(str::to_owned)
+        .unwrap_or_else(|| reset.pill_label());
+    format!("{status} · {}", banked_reset_label(reset))
+}
+
 /// What clicking a row in the composer's provider picker would do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PickerChoice {
@@ -641,7 +648,6 @@ pub(super) fn session_provider_id(provider: Option<&str>, auth: Option<&str>) ->
     })
 }
 
-
 impl super::LoginState {
     /// Rows for `providers`, with any in-flight live test shown as Testing.
     pub(super) fn account_rows(&self, providers: &[LoginProvider]) -> Vec<AccountRow> {
@@ -655,7 +661,6 @@ impl super::LoginState {
         )
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1247,9 +1252,28 @@ mod tests {
         };
         let label = banked_reset_label(&partial);
         assert!(
-            label.contains("1 usable / 2") && label.contains("expires"),
+            label.contains("2 saved · 1 reported usable") && label.contains("expires"),
             "{label}"
         );
+        assert!(
+            reset_pill_label(&partial).starts_with("Session reset availability unknown · 2 saved")
+        );
+        let imported = BankedReset {
+            available_count: 1,
+            cached_source: Some("imported".into()),
+            session_reset_available: Some(false),
+            ..partial.clone()
+        };
+        assert!(
+            reset_pill_label(&imported)
+                .starts_with("Session reset unavailable · 1 saved · 1 reported usable")
+        );
+        let live = BankedReset {
+            session_reset_available: Some(true),
+            limit_reached: true,
+            ..imported
+        };
+        assert!(reset_pill_label(&live).starts_with("Reset session · 1 saved"));
         let session = BankedReset {
             session_reset_available: Some(true),
             ..reset(ResetProvider::Claude, 1, None)
