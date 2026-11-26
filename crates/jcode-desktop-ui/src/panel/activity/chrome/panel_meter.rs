@@ -170,13 +170,3 @@ pub(crate) fn usage_bar(selector: String, percent: f32, ink: gpui::Rgba, theme: 
         )
 }
 
-pub(crate) fn usage_color(used: f32, theme: &Palette) -> gpui::Rgba {
-    if used >= 90. {
-        theme.ERROR
-    } else if used >= 70. {
-        theme.WARN
-    } else {
-        gpui::rgb(0x64c864).into()
-    }
-}
-

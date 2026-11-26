@@ -59,9 +59,10 @@ fn limit_cell(
     limit: &crate::accounts::UsageLimit,
 ) -> gpui::Div {
     let used = limit.usage_percent.clamp(0.0, 100.0);
+    let reading = crate::account_status::configured_usage_reading(used);
     let label = match &limit.reset_in {
-        Some(reset) => format!("{} · {used:.0}% · {reset}", short_limit_name(&limit.name)),
-        None => format!("{} · {used:.0}%", short_limit_name(&limit.name)),
+        Some(reset) => format!("{} · {reading} · {reset}", short_limit_name(&limit.name)),
+        None => format!("{} · {reading}", short_limit_name(&limit.name)),
     };
     let id = account_id.to_owned();
     div()
@@ -74,13 +75,7 @@ fn limit_cell(
         .child(caption(label))
         .child(usage_bar(
             used / 100.0,
-            if used >= 90.0 {
-                Theme::global().ERROR
-            } else if used >= 70.0 {
-                Theme::global().WARN
-            } else {
-                Theme::global().ACCENT
-            },
+            crate::account_status::usage_color(used, Theme::global()),
         ))
 }
 

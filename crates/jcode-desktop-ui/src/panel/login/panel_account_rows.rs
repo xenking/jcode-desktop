@@ -903,16 +903,11 @@ pub(super) fn short_limit_name(name: &str) -> String {
 fn limit_meter(limit: &UsageLimit) -> gpui::AnyElement {
     let theme = Theme::global();
     let used = limit.usage_percent.clamp(0., 100.);
-    let color = if used >= 90. {
-        theme.ERROR
-    } else if used >= 70. {
-        theme.WARN
-    } else {
-        theme.ACCENT
-    };
+    let color = crate::account_status::usage_color(used, theme);
+    let reading = crate::account_status::configured_usage_reading(used);
     let caption = match &limit.reset_in {
-        Some(reset) => format!("{} {used:.0}% · {reset}", short_limit_name(&limit.name)),
-        None => format!("{} {used:.0}%", short_limit_name(&limit.name)),
+        Some(reset) => format!("{} {reading} · {reset}", short_limit_name(&limit.name)),
+        None => format!("{} {reading}", short_limit_name(&limit.name)),
     };
     div()
         .flex()

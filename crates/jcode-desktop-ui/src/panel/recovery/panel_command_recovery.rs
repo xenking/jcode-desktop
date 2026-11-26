@@ -67,7 +67,7 @@ fn append_limits(text: &mut String, limits: &[crate::accounts::UsageLimit]) {
     }
     for limit in limits {
         let used = if limit.usage_percent.is_finite() {
-            format!("{:.0}% used", limit.usage_percent.clamp(0., 100.))
+            crate::account_status::configured_usage_reading(limit.usage_percent)
         } else {
             "usage not reported".into()
         };

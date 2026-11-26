@@ -1,7 +1,8 @@
 //! Compact, truthful context and credential quota meters for the session footer.
-use super::meter::{MeterIds, MeterTooltip, RowsTooltip, meter_card, meter_row, usage_color};
+use super::meter::{MeterIds, MeterTooltip, RowsTooltip, meter_card, meter_row};
 use super::*;
 pub(crate) use crate::account_status::StatusAccounts;
+use crate::account_status::{configured_usage_reading, usage_color, usage_reading};
 use crate::accounts::{Account, UsageLimit};
 
 /// Subscription quota shown when hovering the composer's method pill.
@@ -84,14 +85,7 @@ fn limit_row(index: usize, limit: &UsageLimit, theme: &Palette) -> gpui::AnyElem
         .is_finite()
         .then(|| limit.usage_percent.clamp(0., 100.));
     let value = used
-        .map(|used| {
-            let used = used.round() as u8;
-            if jcode_base::config::config().display.usage_display_used() {
-                format!("{used}% used")
-            } else {
-                format!("{}% left", 100 - used)
-            }
-        })
+        .map(configured_usage_reading)
         .unwrap_or_else(|| "not reported".into());
     meter_row(
         MeterIds {
@@ -129,7 +123,7 @@ const FOOTER_QUOTA_PROVIDERS: [(&str, &str); 5] = [
 pub(crate) struct QuotaChip {
     /// Logo id for `accounts::logo`.
     pub(crate) logo: &'static str,
-    /// `23%` for a quota window, `$12.34` for a balance or spend figure.
+    /// `77% left` (or `23% used`) for a quota window, `$12.34` for a balance or spend figure.
     pub(crate) value: String,
     /// Tightest reported window, for the colour ramp. `None` on money chips.
     pub(crate) percent: Option<f32>,
@@ -242,6 +236,13 @@ fn first_usd(text: &str) -> Option<String> {
 }
 
 pub(crate) fn quota_chips(accounts: &[Account]) -> Vec<QuotaChip> {
+    quota_chips_with(
+        accounts,
+        jcode_base::config::config().display.usage_display_used(),
+    )
+}
+
+fn quota_chips_with(accounts: &[Account], show_used: bool) -> Vec<QuotaChip> {
     let mut chips = Vec::new();
     for (id, logo) in FOOTER_QUOTA_PROVIDERS {
         let Some(account) = accounts
@@ -282,12 +283,12 @@ pub(crate) fn quota_chips(accounts: &[Account]) -> Vec<QuotaChip> {
                         .as_deref()
                         .map(|reset| format!(", resets in {reset}"))
                         .unwrap_or_default();
-                    format!("{window}: {percent:.0}% used{reset}")
+                    format!("{window}: {}{reset}", usage_reading(*percent, show_used))
                 })
                 .collect();
             chips.push(QuotaChip {
                 logo,
-                value: format!("{percent:.0}%"),
+                value: usage_reading(percent, show_used),
                 percent: Some(percent),
                 cached,
                 detail,
@@ -822,12 +823,14 @@ mod tests {
             usage_percent: 99.,
             reset_in: Some("7h".into()),
         });
-        let chips = quota_chips(&accounts);
+        let chips = quota_chips_with(&accounts, false);
         let labels: Vec<_> = chips.iter().map(|c| (c.logo, c.label())).collect();
         assert_eq!(
             labels,
-            vec![("claude", "28%".into()), ("openai", "99%".into())]
+            vec![("claude", "72% left".into()), ("openai", "1% left".into())]
         );
+        assert_eq!(quota_chips_with(&accounts, true)[0].value, "28% used");
+        assert!(chips[0].detail.iter().all(|line| line.contains("% left")));
         let LimitsSummary::Limits(windows) = quota_card(&accounts[0], &chips[0]).summary else {
             panic!("missing quota windows")
         };
@@ -1440,13 +1443,13 @@ mod tests {
                  "extra_info":[["Balance","$12.34 / $20.00"],["Today","$0.42"]],"error":null}
             ]}"#,
         );
-        let chips = quota_chips(&accounts);
+        let chips = quota_chips_with(&accounts, false);
         let labels: Vec<(&'static str, String)> =
             chips.iter().map(|chip| (chip.logo, chip.label())).collect();
         assert_eq!(
             labels,
             vec![
-                ("opencode-go", "23%".to_string()),
+                ("opencode-go", "77% left".to_string()),
                 ("openrouter", "$12.34".to_string())
             ]
         );
@@ -1492,13 +1495,17 @@ mod tests {
         // Quota moved to the sidebar's bottom block; the composer bar paints
         // no provider figure at all now.
         assert!(vcx.debug_bounds("panel-quota-opencode-go").is_none());
-        let chips = vcx
-            .update(|_, cx| quota_chips(&cx.try_global::<StatusAccounts>().expect("accounts").0));
+        let chips = vcx.update(|_, cx| {
+            quota_chips_with(
+                &cx.try_global::<StatusAccounts>().expect("accounts").0,
+                false,
+            )
+        });
         let chip = chips
             .iter()
             .find(|chip| chip.logo == "opencode-go")
             .expect("OpenCode Go reports a quota window");
-        assert_eq!(chip.value, "23%");
+        assert_eq!(chip.value, "77% left");
     }
 
     #[test]

@@ -227,9 +227,10 @@ impl Workspace {
                     for (column_index, limit) in row.iter().enumerate() {
                         let limit_index = row_index * 2 + column_index;
                         let used = limit.usage_percent.clamp(0.0, 100.0);
+                        let reading = crate::account_status::configured_usage_reading(used);
                         let label = match &limit.reset_in {
-                            Some(reset) => format!("{} · {:.0}% · {reset}", limit.name, used),
-                            None => format!("{} · {:.0}%", limit.name, used),
+                            Some(reset) => format!("{} · {reading} · {reset}", limit.name),
+                            None => format!("{} · {reading}", limit.name),
                         };
                         limit_row = limit_row.child(
                             div()
@@ -256,13 +257,7 @@ impl Workspace {
                                 )
                                 .child(usage_bar(
                                     used / 100.0,
-                                    if used >= 90.0 {
-                                        Theme::global().ERROR
-                                    } else if used >= 70.0 {
-                                        Theme::global().WARN
-                                    } else {
-                                        Theme::global().ACCENT
-                                    },
+                                    crate::account_status::usage_color(used, Theme::global()),
                                 )),
                         );
                     }
