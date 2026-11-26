@@ -123,9 +123,12 @@ struct AccountRowView<'a> {
 impl AccountRowView<'_> {
     /// Banked resets on a login. Clicking only opens the workspace review,
     /// which prepares against the provider and needs an explicit confirm.
+    /// In the provider picker the row is the only click target, so a pill that
+    /// offers nothing must not leave a dead zone in the middle of it.
     fn render_banked_reset<T: 'static>(
         key: &str,
         reset: &BankedReset,
+        selecting: bool,
         handle: RowHandler<T>,
         cx: &mut Context<T>,
     ) -> gpui::AnyElement {
@@ -143,9 +146,11 @@ impl AccountRowView<'_> {
             .id(SharedString::from(id))
             .debug_selector(move || selector.clone())
             .child(icon_reset(color))
-            .child(label)
+            .child(label);
+        if offerable || !selecting {
             // Informational pills must not fall through to the row's sign-in.
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            pill = pill.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
+        }
         if offerable {
             let reset = reset.clone();
             pill = pill
@@ -155,7 +160,7 @@ impl AccountRowView<'_> {
                     cx.stop_propagation();
                     handle(this, RowAction::Redeem(&reset), window, cx);
                 }));
-        } else {
+        } else if !selecting {
             pill = pill.on_click(|_, _, cx| cx.stop_propagation());
         }
         pill.into_any_element()
@@ -286,16 +291,21 @@ impl AccountRowView<'_> {
             name_line = name_line.child(chip(plan.clone(), theme.TEXT_DIM));
         }
         if let Some(reset) = &row.banked {
-            name_line = name_line.child(Self::render_banked_reset(&row.key, reset, handle, cx));
+            name_line = name_line.child(Self::render_banked_reset(
+                &row.key, reset, selecting, handle, cx,
+            ));
         } else if let Some(status) = &row.reset_status {
             let selector = format!("login-reset-status-{}", row.key);
-            name_line = name_line.child(
-                chip(status.clone(), theme.TEXT_DIM)
-                    .id(SharedString::from(selector.clone()))
-                    .debug_selector(move || selector.clone())
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(|_, _, cx| cx.stop_propagation()),
-            );
+            let chip = chip(status.clone(), theme.TEXT_DIM)
+                .id(SharedString::from(selector.clone()))
+                .debug_selector(move || selector.clone());
+            name_line = name_line.child(if selecting {
+                chip.into_any_element()
+            } else {
+                chip.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .into_any_element()
+            });
         }
         let detail: Vec<String> = [row.subtitle(), row.usage.clone()]
             .into_iter()
