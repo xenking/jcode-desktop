@@ -1,9 +1,7 @@
 //! One workspace panel, whatever its kind. Workspace chrome (layout, focus,
 //! reload snapshots, sidebar metadata) goes through these methods. Code that
 //! only makes sense for a conversation asks for [`PanelItem::chat`].
-#[path = "changelog_panel.rs"]
 pub(crate) mod changelog_panel;
-#[path = "file_panel.rs"]
 pub(crate) mod file_panel;
 
 use crate::input::PromptInputSnapshot;
