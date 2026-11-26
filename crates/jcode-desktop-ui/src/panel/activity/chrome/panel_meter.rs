@@ -22,14 +22,13 @@ impl RowsTooltip {
         }
     }
 
-    pub(super) fn content(&self, width: Option<gpui::Pixels>) -> gpui::Div {
+    fn content(&self, width: gpui::Pixels) -> gpui::Div {
         let theme = Theme::global();
         div()
             .debug_selector(|| "rows-tooltip".into())
             .px_3()
             .py_2()
-            .when_some(width, |el, width| el.w(width))
-            .when(width.is_none(), |el| el.min_w(px(180.)).max_w(px(320.)))
+            .w(width)
             .rounded_xl()
             .bg(theme.HEADER_BG)
             .border_1()
@@ -59,8 +58,11 @@ impl RowsTooltip {
 }
 
 impl Render for RowsTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        self.content(None)
+    /// A tooltip is laid out with no width to wrap in, so a long row would be
+    /// measured as one line and then painted over the next row. A definite
+    /// width lets every row take the height of its wrapped text.
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.content(px(320.0).min(window.viewport_size().width))
     }
 }
 

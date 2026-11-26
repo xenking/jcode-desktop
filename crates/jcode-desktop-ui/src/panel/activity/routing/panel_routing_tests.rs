@@ -465,3 +465,48 @@ fn an_opening_gate_takes_the_keyboard_so_keys_answer_without_a_click(
         "Enter answers the focused switch with no prior click"
     );
 }
+
+/// Hover the chip and read back the tooltip rows it paints.
+fn hover_rows(vcx: &mut gpui::VisualTestContext, chip: gpui::Bounds<gpui::Pixels>) -> Vec<gpui::Bounds<gpui::Pixels>> {
+    vcx.simulate_mouse_move(chip.center(), None, Default::default());
+    vcx.run_until_parked();
+    vcx.executor().advance_clock(std::time::Duration::from_secs(1));
+    vcx.run_until_parked();
+    (0..12)
+        .map_while(|index| vcx.debug_bounds(Box::leak(format!("rows-tooltip-row-{index}").into_boxed_str())))
+        .collect()
+}
+
+#[gpui::test]
+fn a_long_why_wraps_inside_the_chips_tooltip_and_never_paints_over_the_next_row(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx, _commands) = panel_with_bridge(cx);
+    let reason = "behind pace: claude:claude-otter would be at 91% of its weekly window by the reset, \
+                  so the other subscription takes the next turns until the pace evens out";
+    panel.update(vcx, |panel, cx| {
+        panel.apply(
+            &event(serde_json::json!({
+                "ev": "routing_decision", "session_id": "session-a", "account": "claude:claude-fox",
+                "reason": reason, "warnings": [], "pending": null,
+            })),
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    let chip = vcx.debug_bounds("composer-routing-chip").expect("chip");
+    let rows = hover_rows(vcx, chip);
+    assert!(rows.len() >= 2, "the tooltip lists the decision rows: {rows:?}");
+    assert!(
+        rows.iter().any(|row| row.size.height > px(16.5)),
+        "the Why row wraps to several lines: {rows:?}"
+    );
+    for pair in rows.windows(2) {
+        assert!(
+            pair[0].bottom() <= pair[1].top() + px(0.5) && !pair[0].intersects(&pair[1]),
+            "tooltip rows overlap: {pair:?}"
+        );
+    }
+    let tooltip = vcx.debug_bounds("rows-tooltip").expect("tooltip");
+    assert!(rows.iter().all(|row| row.right() <= tooltip.right()), "a row spills out of the tooltip");
+}
