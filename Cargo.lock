@@ -4054,7 +4054,6 @@ dependencies = [
  "httpdate",
  "jcode-logging",
  "jcode-message-types",
- "jcode-routing-policy",
  "jcode-schema-dialect",
  "jcode-usage-types",
  "rand 0.9.5",
@@ -4255,17 +4254,8 @@ name = "jcode-telemetry-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
- "jcode-build-meta",
- "jcode-core",
- "jcode-logging",
  "jcode-provider-core",
- "jcode-selfdev-types",
- "jcode-storage",
- "jcode-usage-types",
  "serde_json",
- "uuid",
- "walkdir",
 ]
 
 [[package]]
@@ -4331,7 +4321,6 @@ name = "jcode-usage-types"
 version = "0.1.0"
 dependencies = [
  "serde",
- "serde_json",
 ]
 
 [[package]]
