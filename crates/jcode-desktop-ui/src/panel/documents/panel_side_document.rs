@@ -348,7 +348,7 @@ mod tests {
             pdf.format = jcode_sdk::SidePanelPageFormat::Pdf;
             pdf.pdf_data = Some(
                 base64::engine::general_purpose::STANDARD
-                    .encode(include_bytes!("../../../assets/previews/pdf-preview.pdf")),
+                    .encode(include_bytes!("../../../../../assets/previews/pdf-preview.pdf")),
             );
             Panel::new_side_document("owner", &pdf, crate::harness::spawn_inert(), cx)
         });
@@ -412,7 +412,7 @@ mod tests {
         );
         panel.update(vcx, |panel, cx| {
             let mut updated = panel.document_snapshot(cx).unwrap().page;
-            let mut bytes = include_bytes!("../../../assets/previews/pdf-preview.pdf").to_vec();
+            let mut bytes = include_bytes!("../../../../../assets/previews/pdf-preview.pdf").to_vec();
             bytes.extend_from_slice(b"\n% updated panel\n");
             updated.pdf_data = Some(base64::engine::general_purpose::STANDARD.encode(bytes));
             panel.update_side_document(&updated, cx);

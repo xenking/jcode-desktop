@@ -422,7 +422,7 @@ pub(crate) const SHOWCASE_INSTANCE: &str = "jcode.showcase#main";
 /// documentation and as the offline screenshot fixture.
 pub(crate) fn showcase_messages() -> Vec<ProviderMessage> {
     use base64::Engine;
-    let png = include_bytes!("../../../assets/previews/image-preview.png");
+    let png = include_bytes!("../../../../../assets/previews/image-preview.png");
     let data = base64::engine::general_purpose::STANDARD.encode(png);
     let manifest = serde_json::json!({
         "schema": jcode_applet_types::SCHEMA,

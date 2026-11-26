@@ -28,7 +28,7 @@ pub(crate) fn read_paste(_cx: &gpui::App) -> Result<ClipboardContent, String> {
         return classify_paste(Vec::new(), || {
             from_bytes(
                 "image/png".into(),
-                include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                include_bytes!("../../../../assets/previews/image-preview.png").to_vec(),
             )
             .map(Some)
         });

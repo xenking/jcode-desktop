@@ -85,7 +85,7 @@ mod tests {
         let (host, vcx) = cx.add_window_view(|_, cx| MarkdownHost {
             source: format!(
                 "```diff\n{}```",
-                include_str!("../../../assets/previews/change-review.diff")
+                include_str!("../../../../assets/previews/change-review.diff")
             ),
             selection: cx.new(TextSelection::new),
         });

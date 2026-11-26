@@ -2,23 +2,35 @@
 
 mod ack;
 mod account_status;
+#[path = "applets/applet_host.rs"]
 mod applet_host;
+#[path = "applets/applet_runtime.rs"]
 mod applet_runtime;
+#[path = "applets/applet_surface.rs"]
 mod applet_surface;
+#[path = "applets/applet_view.rs"]
 mod applet_view;
+#[path = "host/application_menu.rs"]
 mod application_menu;
 mod background_probe;
 mod build_info;
+#[path = "applets/bundled_applets.rs"]
 mod bundled_applets;
 mod changelog;
+#[path = "media/clipboard_image.rs"]
 mod clipboard_image;
 mod code_block;
+#[path = "documents/code_editor.rs"]
 mod code_editor;
 mod commands;
 #[cfg(unix)]
+#[path = "host/desktop_control.rs"]
 mod desktop_control;
+#[path = "documents/diff_block.rs"]
 mod diff_block;
+#[path = "documents/diff_review_content.rs"]
 mod diff_review_content;
+#[path = "documents/diff_view.rs"]
 mod diff_view;
 mod effort;
 mod effort_icon;
@@ -26,11 +38,15 @@ mod speed_icon;
 mod example_prompts;
 mod fixture_control_targets;
 mod fps_counter;
+#[path = "documents/html_preview.rs"]
 mod html_preview;
+#[path = "media/image_chip.rs"]
 mod image_chip;
+#[path = "media/image_modal.rs"]
 mod image_modal;
 #[cfg(target_os = "macos")]
 mod ime_log;
+#[path = "media/inline_image.rs"]
 mod inline_image;
 mod input;
 mod keyboard;
@@ -38,24 +54,31 @@ mod menu;
 mod modal_layer;
 mod live_profile;
 mod markdown;
+#[path = "documents/markdown_inline_code.rs"]
 mod markdown_inline_code;
 pub mod memory;
 mod mode_catalog;
+#[path = "documents/native_mermaid.rs"]
 mod native_mermaid;
 #[cfg(test)]
+#[path = "documents/native_mermaid_integration_tests.rs"]
 mod native_mermaid_integration_tests;
 mod openrig_feed;
 mod panel;
 mod panel_item;
+#[path = "documents/pdf_viewer.rs"]
 mod pdf_viewer;
 mod performance;
 mod persisted_history;
 mod popover;
+#[path = "host/preview_control.rs"]
 mod preview_control;
 pub mod preview_state;
+#[path = "media/prompt_images.rs"]
 mod prompt_images;
 mod provider_mark;
 mod publish;
+#[path = "host/restart_spawn.rs"]
 mod restart_spawn;
 mod sound_events;
 mod sounds;
@@ -68,10 +91,12 @@ mod tool_icon;
 mod transcript_scroll;
 mod ui_actions;
 #[cfg(unix)]
+#[path = "host/unix_listener_ready.rs"]
 mod unix_listener_ready;
 pub mod update_entry;
 mod update_notes;
 mod updates;
+#[path = "host/window_caption.rs"]
 mod window_caption;
 mod workspace;
 mod workspace_command_parse;

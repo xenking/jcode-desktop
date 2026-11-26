@@ -17,15 +17,15 @@ const BUNDLED: &[Bundled] = &[Bundled {
     files: &[
         (
             "applet.json",
-            include_str!("../../../applets/gmail/applet.json"),
+            include_str!("../../../../applets/gmail/applet.json"),
         ),
         (
             "provider.py",
-            include_str!("../../../applets/gmail/provider.py"),
+            include_str!("../../../../applets/gmail/provider.py"),
         ),
         (
             "README.md",
-            include_str!("../../../applets/gmail/README.md"),
+            include_str!("../../../../applets/gmail/README.md"),
         ),
     ],
 }];

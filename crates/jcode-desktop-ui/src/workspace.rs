@@ -13,7 +13,7 @@ mod control_tests;
 mod file_editor_tests;
 
 #[cfg(test)]
-#[path = "workspace_terminal_tests.rs"]
+#[path = "workspace/terminal/workspace_terminal_tests.rs"]
 mod terminal_tests;
 
 #[path = "workspace/controls/workspace_control.rs"]
@@ -25,10 +25,10 @@ mod commands;
 #[path = "workspace_account_sign_in.rs"]
 mod account_sign_in;
 
-#[path = "workspace_applets.rs"]
+#[path = "workspace/applets/workspace_applets.rs"]
 pub(crate) mod applets;
 
-#[path = "workspace_applet_surfaces.rs"]
+#[path = "workspace/applets/workspace_applet_surfaces.rs"]
 mod applet_surfaces;
 #[path = "workspace_side_panel.rs"]
 mod side_panel;

@@ -474,7 +474,7 @@ fn node(
                 })
                 .child(
                     svg()
-                        .data(include_bytes!("../../../assets/icons/todo-check.svg").as_slice())
+                        .data(include_bytes!("../../../../assets/icons/todo-check.svg").as_slice())
                         .size(px(9.)),
                 )
                 .child(count.clone())

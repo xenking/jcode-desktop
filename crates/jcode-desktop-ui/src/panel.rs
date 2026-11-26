@@ -125,7 +125,7 @@ mod overlay_keys;
 mod display_tests;
 
 #[cfg(test)]
-#[path = "panel_applet_interaction_tests.rs"]
+#[path = "panel/applets/panel_applet_interaction_tests.rs"]
 mod applet_interaction_tests;
 
 #[cfg(test)]
@@ -148,7 +148,7 @@ mod provisional_history_tests;
 mod reveal;
 pub(crate) use reveal::PreviewScroll;
 
-#[path = "panel_text_document.rs"]
+#[path = "panel/documents/panel_text_document.rs"]
 mod text_document;
 
 #[path = "panel/recovery/panel_snapshot.rs"]
@@ -272,7 +272,7 @@ mod stream_reveal;
 #[path = "panel_stream_scroll_tests.rs"]
 mod stream_scroll_tests;
 pub use startup::StartupLayout;
-#[path = "panel_applet.rs"]
+#[path = "panel/applets/panel_applet.rs"]
 pub(crate) mod applet_panel;
 #[path = "panel_demo_replay.rs"]
 pub(crate) mod demo_replay;
@@ -288,7 +288,7 @@ pub(crate) mod openrig;
 pub(crate) mod orchestration;
 #[path = "panel_response_stats.rs"]
 mod response_stats;
-#[path = "panel_side_document.rs"]
+#[path = "panel/documents/panel_side_document.rs"]
 mod side_document;
 #[path = "panel_tab_outline.rs"]
 mod tab_outline;

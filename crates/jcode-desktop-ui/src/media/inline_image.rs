@@ -507,7 +507,7 @@ mod tests {
             width: 800.0,
             image: crate::image_cache::encoded(
                 ImageFormat::Png,
-                include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                include_bytes!("../../../../assets/previews/image-preview.png").to_vec(),
             ),
             scroll: ScrollHandle::new(),
             revision: 0,
