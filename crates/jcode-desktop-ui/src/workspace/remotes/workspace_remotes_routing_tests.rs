@@ -54,6 +54,22 @@ fn fail(
     vcx.run_until_parked();
 }
 
+#[test]
+fn labels_published_by_another_thread_never_rename_this_threads_machine() {
+    let destination = |label: &str| paired::Destination {
+        id: WORK_ID.into(),
+        endpoint: "https://work.example".into(),
+        label: label.into(),
+        working_dir: "/work/default".into(),
+    };
+    machines::publish_paired_labels(&[destination("WORK")]);
+    // A parallel test building its own workspace publishes its own machines.
+    std::thread::spawn(|| machines::publish_paired_labels(&[]))
+        .join()
+        .unwrap();
+    assert_eq!(machines::machine_label(WORK_HOST), "WORK");
+}
+
 #[gpui::test]
 fn paired_machine_creates_sessions_in_multiple_remote_projects(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx, commands) = paired_workspace(cx);

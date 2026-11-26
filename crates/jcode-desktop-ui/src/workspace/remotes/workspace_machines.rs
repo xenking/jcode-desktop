@@ -25,20 +25,29 @@ pub(super) fn new_session_host(host: &str) -> &str {
 
 /// Labels of paired machines, so every surface names one by what the owner
 /// called it and never by its internal `paired:<id>`.
-static PAIRED_LABELS: std::sync::RwLock<Vec<(String, String)>> = std::sync::RwLock::new(Vec::new());
+///
+/// Per thread: the UI thread publishes and reads them all, and a process-wide
+/// list let parallel tests overwrite each other's machines.
+thread_local! {
+    static PAIRED_LABELS: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
 pub(super) fn publish_paired_labels(paired: &[paired::Destination]) {
-    if let Ok(mut labels) = PAIRED_LABELS.write() {
+    PAIRED_LABELS.with_borrow_mut(|labels| {
         *labels = paired.iter().map(|d| (d.host(), d.label.clone())).collect();
-    }
+    });
 }
 
 pub(super) fn machine_label(host: &str) -> String {
     if crate::remote_targets::paired_id(host).is_some() {
         return PAIRED_LABELS
-            .read()
-            .ok()
-            .and_then(|labels| labels.iter().find(|(id, _)| id == host).map(|(_, l)| l.clone()))
+            .with_borrow(|labels| {
+                labels
+                    .iter()
+                    .find(|(id, _)| id == host)
+                    .map(|(_, label)| label.clone())
+            })
             .unwrap_or_else(|| "Paired machine".to_owned());
     }
     Destination::parse(new_session_host(host)).map_or(host, Destination::label).to_owned()
