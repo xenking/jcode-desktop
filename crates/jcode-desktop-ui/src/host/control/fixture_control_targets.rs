@@ -188,6 +188,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector.starts_with("agent-message:")
         || selector == "side-question-promote"
         || (side_questions() && selector.starts_with("side-question-"))
+        || matches!(selector, "sidebar-resize-drag" | "sidebar-resize-up")
         || (ask_fixture()
             && matches!(selector, "ask-resize-drag" | "ask-resize-up" | "ask-resize-reset"))
         || ((voice_recording() || voice_soniox()) && selector == "composer.voice")
@@ -286,6 +287,8 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
         selector.strip_prefix("hover:").unwrap()
     } else if matches!(selector, "composer:resize-drag" | "composer:resize-reset") {
         "composer:resize"
+    } else if matches!(selector, "sidebar-resize-drag" | "sidebar-resize-up") {
+        "sidebar-resize"
     } else if matches!(selector, "side-question-resize-up" | "side-question-resize-down") {
         "side-question-resize"
     } else if matches!(selector, "ask-resize-drag" | "ask-resize-up" | "ask-resize-reset") {
@@ -301,6 +304,46 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
     let Some(position) = locate(marker, session, window, cx) else {
         return false;
     };
+    if let Some(held) = selector.strip_prefix("sidebar-resize-") {
+        // Grab the handle level with the docked composer, beside the usage
+        // strip, and drag it right; `up` releases where the handle now is.
+        let grab = point(position.x, window.viewport_size().height - px(40.));
+        let mouse_down = |window: &mut Window, cx: &mut App| {
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: grab,
+                    click_count: 1,
+                    ..Default::default()
+                }),
+                cx,
+            );
+            window.refresh();
+            window.draw(cx).clear(cx);
+        };
+        if held == "drag" {
+            mouse_down(window, cx);
+            window.dispatch_event(
+                PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position: grab + point(px(80.), px(0.)),
+                    pressed_button: Some(MouseButton::Left),
+                    ..Default::default()
+                }),
+                cx,
+            );
+        } else {
+            window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: grab,
+                    click_count: 1,
+                    ..Default::default()
+                }),
+                cx,
+            );
+        }
+        return true;
+    }
     if selector == "gallery:wheel" {
         window.dispatch_event(
             PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {

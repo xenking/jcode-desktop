@@ -33,6 +33,10 @@ impl Workspace {
             .bottom_0()
             .left(px(self.sidebar_custom_width - 4.0))
             .w(px(8.0))
+            .children(crate::fixture_control_targets::marker(
+                || "sidebar-resize".into(),
+                || None,
+            ))
             .cursor(gpui::CursorStyle::ResizeLeftRight)
             .on_mouse_down(
                 gpui::MouseButton::Left,
@@ -258,62 +262,84 @@ mod tests {
         );
     }
 
-    /// The handle is grabbable along its whole height, also beside the usage
-    /// strip at the bottom of the sidebar: nothing painted there may sit over
-    /// its hit area.
+    /// The handle is grabbable along its whole height in every layout: a
+    /// docked composer blocks the mouse across its pane's full width, and in
+    /// the folder layout that pane starts exactly at the sidebar's edge, so a
+    /// handle painted before the pane lost its inner half at the composer's
+    /// level (beside the usage strip). Local and paired-remote sessions.
     #[gpui::test]
-    fn the_resize_handle_is_grabbable_beside_the_usage_strip(cx: &mut gpui::TestAppContext) {
+    fn the_resize_handle_is_grabbable_beside_a_docked_composer(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             let mut accounts = crate::accounts::parse(
-                r#"{"providers":[{"id":"claude","status":"available"},{"id":"openai","status":"available"},{"id":"opencode-go","display_name":"OpenCode Go","status":"available"}]}"#,
+                r#"{"providers":[{"id":"claude","status":"available"},{"id":"openai","status":"available"}]}"#,
             )
             .unwrap();
             crate::accounts::merge_usage_for_tests(
                 &mut accounts,
-                r#"{"providers":[{"provider_name":"Anthropic (Claude)","limits":[{"name":"7-day window","usage_percent":26.0}],"error":null},{"provider_name":"OpenAI (ChatGPT)","limits":[{"name":"5-hour window","usage_percent":100.0}],"error":null},{"provider_name":"OpenCode Go","limits":[{"name":"5-hour window","usage_percent":100.0}],"error":null}]}"#,
+                r#"{"providers":[{"provider_name":"Anthropic (Claude)","limits":[{"name":"7-day window","usage_percent":26.0}],"error":null},{"provider_name":"OpenAI (ChatGPT)","limits":[{"name":"5-hour window","usage_percent":100.0}],"error":null}]}"#,
             );
             cx.set_global(crate::account_status::StatusAccounts(accounts));
         });
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut w = Workspace::for_test(learning::Coach::new(), cx);
-            w.layout_mode = crate::config::LayoutMode::Normal;
-            w.push_test_panel("Resize", cx);
-            w
-        });
-        let handle = vcx.update(|window, _| window.window_handle());
-        vcx.simulate_window_resize(handle, gpui::size(px(1600.), px(900.)));
-        vcx.run_until_parked();
-        let strip = vcx
-            .debug_bounds("sidebar-quota-strip")
-            .expect("the usage strip");
-        let edge = vcx.debug_bounds("sidebar-resize-handle").unwrap();
-        assert!(
-            strip.bottom() > edge.top(),
-            "the strip sits within the handle's span"
-        );
-        let sidebar = vcx.debug_bounds("sidebar").unwrap();
-        assert!(
-            edge.left() <= sidebar.right() && sidebar.right() <= edge.right(),
-            "the handle straddles the sidebar's right edge: {edge:?} {sidebar:?}"
-        );
-        let mut ys = vec![
-            strip.center().y,
-            strip.top(),
-            strip.bottom(),
-            edge.bottom() - px(2.),
-        ];
-        ys.extend((0..8).map(|i| edge.top() + (edge.size.height / 8.) * (i as f32) + px(3.)));
-        for y in ys {
-            for x in [edge.left() + px(1.), edge.center().x, edge.right() - px(1.)] {
-                let at = gpui::point(x, y);
-                vcx.simulate_mouse_down(at, gpui::MouseButton::Left, Default::default());
+        let remote = "paired://0123456789abcdef0123456789abcdef/session_work";
+        for (mode, session) in [
+            (crate::config::LayoutMode::FolderTabs, "local"),
+            (crate::config::LayoutMode::FolderTabs, remote),
+            (crate::config::LayoutMode::Normal, "local"),
+        ] {
+            let (workspace, vcx) = cx.add_window_view(|_, cx| {
+                let mut w = Workspace::for_test(learning::Coach::new(), cx);
+                w.layout_mode = mode;
+                w.push_test_panel(session, cx);
+                w
+            });
+            let handle = vcx.update(|window, _| window.window_handle());
+            vcx.simulate_window_resize(handle, gpui::size(px(1400.), px(900.)));
+            vcx.run_until_parked();
+            let panel = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
+            panel.update(vcx, |panel, cx| panel.test_settled_conversation(40, cx));
+            vcx.run_until_parked();
+            for _ in 0..120 {
+                if vcx.debug_bounds("composer-dock").is_some() {
+                    break;
+                }
+                vcx.executor()
+                    .advance_clock(std::time::Duration::from_millis(16));
+                vcx.update(|window, cx| window.simulate_next_frame(cx));
                 vcx.run_until_parked();
-                workspace.read_with(vcx, |w, _| {
-                    assert!(w.sidebar_resizing, "the handle was not hit at {at:?}")
-                });
-                vcx.simulate_mouse_up(at, gpui::MouseButton::Left, Default::default());
-                vcx.run_until_parked();
-                workspace.read_with(vcx, |w, _| assert!(!w.sidebar_resizing));
+            }
+            let dock = vcx
+                .debug_bounds("composer-dock")
+                .expect("a docked composer");
+            let edge = vcx.debug_bounds("sidebar-resize-handle").unwrap();
+            let strip = vcx
+                .debug_bounds("sidebar-quota-strip")
+                .expect("the usage strip");
+            assert!(
+                strip.bottom() > dock.top() && dock.top() > edge.top(),
+                "the composer sits beside the strip within the handle's span: {strip:?} {dock:?}"
+            );
+            let sidebar = vcx.debug_bounds("sidebar").unwrap();
+            assert!(
+                edge.left() <= sidebar.right() && sidebar.right() <= edge.right(),
+                "the handle straddles the sidebar's right edge: {edge:?} {sidebar:?}"
+            );
+            let mut ys = vec![strip.center().y, dock.top(), dock.bottom() - px(2.)];
+            ys.extend((0..16).map(|i| edge.top() + (edge.size.height / 16.) * (i as f32) + px(3.)));
+            for y in ys {
+                for x in [edge.left() + px(1.), sidebar.right(), edge.right() - px(1.)] {
+                    let at = gpui::point(x, y);
+                    vcx.simulate_mouse_down(at, gpui::MouseButton::Left, Default::default());
+                    vcx.run_until_parked();
+                    workspace.read_with(vcx, |w, _| {
+                        assert!(
+                            w.sidebar_resizing,
+                            "the handle was not hit at {at:?} ({mode:?}, {session})"
+                        )
+                    });
+                    vcx.simulate_mouse_up(at, gpui::MouseButton::Left, Default::default());
+                    vcx.run_until_parked();
+                    workspace.read_with(vcx, |w, _| assert!(!w.sidebar_resizing));
+                }
             }
         }
     }
