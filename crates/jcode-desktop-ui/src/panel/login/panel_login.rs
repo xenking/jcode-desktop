@@ -122,6 +122,22 @@ fn completed_login_copy(
     }
 }
 
+/// What a user runs on a remote machine to give its daemon an account.
+const REMOTE_LOGIN_COMMAND: &str = "jcode login";
+
+/// Why the model list is empty.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EmptyModels {
+    /// The runtime has not answered yet.
+    Loading,
+    /// The session's connection is down, with the reason.
+    Lost(String),
+    /// The runtime was asked and failed, with its error.
+    Failed(String),
+    /// The runtime answered and has no account that can serve a model.
+    NoAccounts,
+}
+
 impl Panel {
     // The model list popover shares the login picker's overlay slot: each
     // offers the other as its way out, so they live together.
@@ -140,7 +156,12 @@ impl Panel {
         cx.notify();
     }
 
-    pub(super) fn open_recovery_models(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn set_models_error(&mut self, reason: String, cx: &mut Context<Self>) {
+        self.models_error = Some(reason);
+        cx.notify();
+    }
+
+    pub(crate) fn open_recovery_models(&mut self, cx: &mut Context<Self>) {
         self.login = None;
         if self.available_models.is_empty() {
             self.recovery_picker_open = true;
@@ -151,70 +172,124 @@ impl Panel {
         cx.notify();
     }
 
+    /// Why the model list is empty. An empty picker must never be silent: each
+    /// cause has its own sentence, and a remote machine is named, not hidden.
+    pub(crate) fn empty_models(&self) -> EmptyModels {
+        if let Some(reason) = self.status.strip_prefix("lost:") {
+            EmptyModels::Lost(reason.trim().to_owned())
+        } else if let Some(error) = &self.models_error {
+            EmptyModels::Failed(error.clone())
+        } else if !self.models_loaded {
+            EmptyModels::Loading
+        } else {
+            EmptyModels::NoAccounts
+        }
+    }
+
+    pub(crate) fn empty_models_message(&self) -> String {
+        let machine = self.remote_machine_label();
+        let on = machine.as_deref().map(|name| format!(" on {name}")).unwrap_or_default();
+        match self.empty_models() {
+            EmptyModels::Loading => format!("Loading the model list{on}…"),
+            EmptyModels::Lost(reason) => {
+                let to = machine.as_deref().map(|name| format!(" to {name}")).unwrap_or_default();
+                format!("Not connected{to}, so its models cannot be listed. {reason}")
+            }
+            EmptyModels::Failed(error) => format!("Could not load the model list{on}: {error}"),
+            EmptyModels::NoAccounts => match machine {
+                Some(name) => format!(
+                    "No accounts on {name}. Logins belong to each machine: run `{REMOTE_LOGIN_COMMAND}` on {name}, then choose Refresh."
+                ),
+                None => "No accounts are connected on this computer.".to_owned(),
+            },
+        }
+    }
+
     pub(super) fn render_recovery_model_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::global();
+        let state = self.empty_models();
+        let remote = self.remote_machine_label().is_some();
+        let action = |id: &'static str, label: &'static str| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .cursor_pointer()
+                .hover(|el| el.bg(theme.ACCENT_DIM))
+                .child(label)
+        };
+        let connected = !matches!(state, EmptyModels::Lost(_));
         div()
+            .id("recovery-model-picker")
             .debug_selector(|| "recovery-model-picker".into())
-            .flex_none()
+            .w_full()
+            .min_w_0()
+            .occlude()
+            .p_2()
+            .rounded_lg()
+            .bg(theme.PANEL_BG)
+            .border_1()
+            .border_color(theme.PANEL_BORDER)
             .flex()
             .flex_col()
             .gap_1()
-            .px_2()
-            .py_1p5()
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            .bg(Theme::global().HEADER_BG)
             .text_size(px(12.))
+            .text_color(theme.TEXT_DIM)
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .flex()
                     .justify_between()
+                    .text_color(theme.TEXT)
                     .child("Choose a model")
-                    .child(
-                        div()
-                            .id("recovery-model-close")
-                            .debug_selector(|| "recovery-model-close".into())
-                            .cursor_pointer()
-                            .child("Close")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.recovery_picker_open = false;
-                                cx.notify();
-                            })),
-                    ),
+                    .child(action("recovery-model-close", "Close").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.recovery_picker_open = false;
+                            cx.notify();
+                        },
+                    ))),
             )
-            .when(self.available_models.is_empty(), |el| {
-                el.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(
-                            div()
-                                .id("recovery-connect-account")
-                                .debug_selector(|| "recovery-connect-account".into())
-                                .px_2()
-                                .py_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .hover(|el| el.bg(Theme::global().ACCENT_DIM))
-                                .child("Connect account")
+            .child(
+                div()
+                    .debug_selector(|| "recovery-model-message".into())
+                    .child(self.empty_models_message()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    // A login belongs to the machine it runs on. Desktop signs in
+                    // on this computer only, so a remote machine gets the command
+                    // to run there, never a button that would sign in locally.
+                    .when(!remote && connected, |el| {
+                        el.child(
+                            action("recovery-connect-account", "Connect account")
                                 .on_click(cx.listener(|this, _, _, cx| this.open_login_picker(cx))),
                         )
-                        .child(
-                            div()
-                                .id("recovery-refresh-models")
-                                .debug_selector(|| "recovery-refresh-models".into())
-                                .px_2()
-                                .py_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .hover(|el| el.bg(Theme::global().ACCENT_DIM))
-                                .child("Refresh choices")
-                                .on_click(cx.listener(|this, _, _, _| {
-                                    this.bridge.send(Command::RefreshRuntime {
-                                        session_id: this.session_id.clone(),
-                                    });
-                                })),
-                        ),
-                )
-            })
+                    })
+                    .when(remote && matches!(state, EmptyModels::NoAccounts), |el| {
+                        el.child(action("recovery-copy-login", "Copy login command").on_click(
+                            |_, _, cx| {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                    REMOTE_LOGIN_COMMAND.to_owned(),
+                                ));
+                            },
+                        ))
+                    })
+                    .when(connected, |el| {
+                        el.child(action("recovery-refresh-models", "Refresh choices").on_click(
+                            cx.listener(|this, _, _, _| {
+                                this.models_error = None;
+                                this.bridge.send(Command::RefreshRuntime {
+                                    session_id: this.session_id.clone(),
+                                });
+                            }),
+                        ))
+                    }),
+            )
             .into_any_element()
     }
 
@@ -330,10 +405,14 @@ impl Panel {
             live_errors: HashMap::new(),
             live_tasks: Vec::new(),
         });
-        // Local credentials cannot authenticate an SSH-hosted session.
+        // Logins belong to each machine, and Desktop signs in on this computer
+        // only. Never start a local sign-in for a remote session, and never
+        // copy credentials across: say what to run on the machine instead.
         if self.login_is_remote() {
-            self.login.as_mut().unwrap().error = Some(
-                "This session runs on another machine. Desktop login currently connects accounts on this computer only. Your remote credentials have not been changed.".into());
+            let machine = self.remote_machine_label().unwrap_or_else(|| "another machine".into());
+            self.login.as_mut().unwrap().error = Some(format!(
+                "This session runs on {machine}. Logins belong to each machine, and Desktop signs in on this computer only. To add an account on {machine}, run `{REMOTE_LOGIN_COMMAND}` there. Nothing was changed on either machine."
+            ));
         } else {
             self.refresh_login_status(cx);
         }
@@ -1483,7 +1562,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             assert!(panel.handle_slash_command("/login openai", cx));
             let state = panel.login.as_ref().unwrap();
-            assert!(state.error.as_ref().unwrap().contains("another machine"));
+            assert!(state.error.as_ref().unwrap().contains("test-host") && state.error.as_ref().unwrap().contains("jcode login"));
             assert!(state.provider.is_none());
             assert!(state.flow.is_none());
             assert!(state.task.is_none());

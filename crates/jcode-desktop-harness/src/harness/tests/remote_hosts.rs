@@ -5,6 +5,7 @@ include!("recovery_acceptance.rs");
 include!("history_recovery.rs");
 include!("protocol_recovery.rs");
 include!("turn_retry.rs");
+include!("remote_gone.rs");
 use jcode_sdk::api::{ApiRequest, ClientFrame, ServerFrame, read_frame, write_frame};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

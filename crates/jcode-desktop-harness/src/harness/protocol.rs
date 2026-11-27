@@ -221,6 +221,17 @@ pub enum Update {
         session_id: String,
         reason: String,
     },
+    /// The machine answered and does not have this session, in its list or on
+    /// disk. Retrying cannot help: the panel and its list entry go away.
+    SessionGone {
+        session_id: String,
+    },
+    /// The runtime could not list its models (the request failed, not "no
+    /// accounts"). The picker shows the error instead of an empty list.
+    ModelCatalogFailed {
+        session_id: String,
+        reason: String,
+    },
     /// The daemon is still publishing the live session's runtime.
     SessionAttaching {
         session_id: String,

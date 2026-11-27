@@ -126,7 +126,7 @@ impl Workspace {
         self.mount_session_draft(
             request_id.clone(),
             directory,
-            if machines::managed_destination(&host) {
+            if machines::named_destination(&host) {
                 machines::machine_label(&host).into()
             } else {
                 format!("Connecting to {host}…")
@@ -303,7 +303,7 @@ impl Workspace {
             panel.update(cx, |panel, cx| {
                 panel.restart_session_request(
                     request_id.clone(),
-                    format!("Retrying connection to {host}…"),
+                    format!("Retrying connection to {}…", machines::machine_label(&host)),
                     cx,
                 );
             });

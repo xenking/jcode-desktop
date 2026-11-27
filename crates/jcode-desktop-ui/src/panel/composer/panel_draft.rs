@@ -28,6 +28,7 @@ impl Panel {
         }
         let models = available_model_names(&routes);
         self.available_models = models.clone();
+        self.models_loaded = true;
         let panel = cx.weak_entity();
         cx.defer(move |cx| {
             let _ = panel.update(cx, |panel, cx| {

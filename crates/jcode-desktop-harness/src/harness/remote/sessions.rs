@@ -10,6 +10,17 @@ use crate::harness::protocol::{Command, Update};
 use crate::harness::updates::UpdateSender;
 use crate::platform::screenshot_mode;
 
+/// How a destination reads in a message: a paired machine by the label it was
+/// paired under, never by its `paired:<id>`.
+fn display_host(host: &str) -> String {
+    if crate::remote_targets::paired_id(host).is_some() {
+        return crate::paired::find(host)
+            .map(|destination| destination.label)
+            .unwrap_or_else(|_| "this machine".into());
+    }
+    host.trim().to_owned()
+}
+
 pub(in crate::harness) fn list_remote_sessions(
     host: &str,
     connect: impl FnOnce(&str) -> jcode_sdk::Result<JcodeClient>,
@@ -126,7 +137,7 @@ pub(in crate::harness) fn create_remote_session(
         Ok((session, client)) => {
             let _ = updates.send(Update::RemoteStatus {
                 host: host.trim().to_owned(),
-                message: format!("Connected to {}", host.trim()),
+                message: format!("Connected to {}", display_host(&host)),
                 request_id: request_id.clone(),
                 failed: false,
                 failure: None,

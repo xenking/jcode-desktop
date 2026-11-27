@@ -755,6 +755,9 @@ pub struct Workspace {
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
     focus_pending: bool,
+    /// Sessions their machine reported gone. Their panels leave on the next
+    /// render, which has the Window a panel's removal needs.
+    gone_sessions: Vec<String>,
     /// Active panel when highlight and keyboard focus were last reconciled.
     focus_synced_active: Option<gpui::EntityId>,
     /// When the last touchpad pan delta arrived. Drives the gesture reticle

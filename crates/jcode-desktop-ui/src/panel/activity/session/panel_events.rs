@@ -720,6 +720,8 @@ impl Panel {
                 }
                 let models = available_model_names(routes);
                 self.available_models = models.clone();
+                self.models_loaded = true;
+                self.models_error = None;
                 let current = self
                     .model
                     .as_ref()

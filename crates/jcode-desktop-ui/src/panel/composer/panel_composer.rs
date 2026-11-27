@@ -55,6 +55,24 @@ impl Panel {
         (pretty_model_label(model), effort)
     }
 
+    /// The machine a remote session runs on, by the name its owner gave it.
+    /// Never the internal destination id.
+    pub(crate) fn remote_machine_label(&self) -> Option<String> {
+        crate::harness::remote_host(&self.session_id)
+            .map(|host| crate::workspace::machines::machine_label(&host))
+    }
+
+    /// The one-line notice for a remote session whose connection dropped.
+    pub(crate) fn remote_lost_notice(&self) -> Option<String> {
+        let reason = self.status.strip_prefix("lost:")?.trim();
+        let machine = self.remote_machine_label()?;
+        Some(if reason.is_empty() {
+            format!("Lost connection to {machine}")
+        } else {
+            format!("Lost connection to {machine}: {reason}")
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn test_composer_identity(&self) -> (String, Option<String>) {
         self.composer_identity()
@@ -81,13 +99,8 @@ impl Panel {
                 .then(|| "default".to_owned())
         });
         let remote_machine = (!screenshot_mode)
-            .then(|| crate::harness::remote_host(&self.session_id))
-            .flatten()
-            .map(|host| {
-                crate::managed_cloud::Destination::parse(&host)
-                    .map(|target| target.label().to_owned())
-                    .unwrap_or(host)
-            });
+            .then(|| self.remote_machine_label())
+            .flatten();
         let location = self
             .working_dir
             .as_deref()
@@ -534,6 +547,8 @@ impl Panel {
                     .child(search.clone())
                     .into_any_element()
             }),
+            self.recovery_picker_open
+                .then(|| self.render_recovery_model_picker(cx)),
         ];
         div()
             .relative()
@@ -628,9 +643,6 @@ impl Panel {
                     .px_2()
                     .pb(px(COMPOSER_BOTTOM_INSET))
                     .bg(veil(DOCK_VEIL_ALPHA))
-                    .when(self.recovery_picker_open, |el| {
-                        el.child(self.render_recovery_model_picker(cx))
-                    })
                     .children(self.render_voice_overlay(window, cx))
                     .children(self.render_preview_badge(cx))
                     .child(self.render_composer_stack(input_bounds, true, window, cx)),

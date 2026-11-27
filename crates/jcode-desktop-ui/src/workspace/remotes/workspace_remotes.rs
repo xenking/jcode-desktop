@@ -62,6 +62,15 @@ impl Workspace {
         publish_paired_labels(&self.remotes.paired);
     }
 
+    /// Where new sessions start on a paired machine. Never a local path.
+    fn paired_project(&self, host: &str) -> String {
+        self.remotes
+            .paired
+            .iter()
+            .find(|machine| machine.host() == host)
+            .map_or_else(|| "~".to_owned(), |machine| machine.working_dir.clone())
+    }
+
     fn row_path(&self, host: &str, cx: &App) -> String {
         self.remotes
             .path_inputs
@@ -640,6 +649,7 @@ impl Workspace {
             .child(div().text_color(theme.TEXT_DIM).child(match host {
                 None => "Default directory on this computer".to_owned(),
                 Some(host) if managed_destination(host) => format!("{} · ~ (remote home)", machine_label(host)),
+                Some(host) if named_destination(host) => format!("{} · {}", machine_label(host), self.paired_project(host)),
                 Some(host) => format!("SSH · {host} · ~ (remote home)"),
             }))
             .when(host.is_some(), |el| el.child(
@@ -1268,6 +1278,14 @@ impl Workspace {
                 format!("{} · ~", machines::machine_label(host)),
                 format!("{} · ~ (remote home)", machines::machine_label(host)),
             ),
+            Some(host) if machines::named_destination(host) => {
+                let project = self.paired_project(host);
+                (
+                    include_bytes!("../../../../../assets/icons/computer.svg"),
+                    format!("{} · {}", machines::machine_label(host), path_tail(&project)),
+                    format!("{} · {project}", machines::machine_label(host)),
+                )
+            }
             Some(host) => (
                 include_bytes!("../../../../../assets/icons/ssh.svg"),
                 format!("{host} · ~"),
@@ -1346,3 +1364,7 @@ impl Workspace {
 #[cfg(test)]
 #[path = "workspace_remotes_routing_tests.rs"]
 mod cloud_routing_tests;
+
+#[cfg(test)]
+#[path = "workspace_remote_gone_tests.rs"]
+mod remote_gone_tests;

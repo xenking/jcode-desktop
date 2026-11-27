@@ -826,27 +826,19 @@ impl Render for Panel {
                     cx.stop_propagation();
                 }
             }))
-            .children(crate::harness::remote_host(&self.session_id).map(|host| {
-                let machine = match crate::managed_cloud::Destination::parse(&host) {
-                    Some(target) => target
-                        .name()
-                        .map_or_else(|| "Jcode Cloud".into(), |name| format!("Cloud · {name}")),
-                    None => format!("SSH · {host}"),
-                };
-                let label = match self.working_dir.as_deref().filter(|d| !d.is_empty()) {
-                    Some(dir) => format!("Running on {machine} · {dir}"),
-                    None => format!("Running on {machine}"),
-                };
+            // Remote is a normal state, shown by the machine chip beside the
+            // composer. Only a lost connection earns a full-width notice.
+            .children(self.remote_lost_notice().map(|notice| {
                 div()
-                    .debug_selector(|| "panel-remote-host".into())
+                    .debug_selector(|| "panel-remote-lost".into())
                     .flex_none()
                     .px_3()
                     .py_1()
                     .text_size(px(11.0))
-                    .text_color(theme.ACCENT)
-                    .bg(theme.ACCENT_DIM)
+                    .text_color(theme.ERROR)
+                    .bg(theme.wash(Ink::Error, 0.14))
                     .truncate()
-                    .child(label)
+                    .child(notice)
             }))
             .children(self.render_chat_blockers(active_error, window, cx))
             .children(publish_tracker)
@@ -1067,9 +1059,6 @@ impl Render for Panel {
                         )
                     }),
             )
-            .when(self.recovery_picker_open && !docked_composer, |el| {
-                el.child(self.render_recovery_model_picker(cx))
-            })
             .when(!docked_composer, |el| {
                 el.children(self.render_voice_overlay(window, cx))
                     .children(self.render_preview_badge(cx))

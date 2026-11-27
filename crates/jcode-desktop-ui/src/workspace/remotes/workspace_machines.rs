@@ -39,7 +39,10 @@ pub(super) fn publish_paired_labels(paired: &[paired::Destination]) {
     });
 }
 
-pub(super) fn machine_label(host: &str) -> String {
+/// What a destination is called on screen. A paired machine is named by its
+/// owner's label and never by its `paired:<id>`; an unknown one reads as a
+/// generic machine rather than leaking the id.
+pub(crate) fn machine_label(host: &str) -> String {
     if crate::remote_targets::paired_id(host).is_some() {
         return PAIRED_LABELS
             .with_borrow(|labels| {
@@ -51,6 +54,18 @@ pub(super) fn machine_label(host: &str) -> String {
             .unwrap_or_else(|| "Paired machine".to_owned());
     }
     Destination::parse(new_session_host(host)).map_or(host, Destination::label).to_owned()
+}
+
+/// Destinations whose name the owner chose: managed cloud and paired machines.
+pub(crate) fn named_destination(host: &str) -> bool {
+    managed_destination(host) || crate::remote_targets::paired_id(host).is_some()
+}
+
+/// The last component of a remote project path, for a compact chip.
+pub(crate) fn path_tail(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map_or_else(|| path.to_owned(), |name| name.to_string_lossy().into_owned())
 }
 
 /// A failed connect or a rejected edit, shown inside the machine's own row.

@@ -291,7 +291,7 @@ impl Workspace {
                             panel.set_title(machines::machine_label(host).to_owned(), cx);
                             format!("{} Your queued prompts are preserved.", machines::MANAGED_CLOUD_STARTING)
                         }
-                        Some(host) => format!("Reconnecting to {host}… Your queued prompts are preserved."),
+                        Some(host) => format!("Reconnecting to {}… Your queued prompts are preserved.", machines::machine_label(host)),
                         None => "Session creation failed: invalid saved remote destination. No local session was opened.".into(),
                     };
                     panel.set_status(status, cx);

@@ -255,6 +255,7 @@ mod image_preview;
 mod latest;
 #[path = "panel/login/panel_login.rs"]
 mod login;
+pub(crate) use login::EmptyModels;
 #[path = "panel/transcript/render/state/panel_preview.rs"]
 mod preview;
 #[path = "panel/composer/panel_prompt.rs"]
@@ -665,6 +666,10 @@ pub struct Panel {
     pub(crate) search_terms: Vec<String>,
     login: Option<login::LoginState>,
     available_models: Vec<String>,
+    /// The runtime has answered with a model list at least once, even an empty one.
+    models_loaded: bool,
+    /// The last request for the model list failed with this error.
+    models_error: Option<String>,
 }
 
 /// What the user chose for a draft before its session exists. The runtime

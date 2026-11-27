@@ -758,12 +758,75 @@ impl Workspace {
         cx.notify();
     }
 
+    /// A machine answered that it does not have this session. Drop it from the
+    /// list now and say so once; its panel leaves on the next render.
+    pub(super) fn session_gone(&mut self, session_id: &str) {
+        let title = self
+            .sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .and_then(|session| session.title.clone())
+            .filter(|title| !title.trim().is_empty());
+        self.sessions.retain(|session| session.session_id != session_id);
+        self.sidebar_closed_sessions.insert(session_id.to_owned());
+        let machine = harness::remote_host(session_id)
+            .map_or_else(|| "its machine".to_owned(), |host| machines::machine_label(&host));
+        self.status = format!(
+            "{} no longer exists on {machine}. It was removed from the list.",
+            title.map_or_else(|| "A session".to_owned(), |title| format!("\"{title}\""))
+        );
+        if !self.gone_sessions.iter().any(|id| id == session_id) {
+            self.gone_sessions.push(session_id.to_owned());
+        }
+    }
+
+    /// Close the panels of gone sessions as if the user had closed them. A
+    /// standalone window exists only for its session, so it closes too.
+    fn dismiss_gone_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for session_id in std::mem::take(&mut self.gone_sessions) {
+            let Some(closed) = self
+                .slots
+                .iter()
+                .position(|slot| !slot.closing && slot.panel.session_id(cx) == session_id)
+            else {
+                continue;
+            };
+            if self.single_panel {
+                window.remove_window();
+                return;
+            }
+            let closed_id = self.slots[closed].panel.entity_id();
+            let row = self.slots[closed].row;
+            self.slots[closed].closing = true;
+            self.slots[closed].close_progress.set(0.0, Instant::now());
+            self.bridge.send(Command::Unwatch { session_id });
+            if self.previous == Some(closed_id) {
+                self.previous = None;
+            }
+            let remaining: Vec<_> = self
+                .row_indices(row)
+                .filter(|&index| !self.slots[index].closing)
+                .collect();
+            if self.active == closed {
+                self.active = focus_after_close(closed, &remaining);
+                self.focus_pending = true;
+            }
+            if self.row_focus[row] == Some(closed_id) {
+                self.row_focus[row] = (!remaining.is_empty())
+                    .then(|| self.slots[focus_after_close(closed, &remaining)].panel.entity_id());
+            }
+            self.retarget_camera();
+            cx.notify();
+        }
+    }
+
     pub(super) fn remove_finished_closing_panels(
         &mut self,
         now: Instant,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.dismiss_gone_sessions(window, cx);
         let active_id = self
             .slots
             .get(self.active)

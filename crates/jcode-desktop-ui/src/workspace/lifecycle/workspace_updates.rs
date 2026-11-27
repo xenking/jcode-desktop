@@ -1016,6 +1016,17 @@ impl Workspace {
                     }
                 }
             }
+            Update::SessionGone { session_id } => self.session_gone(&session_id),
+            Update::ModelCatalogFailed { session_id, reason } => {
+                for slot in &self.slots {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
+                            panel.set_models_error(reason.clone(), cx);
+                        });
+                        break;
+                    }
+                }
+            }
             Update::SessionAttaching { session_id } => {
                 for slot in &self.slots {
                     if slot.panel.session_id(cx) == session_id {

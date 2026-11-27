@@ -522,6 +522,8 @@ impl Panel {
             search_terms: Vec::new(),
             login: None,
             available_models: Vec::new(),
+            models_loaded: false,
+            models_error: None,
         }
     }
 

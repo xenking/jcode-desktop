@@ -130,6 +130,61 @@ pub(super) fn runtime_owner_is_busy(error: &jcode_sdk::Error) -> bool {
         && error.message.contains("still has a runtime owner")
 }
 
+/// An attach failed as `unknown_session`. The bridge words every failed attach
+/// by id that way, so the code alone is not proof. The same machine's full
+/// list, archived rows included, is: only an answered list that lacks the
+/// session means it is gone. An unanswered one keeps the retry loop. The caller
+/// passes a fresh connection: a failed attach closes the one it was made on.
+fn remote_session_is_gone(client: &JcodeClient, error: &jcode_sdk::Error, real_id: &str) -> bool {
+    if !matches!(
+        error.kind,
+        jcode_sdk::ErrorKind::Harness(jcode_sdk::api::ErrorCode::UnknownSession)
+    ) {
+        return false;
+    }
+    let listed = client.request(jcode_sdk::api::ApiRequest::ListSessions {
+        include_archived: true,
+        limit: None,
+    });
+    matches!(
+        listed.map(|frame| frame.event),
+        Ok(ApiEvent::Sessions { sessions, .. })
+            if sessions.iter().all(|session| session.session_id != real_id)
+    )
+}
+
+/// Ask the runtime for this session's identity and model list and hand it to
+/// the panel. A failed request is reported, not swallowed: an empty model
+/// picker with no explanation is indistinguishable from "no accounts".
+fn publish_runtime_info(
+    client: &JcodeClient,
+    real_id: &str,
+    session_id: &str,
+    updates: &UpdateSender,
+) {
+    let update = match client.get_runtime_info(real_id) {
+        Ok(info) => Update::Event {
+            session_id: session_id.to_owned(),
+            event: ApiEvent::RuntimeInfo {
+                speed_mode: info.speed_mode,
+                speed_options: info.speed_options,
+                session_id: session_id.to_owned(),
+                provider: info.provider,
+                model: info.model,
+                routes: info.routes,
+                reasoning_effort: info.reasoning_effort,
+                auth_method: info.auth_method,
+                account_label: info.account_label,
+            },
+        },
+        Err(error) => Update::ModelCatalogFailed {
+            session_id: session_id.to_owned(),
+            reason: error.to_string(),
+        },
+    };
+    let _ = updates.send(update);
+}
+
 pub(in crate::harness) fn saved_session_identity(
     home: &std::path::Path,
     real_id: &str,
@@ -280,6 +335,15 @@ pub(in crate::harness) fn session_worker_with_connector(
                     });
                     reported_attaching = true;
                 }
+            } else if address.host.is_some()
+                && connector(&address).is_ok_and(|probe| remote_session_is_gone(&probe, &error, real_id))
+            {
+                // No retry can bring it back: say so once and let the panel go.
+                eprintln!("jcode desktop: session {session_id} no longer exists on its machine");
+                let _ = updates.send(Update::SessionGone {
+                    session_id: session_id.clone(),
+                });
+                return;
             } else {
                 reported_attaching = false;
                 if should_log_reconnect(failed_attempts) {
@@ -407,22 +471,7 @@ pub(in crate::harness) fn session_worker_with_connector(
         // serving this session, and through which credential route. Delivered
         // as a normal event so the panel has one place that absorbs identity,
         // whether it arrives by request (here) or unsolicited (model switches).
-        if let Ok(info) = client.get_runtime_info(real_id) {
-            let _ = updates.send(Update::Event {
-                session_id: session_id.clone(),
-                event: ApiEvent::RuntimeInfo {
-                    speed_mode: info.speed_mode,
-                    speed_options: info.speed_options,
-                    session_id: session_id.clone(),
-                    provider: info.provider,
-                    model: info.model,
-                    routes: info.routes,
-                    reasoning_effort: info.reasoning_effort,
-                    auth_method: info.auth_method,
-                    account_label: info.account_label,
-                },
-            });
-        }
+        publish_runtime_info(&client, real_id, &session_id, &updates);
 
         let mut tab_wait = tab_wait::State::default();
         tab_wait.refresh(&client, real_id, &session_id, &updates);
@@ -522,22 +571,7 @@ pub(in crate::harness) fn session_worker_with_connector(
                         });
                     }
                     SessionCommand::RefreshRuntime => {
-                        if let Ok(info) = client.get_runtime_info(real_id) {
-                            let _ = updates.send(Update::Event {
-                                session_id: session_id.clone(),
-                                event: ApiEvent::RuntimeInfo {
-                                    speed_mode: info.speed_mode,
-                                    speed_options: info.speed_options,
-                                    session_id: session_id.clone(),
-                                    provider: info.provider,
-                                    model: info.model,
-                                    routes: info.routes,
-                                    reasoning_effort: info.reasoning_effort,
-                                    auth_method: info.auth_method,
-                                    account_label: info.account_label,
-                                },
-                            });
-                        }
+                        publish_runtime_info(&client, real_id, &session_id, &updates);
                     }
                     SessionCommand::TodoState => {
                         let state = client

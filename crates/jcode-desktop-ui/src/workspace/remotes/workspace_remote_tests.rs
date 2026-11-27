@@ -602,7 +602,8 @@ fn remote_identity_survives_snapshot_and_local_files_are_not_shown(cx: &mut gpui
         matches!(commands.try_recv(), Ok(Command::Watch {session_id}) if session_id == "ssh://user%40desktop/remote-1")
     );
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("panel-remote-host").is_some());
+    assert!(vcx.debug_bounds("composer-machine").is_some(), "the machine chip names the remote");
+    assert!(vcx.debug_bounds("panel-remote-lost").is_none());
     workspace.read_with(vcx, |w, cx| {
         assert!(
             w.slots[w.active]

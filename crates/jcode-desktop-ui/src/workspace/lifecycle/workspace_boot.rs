@@ -336,6 +336,7 @@ impl Workspace {
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
+            gone_sessions: Vec::new(),
             focus_synced_active: None,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -787,7 +788,7 @@ impl Workspace {
                 session_id: Panel::STARTUP_SESSION_ID.into(),
                 title: Some(self.remotes.default_host.as_ref().map_or_else(
                     || "New session".into(),
-                    |host| format!("Connecting to {host}"),
+                    |host| format!("Connecting to {}", machines::machine_label(host)),
                 )),
                 working_dir: self
                     .remotes
@@ -948,6 +949,7 @@ impl Workspace {
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
+            gone_sessions: Vec::new(),
             focus_synced_active: None,
             gesture_last: None,
             gesture: StripGesture::default(),
