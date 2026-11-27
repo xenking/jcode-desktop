@@ -383,6 +383,8 @@ mod focus_follow_tests;
 mod workspace_pull;
 #[path = "workspace/remotes/spaces/workspace_machine_sync.rs"]
 mod workspace_machine_sync;
+#[path = "workspace/remotes/spaces/workspace_machine_sync_store.rs"]
+mod workspace_machine_sync_store;
 #[cfg(test)]
 #[path = "workspace/remotes/spaces/workspace_machine_sync_tests.rs"]
 mod workspace_machine_sync_tests;

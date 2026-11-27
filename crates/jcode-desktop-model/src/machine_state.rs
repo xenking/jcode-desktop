@@ -42,6 +42,9 @@ pub struct PanelFacts {
     pub row: usize,
     pub width: f32,
     pub draft: Option<DraftFacts>,
+    /// A compose panel's directory: a path on this machine, written only to
+    /// this machine's own daemon.
+    pub working_dir: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -68,6 +71,13 @@ pub fn valid_id(id: &str, max: usize) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// A directory the daemon will accept for a compose panel.
+pub fn usable_dir(dir: &str) -> bool {
+    dir.starts_with('/')
+        && dir.len() <= jcode_session_types::desktop_state::MAX_WORKING_DIR_LEN
+        && !dir.chars().any(char::is_control)
 }
 
 fn doc<T: serde::Serialize>(value: &T) -> Value {
@@ -99,6 +109,10 @@ pub fn entries(facts: &Facts, keep_focus: Option<&Value>) -> Entries {
                 kind: panel.kind,
                 session_id: panel.session_id.clone(),
                 title: panel.title.clone().filter(|title| !title.is_empty()),
+                working_dir: panel
+                    .working_dir
+                    .clone()
+                    .filter(|dir| panel.kind == PanelKind::Compose && usable_dir(dir)),
             }),
         );
         if let Some(draft) = &panel.draft
@@ -187,12 +201,15 @@ pub fn parse(entries: &Entries) -> Remote {
                 ));
             }
         } else if let Some(id) = key.strip_prefix(PANEL).filter(|id| valid_id(id, 64)) {
-            if let Some(panel) = typed::<PanelDoc>(value).filter(|p| p.v == DESKTOP_STATE_SCHEMA)
+            if let Some(mut panel) = typed::<PanelDoc>(value).filter(|p| p.v == DESKTOP_STATE_SCHEMA)
                 && panel
                     .session_id
                     .as_deref()
                     .is_none_or(|session| valid_id(session, 128))
             {
+                panel.working_dir = panel
+                    .working_dir
+                    .filter(|dir| panel.kind == PanelKind::Compose && usable_dir(dir));
                 remote.panels.insert(id.to_owned(), panel);
             }
         } else if let Some(id) = key.strip_prefix(DRAFT).filter(|id| valid_id(id, 64))
@@ -226,6 +243,25 @@ pub fn canonical(entries: &Entries) -> Entries {
         .collect()
 }
 
+/// What each key held when this Desktop and the daemon last agreed, as a
+/// fingerprint of its canonical document. Small enough to keep on disk next to
+/// the crash-recovery snapshot, where a build that knows nothing about syncing
+/// cannot drop it.
+pub type Fingerprints = BTreeMap<String, u64>;
+
+/// A stable fingerprint of one entry (FNV-1a over its canonical JSON).
+pub fn fingerprint(value: &Value) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in value.to_string().bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+pub fn fingerprints(entries: &Entries) -> Fingerprints {
+    entries.iter().map(|(k, v)| (k.clone(), fingerprint(v))).collect()
+}
+
 /// What to do about a difference between this Desktop and the daemon.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Plan {
@@ -233,66 +269,76 @@ pub struct Plan {
     pub push: Vec<(String, Option<Value>)>,
     /// Keys whose daemon value (or absence) this Desktop must now show.
     pub adopt: BTreeSet<String>,
+    /// Drafts both sides changed: this Desktop keeps its text and writes it,
+    /// and the daemon's text goes into the composer's prompt history so it can
+    /// be recalled instead of being overwritten.
+    pub stash: BTreeSet<String>,
 }
 
 /// Three-way merge of this Desktop (`local`), the daemon (`remote`) and what
-/// the two last agreed on (`applied`).
+/// the two last agreed on (`applied`). A change is a difference from `applied`,
+/// so an edit made while no daemon was reachable, or by a build that does not
+/// sync, is a local change and is never discarded.
 ///
-/// - Changed only here: write it. Changed only there: show it.
-/// - Changed on both and different: the daemon wins, except for a draft in a
-///   `protected` composer (the user is typing there) and for `focus`, which is
-///   every Desktop's own. Those are written over. A protected composer is also
-///   left alone when only the daemon changed it.
-/// - `first`: this Desktop has not yet seen the daemon's state. A daemon that
-///   holds state is the truth (this Desktop's cache is older); an empty one is
-///   seeded from this Desktop.
+/// - Changed only here: write it. Changed only there: show it. A key neither
+///   side had agreed on is a change on whichever side holds it, so a panel
+///   only here is written and one only there is opened.
+/// - Changed on both and different: a draft keeps this Desktop's text (written
+///   over the daemon's, which is stashed) unless this Desktop deleted it;
+///   `focus` is every Desktop's own and is written; anything else takes the
+///   daemon's.
+/// - A `protected` composer (the user is typing there) is left alone when only
+///   the daemon changed it.
+/// - `first` (this process has not yet seen this machine): a daemon with no
+///   entries at all is a new store, so what was agreed with an earlier one no
+///   longer counts and this Desktop seeds it; and the daemon's focus is shown.
 pub fn reconcile(
-    applied: &Entries,
+    applied: &Fingerprints,
     remote: &Entries,
     local: &Entries,
     protected: &BTreeSet<String>,
     first: bool,
 ) -> Plan {
     let mut plan = Plan::default();
+    let applied = if first && remote.is_empty() {
+        &Fingerprints::new()
+    } else {
+        applied
+    };
     let keys: BTreeSet<&String> = applied
         .keys()
         .chain(remote.keys())
         .chain(local.keys())
         .collect();
-    let seeded = first && remote.is_empty();
-    let truth = first && !remote.is_empty();
     for key in keys {
         let (a, r, l) = (applied.get(key), remote.get(key), local.get(key));
-        if truth {
-            // Focus is the user's own: a daemon without one never clears it.
-            if r != l && !(key == FOCUS && r.is_none()) {
-                plan.adopt.insert(key.clone());
-            }
+        let (rf, lf) = (r.map(fingerprint), l.map(fingerprint));
+        if first && key == FOCUS && r.is_some() && rf != lf {
+            plan.adopt.insert(key.clone());
             continue;
         }
-        let (local_changed, remote_changed) = if seeded {
-            (l.is_some(), false)
-        } else {
-            (l != a, r != a)
-        };
-        match (local_changed, remote_changed) {
+        match (lf != a.copied(), rf != a.copied()) {
             (false, false) => {}
             (true, false) => plan.push.push((key.clone(), l.cloned())),
-            // The composer being typed in keeps its text even when the user has
-            // not changed it since the last write. Nothing is written back, so
-            // two Desktops in one composer do not overwrite each other forever;
-            // the daemon's text shows once the user leaves the composer.
             (false, true) if protected.contains(key) => {}
             (false, true) => {
                 plan.adopt.insert(key.clone());
             }
-            (true, true) if l == r => {}
-            (true, true) => {
-                if key == FOCUS || protected.contains(key) {
+            (true, true) if lf == rf => {}
+            (true, true) if key == FOCUS => plan.push.push((key.clone(), l.cloned())),
+            (true, true) if key.starts_with(DRAFT) => match l {
+                Some(_) => {
                     plan.push.push((key.clone(), l.cloned()));
-                } else {
+                    if r.is_some() {
+                        plan.stash.insert(key.clone());
+                    }
+                }
+                None => {
                     plan.adopt.insert(key.clone());
                 }
+            },
+            (true, true) => {
+                plan.adopt.insert(key.clone());
             }
         }
     }
@@ -326,6 +372,7 @@ mod tests {
                     }]
                 },
             }),
+            working_dir: None,
         }
     }
 
@@ -343,6 +390,7 @@ mod tests {
                     row: 2,
                     width: 1.0,
                     draft: None,
+                    working_dir: Some("/home/me/project".into()),
                 },
             ],
             focus: Some((2, Some("session_b_2".into()))),
@@ -364,6 +412,29 @@ mod tests {
         }
         // Rows with no panel stay empty rows, so a panel keeps its row.
         assert_eq!(written["layout"]["rows"][1], json!([]));
+    }
+
+    #[test]
+    fn only_a_compose_panel_carries_a_directory_and_it_reads_back() {
+        let mut compose = PanelFacts {
+            id: "c-1".into(),
+            kind: PanelKind::Compose,
+            session_id: None,
+            ..session("x", 0, "")
+        };
+        compose.working_dir = Some("/srv/app".into());
+        let mut with_dir = session("session_a_1", 0, "");
+        with_dir.working_dir = Some("/srv/app".into());
+        let written = entries(&Facts { panels: vec![compose, with_dir], focus: None }, None);
+        assert_eq!(written["panel/c-1"]["working_dir"], "/srv/app");
+        assert!(written["panel/session_a_1"].get("working_dir").is_none());
+        let back = parse(&canonical(&written));
+        assert_eq!(back.panels["c-1"].working_dir.as_deref(), Some("/srv/app"));
+        // A relative path is not written at all.
+        let mut relative = PanelFacts { id: "c-2".into(), kind: PanelKind::Compose, session_id: None, ..session("x", 0, "") };
+        relative.working_dir = Some("srv/app".into());
+        let written = entries(&Facts { panels: vec![relative], focus: None }, None);
+        assert!(written["panel/c-2"].get("working_dir").is_none());
     }
 
     #[test]
@@ -451,7 +522,7 @@ mod tests {
     }
 
     fn plan(applied: &Entries, remote: &Entries, local: &Entries, first: bool) -> Plan {
-        reconcile(applied, remote, local, &BTreeSet::new(), first)
+        reconcile(&fingerprints(applied), remote, local, &BTreeSet::new(), first)
     }
 
     #[test]
@@ -463,22 +534,82 @@ mod tests {
     }
 
     #[test]
-    fn a_daemon_that_holds_state_is_the_truth_on_first_sight_even_over_a_cached_panel() {
-        let remote = e(&[("panel/a", json!(1)), ("focus", json!({"row": 1}))]);
-        let local = e(&[
-            ("panel/a", json!(1)),
-            ("panel/stale", json!(9)),
-            ("focus", json!({"row": 0})),
+    fn first_launch_with_both_stores_empty_does_nothing() {
+        assert_eq!(plan(&Entries::new(), &Entries::new(), &Entries::new(), true), Plan::default());
+    }
+
+    #[test]
+    fn a_daemon_newer_than_an_untouched_desktop_wins() {
+        let synced = e(&[("draft/a", json!("agreed")), ("panel/a", json!(1))]);
+        let remote = e(&[("draft/a", json!("typed on another Desktop")), ("panel/a", json!(1))]);
+        let p = plan(&synced, &remote, &synced, true);
+        assert!(p.push.is_empty() && p.stash.is_empty());
+        assert_eq!(p.adopt.iter().collect::<Vec<_>>(), ["draft/a"]);
+    }
+
+    #[test]
+    fn a_draft_edited_by_a_build_that_does_not_sync_is_written_to_the_daemon_not_replaced() {
+        // Rollback: this Desktop seeded the daemon, an older Desktop with no
+        // sync edited the cached drafts, and the daemon still holds the seed.
+        let seeded = e(&[("draft/a", json!("seed")), ("draft/b", json!("other seed"))]);
+        let edited_by_old_build = e(&[
+            ("draft/a", json!("seed, then newer text")),
+            ("draft/b", json!("other seed")),
         ]);
+        let p = plan(&seeded, &seeded, &edited_by_old_build, true);
+        assert_eq!(p.push, [("draft/a".to_owned(), Some(json!("seed, then newer text")))]);
+        assert!(p.adopt.is_empty() && p.stash.is_empty());
+    }
+
+    #[test]
+    fn a_draft_typed_while_the_machine_was_unreachable_is_written_when_it_returns() {
+        let agreed = e(&[("draft/a", json!("older, known to the machine"))]);
+        let typed_offline = e(&[("draft/a", json!("typed while it was down"))]);
+        let p = plan(&agreed, &agreed, &typed_offline, true);
+        assert_eq!(p.push, [("draft/a".to_owned(), Some(json!("typed while it was down")))]);
+        assert!(p.adopt.is_empty());
+    }
+
+    #[test]
+    fn a_draft_changed_on_both_sides_keeps_this_text_and_stashes_the_other() {
+        let agreed = e(&[("draft/a", json!("base"))]);
+        let here = e(&[("draft/a", json!("mine"))]);
+        let there = e(&[("draft/a", json!("theirs"))]);
+        let p = plan(&agreed, &there, &here, true);
+        assert_eq!(p.push, [("draft/a".to_owned(), Some(json!("mine")))]);
+        assert_eq!(p.stash.iter().collect::<Vec<_>>(), ["draft/a"]);
+        assert!(p.adopt.is_empty());
+        // A draft this Desktop sent meanwhile has no text to lose: theirs shows.
+        let sent = e(&[]);
+        let p = plan(&agreed, &there, &sent, true);
+        assert_eq!(p.adopt.iter().collect::<Vec<_>>(), ["draft/a"]);
+        assert!(p.push.is_empty() && p.stash.is_empty());
+    }
+
+    #[test]
+    fn with_nothing_agreed_yet_each_side_keeps_what_only_it_has() {
+        let local = e(&[("panel/mine", json!(1)), ("draft/mine", json!("a"))]);
+        let remote = e(&[("panel/theirs", json!(2))]);
         let p = plan(&Entries::new(), &remote, &local, true);
-        assert!(
-            p.push.is_empty(),
-            "nothing from the cache is written over the daemon"
-        );
-        assert_eq!(
-            p.adopt.iter().map(String::as_str).collect::<Vec<_>>(),
-            ["focus", "panel/stale"]
-        );
+        assert_eq!(p.push.len(), 2, "nothing of this Desktop's is closed or dropped");
+        assert_eq!(p.adopt.iter().collect::<Vec<_>>(), ["panel/theirs"]);
+    }
+
+    #[test]
+    fn a_wiped_daemon_is_seeded_again_instead_of_emptying_this_desktop() {
+        let agreed = e(&[("panel/a", json!(1)), ("draft/a", json!("kept"))]);
+        let p = plan(&agreed, &Entries::new(), &agreed, true);
+        assert_eq!(p.push.len(), 2);
+        assert!(p.adopt.is_empty());
+    }
+
+    #[test]
+    fn the_daemons_focus_is_shown_on_first_sight_only() {
+        let remote = e(&[("focus", json!({"row": 1}))]);
+        let local = e(&[("focus", json!({"row": 0}))]);
+        assert_eq!(plan(&Entries::new(), &remote, &local, true).adopt.len(), 1);
+        let p = plan(&Entries::new(), &remote, &local, false);
+        assert_eq!(p.push, [("focus".to_owned(), Some(json!({"row": 0})))]);
     }
 
     #[test]
@@ -498,17 +629,16 @@ mod tests {
     }
 
     #[test]
-    fn a_draft_typed_on_both_sides_keeps_the_focused_composer_and_otherwise_takes_the_daemons() {
+    fn a_draft_typed_on_both_sides_is_never_replaced_whether_or_not_it_is_focused() {
         let base = e(&[("draft/a", json!("base"))]);
         let here = e(&[("draft/a", json!("mine"))]);
         let there = e(&[("draft/a", json!("theirs"))]);
         let focused: BTreeSet<String> = ["draft/a".to_owned()].into();
-        let p = reconcile(&base, &there, &here, &focused, false);
-        assert_eq!(p.push, [("draft/a".to_owned(), Some(json!("mine")))]);
-        assert!(p.adopt.is_empty());
-        let p = reconcile(&base, &there, &here, &BTreeSet::new(), false);
-        assert_eq!(p.adopt.iter().collect::<Vec<_>>(), ["draft/a"]);
-        assert!(p.push.is_empty());
+        for protected in [&focused, &BTreeSet::new()] {
+            let p = reconcile(&fingerprints(&base), &there, &here, protected, false);
+            assert_eq!(p.push, [("draft/a".to_owned(), Some(json!("mine")))]);
+            assert!(p.adopt.is_empty());
+        }
         // Both sides arriving at the same text needs no write at all.
         assert_eq!(plan(&base, &here, &here, false), Plan::default());
     }
@@ -518,9 +648,9 @@ mod tests {
         let base = e(&[("draft/a", json!("mine, already written"))]);
         let there = e(&[("draft/a", json!("theirs"))]);
         let focused: BTreeSet<String> = ["draft/a".to_owned()].into();
-        let p = reconcile(&base, &there, &base, &focused, false);
+        let p = reconcile(&fingerprints(&base), &there, &base, &focused, false);
         assert_eq!(p, Plan::default());
-        let p = reconcile(&base, &there, &base, &BTreeSet::new(), false);
+        let p = reconcile(&fingerprints(&base), &there, &base, &BTreeSet::new(), false);
         assert_eq!(p.adopt.iter().collect::<Vec<_>>(), ["draft/a"]);
     }
 

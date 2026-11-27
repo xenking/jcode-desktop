@@ -96,6 +96,7 @@ impl Workspace {
                     row: slot.row,
                     width_fraction: slot.width_fraction,
                     restore_fraction: slot.restore_fraction,
+                    shared_id: self.compose_shared_id(slot, cx),
                 })
                 .collect(),
             active,
@@ -318,6 +319,9 @@ impl Workspace {
                 });
             }
             *restored_index.last_mut().expect("pushed for this slot") = Some(self.slots.len());
+            if let Some(shared_id) = saved.shared_id.clone() {
+                self.machine_sync.keep_shared_id(panel.entity_id(), shared_id);
+            }
             self.slots.push(restored_slot(
                 PanelItem::Chat(panel),
                 row,
@@ -485,6 +489,10 @@ pub(super) struct SlotSnapshot {
     pub(super) row: usize,
     pub(super) width_fraction: f32,
     pub(super) restore_fraction: Option<f32>,
+    /// A new-session panel's name in its machine's Desktop state. A restart
+    /// gives the panel a new draft id, so the name is kept here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) shared_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]

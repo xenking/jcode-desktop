@@ -361,7 +361,7 @@ impl Workspace {
             sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
             gone_sessions: Vec::new(),
-            machine_sync: Default::default(),
+            machine_sync: workspace_machine_sync::MachineSyncState::new(sync_machines),
             focus_synced_active: None,
             gesture_last: None,
             gesture: StripGesture::default(),

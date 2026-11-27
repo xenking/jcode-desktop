@@ -9,7 +9,8 @@
 //! to know about Desktop state) leaves everything working as before.
 use super::*;
 use jcode_desktop_harness::harness::{LinkStatus, MachineStateEvent};
-use jcode_desktop_model::machine_state::{self as shared, Entries, Facts, PanelFacts};
+use jcode_desktop_model::machine_state::{self as shared, Entries, Facts, Fingerprints, PanelFacts};
+use super::workspace_machine_sync_store as store;
 use jcode_session_types::desktop_state::PanelKind;
 use jcode_sdk::api::DesktopStateChange;
 use jcode_sdk::desktop_state::{DesktopStateMirror, DesktopStatePut};
@@ -27,13 +28,48 @@ pub(super) struct MachineSyncState {
     adopted_ids: HashMap<gpui::EntityId, String>,
     /// Draft keys of the composer the user is typing in. Never overwritten.
     pub(super) typing: BTreeSet<String>,
+    /// What each machine last agreed on, kept across restarts; `None` where
+    /// nothing is kept (offline fixtures, tests).
+    store: Option<store::Store>,
+}
+
+impl MachineSyncState {
+    /// `persist`: keep what was agreed beside the crash-recovery snapshot.
+    pub(super) fn new(persist: bool) -> Self {
+        let path = persist
+            .then(crate::learning::state_path)
+            .flatten()
+            .and_then(|state| Some(state.parent()?.join("machine-sync.json")));
+        Self {
+            store: path.map(store::Store::open),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn keep_at(&mut self, path: std::path::PathBuf) {
+        self.store = Some(store::Store::open(path));
+    }
+
+    /// A composer shown from another Desktop's state, or restored from the
+    /// snapshot, keeps the name its panel had in the machine's state.
+    pub(in crate::workspace) fn keep_shared_id(&mut self, panel: gpui::EntityId, id: String) {
+        self.adopted_ids.insert(panel, id);
+    }
+
+    pub(in crate::workspace) fn shared_id(&self, panel: gpui::EntityId) -> Option<&String> {
+        self.adopted_ids.get(&panel)
+    }
 }
 
 struct MachineSync {
     /// What the daemon holds.
     mirror: DesktopStateMirror,
     /// What this Desktop and the daemon last agreed on, key by key.
-    applied: Entries,
+    applied: Fingerprints,
+    /// Not rejected by the daemon: a daemon older than the compose directory
+    /// field refuses it, and then it is left out for that machine.
+    dirs: bool,
     /// This Desktop has not yet seen the daemon's state.
     first: bool,
     connected: bool,
@@ -41,10 +77,11 @@ struct MachineSync {
 }
 
 impl MachineSync {
-    fn new() -> Self {
+    fn new(agreed: Fingerprints) -> Self {
         Self {
             mirror: DesktopStateMirror::default(),
-            applied: Entries::new(),
+            applied: agreed,
+            dirs: true,
             first: true,
             connected: false,
             in_flight: None,
@@ -158,6 +195,7 @@ impl Workspace {
                     continue;
                 };
                 let (text, cursor, attachments) = panel.shared_draft(cx);
+                let compose = matches!(identity, crate::panel::SharedIdentity::Compose(_));
                 facts.panels.push(PanelFacts {
                     id,
                     kind: match identity {
@@ -169,6 +207,7 @@ impl Workspace {
                         crate::panel::SharedIdentity::Compose(_) => None,
                     },
                     title: Some(panel.title_text()),
+                    working_dir: compose.then(|| panel.working_dir.clone()).flatten(),
                     row: row - base,
                     width: slot.width_fraction,
                     draft: Some(shared::DraftFacts {
@@ -197,8 +236,20 @@ impl Workspace {
         facts
     }
 
-    fn machine_entries(&self, host: Option<&str>, held_focus: Option<&serde_json::Value>, cx: &App) -> Entries {
-        shared::canonical(&shared::entries(&self.machine_facts(host, cx), held_focus))
+    pub(super) fn machine_entries(&self, host: Option<&str>, held_focus: Option<&serde_json::Value>, cx: &App) -> Entries {
+        let mut facts = self.machine_facts(host, cx);
+        let dirs = self.machine_sync.machines.get(&host.map(str::to_owned)).is_none_or(|m| m.dirs);
+        if !dirs {
+            for panel in &mut facts.panels {
+                panel.working_dir = None;
+            }
+        }
+        shared::canonical(&shared::entries(&facts, held_focus))
+    }
+
+    /// What was agreed with a machine before this run, if anything is kept.
+    fn agreed(&self, host: Option<&str>) -> Fingerprints {
+        self.machine_sync.store.as_ref().map(|store| store.agreed(host)).unwrap_or_default()
     }
 
     /// Ask for the link to each machine the window needs: this one always, a
@@ -223,6 +274,23 @@ impl Workspace {
             return;
         }
         self.attach_needed_machines();
+        // A new composer's name is fixed the first time it is seen, so it
+        // outlives the panel's own draft id, which a restart replaces.
+        let unnamed: Vec<_> = self
+            .slots
+            .iter()
+            .filter(|slot| !slot.closing && self.machine_sync.shared_id(slot.panel.entity_id()).is_none())
+            .filter(|slot| {
+                slot.panel
+                    .read_chat(cx)
+                    .and_then(|panel| panel.shared_identity())
+                    .is_some_and(|identity| matches!(identity, crate::panel::SharedIdentity::Compose(_)))
+            })
+            .filter_map(|slot| Some((slot.panel.entity_id(), self.shared_panel_id(slot, None, cx)?.0)))
+            .collect();
+        for (panel, id) in unnamed {
+            self.machine_sync.keep_shared_id(panel, id);
+        }
         let mut typing = BTreeSet::new();
         for slot in &self.slots {
             if slot.closing || !slot.panel.surface().input_focus_handle(cx).is_focused(window) {
@@ -245,6 +313,20 @@ impl Workspace {
         for host in connected {
             self.sync_machine(host.as_deref(), cx);
         }
+        if let Some(store) = &mut self.machine_sync.store {
+            store.flush();
+        }
+    }
+
+    /// The name a composer panel carries in this machine's state, to keep in
+    /// the crash-recovery snapshot so a restart finds its entry again.
+    pub(in crate::workspace) fn compose_shared_id(&self, slot: &Slot, cx: &App) -> Option<String> {
+        matches!(
+            slot.panel.read_chat(cx)?.shared_identity()?,
+            crate::panel::SharedIdentity::Compose(_)
+        )
+        .then(|| self.machine_sync.shared_id(slot.panel.entity_id()).cloned())
+        .flatten()
     }
 
     pub(super) fn apply_machine_link(&mut self, host: Option<String>, status: LinkStatus, cx: &mut Context<Self>) {
@@ -255,7 +337,8 @@ impl Workspace {
             }
             None => self.remotes.local_link = Some(shown),
         }
-        let machine = self.machine_sync.machines.entry(host).or_insert_with(MachineSync::new);
+        let agreed = self.agreed(host.as_deref());
+        let machine = self.machine_sync.machines.entry(host).or_insert_with(|| MachineSync::new(agreed));
         if status != LinkStatus::Connected {
             machine.connected = false;
             machine.in_flight = None;
@@ -264,7 +347,8 @@ impl Workspace {
     }
 
     pub(super) fn apply_machine_state(&mut self, host: Option<String>, event: MachineStateEvent, cx: &mut Context<Self>) {
-        let machine = self.machine_sync.machines.entry(host.clone()).or_insert_with(MachineSync::new);
+        let agreed = self.agreed(host.as_deref());
+        let machine = self.machine_sync.machines.entry(host.clone()).or_insert_with(|| MachineSync::new(agreed));
         match event {
             MachineStateEvent::Snapshot(snapshot) => {
                 machine.mirror.replace(&snapshot);
@@ -295,22 +379,25 @@ impl Workspace {
         match &result {
             Ok(DesktopStatePut::Applied { .. }) => {
                 for (key, value) in flight.keys {
-                    match value {
-                        Some(value) => machine.applied.insert(key, value),
-                        None => machine.applied.remove(&key),
-                    };
+                    record(&mut machine.applied, key, value.as_ref());
                 }
             }
             Ok(DesktopStatePut::Conflict { .. }) | Err(_) => {}
             Ok(DesktopStatePut::Rejected { reason, message }) => {
-                // Nothing was stored and the same write cannot succeed: stop
-                // asking until the entry changes again.
                 eprintln!("desktop state rejected ({reason:?}): {message}");
-                for (key, value) in flight.keys {
-                    match value {
-                        Some(value) => machine.applied.insert(key, value),
-                        None => machine.applied.remove(&key),
-                    };
+                let with_dir = flight.keys.iter().any(|(key, value)| {
+                    key.starts_with("panel/") && value.as_ref().is_some_and(|v| v.get("working_dir").is_some())
+                });
+                if with_dir && machine.dirs {
+                    // A daemon from before compose directories refuses the
+                    // field: leave it out for this machine and write again.
+                    machine.dirs = false;
+                } else {
+                    // Nothing was stored and the same write cannot succeed:
+                    // stop asking until the entry changes again.
+                    for (key, value) in flight.keys {
+                        record(&mut machine.applied, key, value.as_ref());
+                    }
                 }
             }
         }
@@ -338,10 +425,7 @@ impl Workspace {
         // Where both already agree there is nothing to decide later.
         for k in remote.keys().chain(local.keys()).cloned().collect::<BTreeSet<_>>() {
             if remote.get(&k) == local.get(&k) {
-                match remote.get(&k) {
-                    Some(value) => machine.applied.insert(k, value.clone()),
-                    None => machine.applied.remove(&k),
-                };
+                record(&mut machine.applied, k.clone(), remote.get(&k));
             }
         }
         let plan = shared::reconcile(&machine.applied, &remote, &local, &typing, first);
@@ -356,11 +440,22 @@ impl Workspace {
             let now = self.machine_entries(host, remote.get(shared::FOCUS), cx);
             let machine = self.machine_sync.machines.get_mut(&key).expect("present above");
             for k in &plan.adopt {
-                match now.get(k) {
-                    Some(value) => machine.applied.insert(k.clone(), value.clone()),
-                    None => machine.applied.remove(k),
-                };
+                record(&mut machine.applied, k.clone(), now.get(k));
             }
+        }
+        for key in &plan.stash {
+            let Some(id) = key.strip_prefix("draft/") else { continue };
+            let Some(text) = remote.get(key).and_then(|doc| doc.get("text")).and_then(|t| t.as_str()) else {
+                continue;
+            };
+            if let Some(&index) = self.shared_panels(host, cx).get(id) {
+                self.slots[index].panel.update_chat(cx, |panel, cx| panel.keep_in_history(text, cx));
+            }
+        }
+        if let Some(store) = &mut self.machine_sync.store
+            && let Some(machine) = self.machine_sync.machines.get(&key)
+        {
+            store.record(host, &machine.applied);
         }
         if may_push && !plan.push.is_empty() {
             let machine = self.machine_sync.machines.get_mut(&key).expect("present above");
@@ -468,13 +563,12 @@ impl Workspace {
                 let index = self.open_session_with_identity(
                     pending::next_draft_id(),
                     Some(panel.title.clone().unwrap_or_else(|| "New session".into())),
-                    None,
+                    panel.working_dir.clone(),
                     row,
                     cx,
                 );
                 self.machine_sync
-                    .adopted_ids
-                    .insert(self.slots[index].panel.entity_id(), id.to_owned());
+                    .keep_shared_id(self.slots[index].panel.entity_id(), id.to_owned());
                 self.slots[index]
                     .panel
                     .update_chat(cx, |panel, cx| panel.defer_until_first_prompt(cx));
@@ -565,7 +659,15 @@ impl Workspace {
     }
 
     #[cfg(test)]
-    pub(super) fn machine_state_applied(&self, host: Option<&str>) -> Option<Entries> {
+    pub(super) fn machine_state_applied(&self, host: Option<&str>) -> Option<Fingerprints> {
         self.machine_sync.machines.get(&host.map(str::to_owned)).map(|m| m.applied.clone())
     }
+}
+
+/// Note what `key` now holds on both sides.
+fn record(applied: &mut Fingerprints, key: String, value: Option<&serde_json::Value>) {
+    match value {
+        Some(value) => applied.insert(key, shared::fingerprint(value)),
+        None => applied.remove(&key),
+    };
 }

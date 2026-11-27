@@ -72,6 +72,16 @@ impl PromptInput {
         (content.to_string(), selection.end, attachments)
     }
 
+    #[cfg(test)]
+    pub(crate) fn prompt_history(&self) -> Vec<String> {
+        self.history.clone()
+    }
+
+    /// Keep text the composer no longer shows one Up-arrow away.
+    pub(crate) fn keep_in_history(&mut self, text: &str) {
+        keep_in_history(&mut self.history, text);
+    }
+
     /// Show a draft another Desktop wrote, keeping this prompt's history.
     pub(crate) fn apply_shared_draft(
         &mut self,
@@ -82,6 +92,10 @@ impl PromptInput {
     ) {
         let mut snapshot = self.snapshot();
         let cursor = text.floor_char_boundary(cursor.min(text.len()));
+        // Text this replaces stays one Up-arrow away.
+        if snapshot.content != text {
+            keep_in_history(&mut snapshot.history, &snapshot.content);
+        }
         snapshot.content = text;
         snapshot.selection_start = cursor;
         snapshot.selection_end = cursor;
@@ -1044,5 +1058,11 @@ impl PromptInput {
             .value
             .strip_prefix("/mode ")
             .map(str::to_owned)
+    }
+}
+
+fn keep_in_history(history: &mut Vec<String>, text: &str) {
+    if !text.trim().is_empty() && history.last().map(String::as_str) != Some(text) {
+        history.push(text.to_owned());
     }
 }

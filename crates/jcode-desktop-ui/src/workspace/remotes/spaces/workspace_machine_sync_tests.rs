@@ -480,3 +480,227 @@ fn machines_attach_only_when_needed(cx: &mut gpui::TestAppContext) {
     tick(vcx, &w);
     assert_eq!(attached(&commands), [Some(WORK.to_owned())], "in its space, it attaches");
 }
+
+// ---- what a Desktop wrote last time meets what the daemon holds now ----
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("jcode-machine-sync-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join("machine-sync.json")
+}
+
+fn keep(vcx: &mut gpui::VisualTestContext, w: &Entity<Workspace>, path: &std::path::Path) {
+    w.update(vcx, |w, _| w.machine_sync.keep_at(path.to_owned()));
+}
+
+fn entries_of(changes: &[DesktopStateChange], rev: u64) -> Vec<DesktopStateEntry> {
+    changes.iter().map(|c| entry(&c.key, rev, c.value.clone())).collect()
+}
+
+/// A Desktop that synced a draft with a machine and quit: the machine holds
+/// `seed` and the file beside the snapshot remembers it. Returns the entries
+/// the machine holds.
+fn synced_once(cx: &mut gpui::TestAppContext, path: &std::path::Path, seed: &str) -> Vec<DesktopStateEntry> {
+    let (w, vcx, commands) = new_workspace(cx, false);
+    keep(vcx, &w, path);
+    w.update(vcx, |w, cx| w.push_test_panel("session_fox_1_aa", cx));
+    set_draft(vcx, &w, 0, seed);
+    link(vcx, &w, None, LinkStatus::Connected);
+    state(vcx, &w, None, snapshot(0, vec![]));
+    let seed = writes(&commands);
+    applied(vcx, &w, None, &seed[0], 1);
+    tick(vcx, &w);
+    entries_of(&seed[0].2, 1)
+}
+
+fn relaunched<'a>(
+    cx: &'a mut gpui::TestAppContext,
+    path: &std::path::Path,
+    cached_draft: &str,
+) -> (Entity<Workspace>, &'a mut gpui::VisualTestContext, Receiver<Command>) {
+    let (w, vcx, commands) = new_workspace(cx, false);
+    keep(vcx, &w, path);
+    w.update(vcx, |w, cx| w.push_test_panel("session_fox_1_aa", cx));
+    set_draft(vcx, &w, 0, cached_draft);
+    (w, vcx, commands)
+}
+
+#[gpui::test]
+fn a_draft_edited_by_a_build_without_sync_is_written_to_the_daemon_not_replaced(cx: &mut gpui::TestAppContext) {
+    let path = scratch("rollback");
+    let held = synced_once(cx, &path, "seed text");
+    // The older Desktop edited the cached draft; the daemon still holds the seed.
+    let (w, vcx, commands) = relaunched(cx, &path, "text typed under the older Desktop");
+    link(vcx, &w, None, LinkStatus::Connected);
+    state(vcx, &w, None, snapshot(1, held));
+    assert_eq!(draft_text(vcx, &w, 0), "text typed under the older Desktop");
+    let pushed = writes(&commands);
+    assert_eq!(
+        put_value(&pushed[0].2, "draft/session_fox_1_aa").unwrap()["text"],
+        "text typed under the older Desktop"
+    );
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[gpui::test]
+fn a_draft_typed_while_the_machine_was_down_is_written_when_it_returns(cx: &mut gpui::TestAppContext) {
+    let (w, vcx, commands) = new_workspace(cx, true);
+    // A session of the paired machine, in that machine's space.
+    let routed = crate::harness::remote_session_id(WORK, "session_fox_1_aa");
+    w.update(vcx, |w, cx| w.push_test_panel(&routed, cx));
+    set_draft(vcx, &w, 0, "older, known to the machine");
+    w.update(vcx, |w, _| w.slots[0].row = ROWS_PER_SPACE);
+    link(vcx, &w, Some(WORK), LinkStatus::Connected);
+    state(vcx, &w, Some(WORK), snapshot(0, vec![]));
+    let seed = writes(&commands);
+    applied(vcx, &w, Some(WORK), &seed[0], 1);
+    let held = entries_of(&seed[0].2, 1);
+
+    link(vcx, &w, Some(WORK), LinkStatus::Lost);
+    set_draft(vcx, &w, 0, "typed while it was down");
+    link(vcx, &w, Some(WORK), LinkStatus::Connected);
+    state(vcx, &w, Some(WORK), snapshot(1, held));
+    assert_eq!(draft_text(vcx, &w, 0), "typed while it was down");
+    let pushed = writes(&commands);
+    assert_eq!(
+        put_value(&pushed[0].2, "draft/session_fox_1_aa").unwrap()["text"],
+        "typed while it was down"
+    );
+}
+
+#[gpui::test]
+fn a_draft_changed_on_both_sides_keeps_this_text_and_the_other_stays_one_up_arrow_away(
+    cx: &mut gpui::TestAppContext,
+) {
+    let path = scratch("both");
+    let held = synced_once(cx, &path, "seed text");
+    let (w, vcx, commands) = relaunched(cx, &path, "mine, typed offline");
+    let theirs: Vec<_> = held
+        .into_iter()
+        .map(|e| if e.key == "draft/session_fox_1_aa" { entry(&e.key, 2, Some(draft("theirs, typed on another Desktop"))) } else { e })
+        .collect();
+    link(vcx, &w, None, LinkStatus::Connected);
+    state(vcx, &w, None, snapshot(2, theirs));
+    assert_eq!(draft_text(vcx, &w, 0), "mine, typed offline");
+    let pushed = writes(&commands);
+    assert_eq!(put_value(&pushed[0].2, "draft/session_fox_1_aa").unwrap()["text"], "mine, typed offline");
+    let history = w.read_with(vcx, |w, cx| w.slots[0].panel.read_chat(cx).unwrap().prompt_history(cx));
+    assert!(history.contains(&"theirs, typed on another Desktop".to_owned()), "{history:?}");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[gpui::test]
+fn a_daemon_newer_than_an_untouched_desktop_wins_and_the_displaced_text_is_kept(cx: &mut gpui::TestAppContext) {
+    let path = scratch("newer");
+    let held = synced_once(cx, &path, "seed text");
+    let (w, vcx, commands) = relaunched(cx, &path, "seed text");
+    let newer: Vec<_> = held
+        .into_iter()
+        .map(|e| if e.key == "draft/session_fox_1_aa" { entry(&e.key, 2, Some(draft("typed on another Desktop"))) } else { e })
+        .collect();
+    link(vcx, &w, None, LinkStatus::Connected);
+    state(vcx, &w, None, snapshot(2, newer));
+    assert_eq!(draft_text(vcx, &w, 0), "typed on another Desktop");
+    assert!(
+        writes(&commands).iter().all(|(_, _, changes)| put_value(changes, "draft/session_fox_1_aa").is_none()),
+        "the untouched draft is not written back"
+    );
+    let history = w.read_with(vcx, |w, cx| w.slots[0].panel.read_chat(cx).unwrap().prompt_history(cx));
+    assert!(history.contains(&"seed text".to_owned()));
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[gpui::test]
+fn first_launch_with_both_stores_empty_writes_and_opens_nothing_of_a_draft_or_panel(cx: &mut gpui::TestAppContext) {
+    let path = scratch("empty");
+    let (w, vcx, commands) = new_workspace(cx, false);
+    keep(vcx, &w, &path);
+    link(vcx, &w, None, LinkStatus::Connected);
+    state(vcx, &w, None, snapshot(0, vec![]));
+    tick(vcx, &w);
+    assert!(w.read_with(vcx, |w, _| w.slots.is_empty()));
+    for (_, _, changes) in writes(&commands) {
+        assert!(changes.iter().all(|c| !c.key.starts_with("panel/") && !c.key.starts_with("draft/")));
+    }
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[gpui::test]
+fn a_new_session_panel_keeps_its_name_and_directory_across_a_restart(cx: &mut gpui::TestAppContext) {
+    let (w, vcx, _commands) = new_workspace(cx, false);
+    w.update(vcx, |w, cx| w.open_local_draft(Some("/home/me/project".into()), cx));
+    tick(vcx, &w);
+    let before = w.read_with(vcx, |w, cx| w.machine_entries(None, None, cx));
+    let panel_key = before.keys().find(|k| k.starts_with("panel/c-")).cloned().expect("compose panel is shared");
+    assert_eq!(before[&panel_key]["working_dir"], "/home/me/project");
+
+    let snap = w.update_in(vcx, |w, window, cx| w.snapshot(window, cx).unwrap());
+    let snap: crate::workspace::WorkspaceSnapshot = serde_json::from_value(serde_json::to_value(snap).unwrap()).unwrap();
+    let (again, vcx, _commands) = new_workspace(cx, false);
+    again.update(vcx, |w, cx| w.apply_snapshot(snap, cx));
+    tick(vcx, &again);
+    let after = again.read_with(vcx, |w, cx| w.machine_entries(None, None, cx));
+    assert_eq!(
+        after.keys().filter(|k| k.starts_with("panel/")).collect::<Vec<_>>(),
+        before.keys().filter(|k| k.starts_with("panel/")).collect::<Vec<_>>(),
+        "the same entry, not a second one"
+    );
+    assert_eq!(after[&panel_key]["working_dir"], "/home/me/project");
+}
+
+#[gpui::test]
+fn a_new_session_panel_of_a_paired_machine_keeps_its_directory_across_a_restart_and_writes_none_elsewhere(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (w, vcx, _commands) = new_workspace(cx, true);
+    w.update(vcx, |w, cx| w.open_remote_draft_in(WORK.to_owned(), Some("/work/proj".into()), cx));
+    tick(vcx, &w);
+    let local = w.read_with(vcx, |w, cx| w.machine_entries(None, None, cx));
+    assert!(
+        local.keys().all(|k| !k.starts_with("panel/")),
+        "a path on the paired machine never goes into this machine's daemon"
+    );
+    let snap = w.update_in(vcx, |w, window, cx| w.snapshot(window, cx).unwrap());
+    let snap: crate::workspace::WorkspaceSnapshot = serde_json::from_value(serde_json::to_value(snap).unwrap()).unwrap();
+    let (again, vcx, _commands) = new_workspace(cx, true);
+    again.update(vcx, |w, cx| w.apply_snapshot(snap, cx));
+    let dirs = again.read_with(vcx, |w, cx| {
+        w.slots
+            .iter()
+            .filter_map(|slot| slot.panel.read_chat(cx).map(|p| p.working_dir.clone()))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(dirs, [Some("/work/proj".to_owned())]);
+}
+
+#[gpui::test]
+fn a_daemon_that_refuses_the_compose_directory_is_written_without_it(cx: &mut gpui::TestAppContext) {
+    let (w, vcx, commands) = new_workspace(cx, false);
+    w.update(vcx, |w, cx| w.open_local_draft(Some("/home/me/project".into()), cx));
+    tick(vcx, &w);
+    link(vcx, &w, None, LinkStatus::Connected);
+    state(vcx, &w, None, snapshot(0, vec![]));
+    let first = writes(&commands);
+    assert!(first[0].2.iter().any(|c| c.value.as_ref().is_some_and(|v| v.get("working_dir").is_some())));
+    w.update(vcx, |w, cx| {
+        w.apply(
+            Update::MachineStatePut {
+                host: None,
+                token: first[0].0,
+                result: Ok(DesktopStatePut::Rejected {
+                    reason: jcode_session_types::desktop_state::DesktopStateRejection::Invalid,
+                    message: "unknown field `working_dir`".into(),
+                }),
+            },
+            cx,
+        );
+    });
+    tick(vcx, &w);
+    let again = writes(&commands);
+    assert!(!again.is_empty(), "the panel is written again");
+    assert!(
+        again.iter().flat_map(|(_, _, c)| c).all(|c| c.value.as_ref().is_none_or(|v| v.get("working_dir").is_none())),
+        "without the field the daemon refused"
+    );
+}

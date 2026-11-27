@@ -46,6 +46,15 @@ impl Panel {
         self.input.read(cx).shared_draft()
     }
 
+    #[cfg(test)]
+    pub(crate) fn prompt_history(&self, cx: &App) -> Vec<String> {
+        self.input.read(cx).prompt_history()
+    }
+
+    pub(crate) fn keep_in_history(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, _| input.keep_in_history(text));
+    }
+
     pub(crate) fn apply_shared_draft(
         &mut self,
         text: String,
