@@ -787,12 +787,29 @@ fn merge_usage(accounts: &mut [Account], json: &str) {
         else {
             continue;
         };
-        let Some(account) = accounts
-            .iter_mut()
-            .find(|account| usage_provider_matches(account, provider_name))
+        // Two services can share a name prefix (`OpenCode Zen`, `OpenCode Go`):
+        // among the accounts that match, the one whose own name opens the
+        // report's (the longest such name) wins, so a sibling listed first
+        // never takes the reading.
+        let lower = provider_name.to_ascii_lowercase();
+        let named_len = |account: &Account| {
+            let display = account.display_name.to_ascii_lowercase();
+            if lower.starts_with(&display) {
+                display.len()
+            } else {
+                0
+            }
+        };
+        let Some(index) = accounts
+            .iter()
+            .enumerate()
+            .filter(|(_, account)| usage_provider_matches(account, provider_name))
+            .min_by_key(|(_, account)| std::cmp::Reverse(named_len(account)))
+            .map(|(index, _)| index)
         else {
             continue;
         };
+        let account = &mut accounts[index];
         let extra_info: Vec<(String, String)> = provider
             .get("extra_info")
             .and_then(|value| value.as_array())
@@ -962,6 +979,35 @@ pub fn lettermark(display_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `OpenCode Go (API key)` also opens with `opencode `, the Zen account's
+    /// id: with both logged in and Zen listed first, Go's windows used to land
+    /// on Zen and Go showed nothing.
+    #[test]
+    fn a_sibling_service_never_takes_a_reading_named_for_another() {
+        let mut accounts = parse(
+            r#"{"providers":[
+                {"id":"opencode","display_name":"OpenCode Zen","status":"available","auth_kind":"API key"},
+                {"id":"opencode-go","display_name":"OpenCode Go","status":"available","auth_kind":"API key"}]}"#,
+        )
+        .unwrap();
+        merge_usage(
+            &mut accounts,
+            r#"{"providers":[
+                {"provider_name":"OpenCode Go (API key)","limits":[{"name":"Monthly window","usage_percent":100.0}],"extra_info":[],"error":null},
+                {"provider_name":"OpenCode Zen (API key)","limits":[],"extra_info":[["Balance","$5.00"]],"error":null}]}"#,
+        );
+        let [zen, go] = &accounts[..] else {
+            panic!("two accounts")
+        };
+        assert_eq!((zen.id.as_str(), zen.usage_reports.len()), ("opencode", 1));
+        assert!(
+            zen.limits.is_empty(),
+            "Zen has no windows: {:?}",
+            zen.limits
+        );
+        assert_eq!((go.id.as_str(), go.limits.len()), ("opencode-go", 1));
+    }
 
     #[test]
     fn opencode_go_is_a_full_account_with_a_lettermark_and_quota_windows() {

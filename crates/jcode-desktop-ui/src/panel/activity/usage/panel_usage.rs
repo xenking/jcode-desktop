@@ -1470,6 +1470,36 @@ mod tests {
         assert!(chips.iter().all(|chip| chip.logo != "deepseek"));
     }
 
+    /// The strip lists a key provider only for a reading it really has: an
+    /// exhausted window is a true 0% left and stays; a pay-per-token key with
+    /// no window and no balance has nothing to say and is not listed.
+    #[test]
+    fn an_exhausted_key_window_stays_and_a_quotaless_key_is_not_listed() {
+        let mut accounts = crate::accounts::parse(
+            r#"{"providers":[
+                {"id":"opencode","display_name":"OpenCode Zen","status":"available","auth_kind":"API key"},
+                {"id":"opencode-go","display_name":"OpenCode Go","status":"available","auth_kind":"API key"},
+                {"id":"openrouter","display_name":"OpenRouter","status":"available","auth_kind":"API key"}
+            ]}"#,
+        )
+        .unwrap();
+        crate::accounts::merge_usage_for_tests(
+            &mut accounts,
+            r#"{"providers":[
+                {"provider_name":"OpenCode Go (API key)","limits":[
+                    {"name":"Rolling window","usage_percent":0.0},
+                    {"name":"Weekly window","usage_percent":75.0},
+                    {"name":"Monthly window","usage_percent":100.0}
+                ],"extra_info":[["Last used","today"]],"error":null},
+                {"provider_name":"OpenCode Zen (API key)","limits":[],"extra_info":[["Last used","today"]],"error":null},
+                {"provider_name":"OpenRouter","limits":[],"extra_info":[],"error":null}
+            ]}"#,
+        );
+        let chips = quota_chips_with(&accounts, false);
+        let listed: Vec<_> = chips.iter().map(|chip| (chip.logo, chip.label())).collect();
+        assert_eq!(listed, vec![("opencode-go", "0%".to_string())]);
+    }
+
     #[gpui::test]
     fn opencode_go_quota_pill_paints_in_the_composer(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
