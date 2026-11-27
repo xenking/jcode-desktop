@@ -100,6 +100,24 @@ fn coaching_chip_never_claims_current_or_incoming_tab_space() {
 }
 
 #[test]
+fn a_machine_named_strip_reserves_its_name_before_that_machines_first_workspace_only() {
+    // Workspaces 1 and 2 here, then workspaces 1 and 2 of the next machine.
+    let rows = [0, 0, 1, ROWS_PER_SPACE, ROWS_PER_SPACE + 1];
+    let named = TabLayout::grouped_named(1400.0, &rows, 0, true);
+    let plain = TabLayout::grouped_named(1400.0, &rows, 0, false);
+    assert_eq!(plain, TabLayout::grouped(1400.0, &rows, 0));
+    let (label, machine) = (TAB_GROUP_LABEL_WIDTH, TAB_MACHINE_LABEL_WIDTH);
+    assert_eq!(plain[0].left, label);
+    assert_eq!(named[0].left, label + machine, "this machine's name leads its first group");
+    let between = |tabs: &[TabGeometry], i: usize| tabs[i].left - tabs[i - 1].left - tabs[i - 1].width;
+    // Workspace 2 of the same machine carries only its digit; the next machine
+    // brings its own name.
+    assert!((between(&named, 2) - (TAB_GROUP_GAP + label)).abs() < 0.001);
+    assert!((between(&named, 3) - (TAB_GROUP_GAP + label + machine)).abs() < 0.001);
+    assert!((between(&named, 4) - (TAB_GROUP_GAP + label)).abs() < 0.001);
+}
+
+#[test]
 fn workspace_tab_groups_prioritize_current_row_and_keep_number_order() {
     let rows = [0, 0, 1, 1, 1, 3, 3];
     for selected in 0..rows.len() {

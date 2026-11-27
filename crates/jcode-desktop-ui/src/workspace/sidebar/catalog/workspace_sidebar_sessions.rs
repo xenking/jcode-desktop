@@ -16,6 +16,8 @@ pub(super) struct SidebarSessionLayout {
     pub(super) session_id: String,
     pub(super) open: bool,
     pub(super) project: usize,
+    /// The machine whose name and workspaces lead this row.
+    pub(super) machine_header: Option<usize>,
     pub(super) header: bool,
     pub(super) checkout_header: bool,
     pub(super) divider: bool,
@@ -38,6 +40,8 @@ pub(super) struct SidebarRow {
     pub(super) session: jcode_sdk::SessionInfo,
     pub(super) project: usize,
     pub(super) subdirectory: Option<String>,
+    /// First row of its machine: carries the machine's header.
+    pub(super) machine_header: Option<usize>,
     pub(super) header: bool,
     pub(super) collapsed: bool,
     pub(super) divider: bool,

@@ -90,19 +90,10 @@ impl Workspace {
         self.active_row = self.active_row.min(rows - 1);
     }
 
-    /// The short label on a workspace's tab group: "3" on this machine, "W2" for
-    /// the second workspace of the machine whose name starts with W.
+    /// The number on a workspace's tab group, within its own machine: the
+    /// machine's name leads its first group, so the digits stay plain.
     pub(super) fn workspace_tab_label(&self, row: usize) -> String {
-        match self.row_host(row) {
-            None => (row + 1).to_string(),
-            Some(host) => {
-                let initial = machines::machine_label(host)
-                    .chars()
-                    .find(|c| c.is_alphanumeric())
-                    .map_or('·', |c| c.to_ascii_uppercase());
-                format!("{initial}{}", row % ROWS_PER_SPACE + 1)
-            }
-        }
+        (row % ROWS_PER_SPACE + 1).to_string()
     }
 
     /// "Workspace 3" on this machine; "work · Workspace 2" on a paired one,
@@ -151,8 +142,8 @@ mod tests {
             paired::publish_labels(&w.remotes.paired);
             assert_eq!(w.workspace_title(2), "Workspace 3");
             assert_eq!(w.workspace_tab_label(2), "3");
-            assert_eq!(w.workspace_tab_label(ROWS_PER_SPACE + 1), "W2");
-            assert_eq!(w.workspace_tab_label(2 * ROWS_PER_SPACE), "L1");
+            assert_eq!(w.workspace_tab_label(ROWS_PER_SPACE + 1), "2");
+            assert_eq!(w.workspace_tab_label(2 * ROWS_PER_SPACE), "1");
             assert_eq!(w.workspace_title(ROWS_PER_SPACE + 1), "work · Workspace 2");
             // Pairing again, or a second sync, changes nothing.
             w.sync_spaces();
@@ -353,9 +344,6 @@ mod tests {
         for row in 0..3 * ROWS_PER_SPACE {
             assert!(bounds(vcx, format!("space-workspace-{row}")).is_some(), "workspace {row}");
         }
-        // The session open on this machine is listed under its section only.
-        workspace.read_with(vcx, |w, _| assert_eq!(w.slots.len(), 1));
-        assert!(vcx.debug_bounds("space-session-0").is_some());
         // Picking a workspace of a machine switches to it.
         let target = bounds(vcx, format!("space-workspace-{}", ROWS_PER_SPACE + 1)).unwrap();
         vcx.simulate_click(target.center(), gpui::Modifiers::default());
@@ -363,9 +351,66 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_workspace_strip_names_each_machine_before_its_first_workspace(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = sectioned_workspace(cx, &["work"]);
+        workspace.update(vcx, |w, cx| {
+            w.push_test_panel("remote session", cx);
+            let last = w.slots.len() - 1;
+            w.slots[last].row = ROWS_PER_SPACE + 1;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let this_machine = vcx.debug_bounds("workspace-tab-machine-0").unwrap();
+        let work = vcx.debug_bounds("workspace-tab-machine-1").unwrap();
+        let work_digit = bounds(vcx, format!("workspace-tab-group-label-{}", ROWS_PER_SPACE + 1)).unwrap();
+        assert!(this_machine.right() <= work.left(), "names do not overlap");
+        assert!(work.right() <= work_digit.left(), "a name leads its group's digit");
+    }
+
+    #[gpui::test]
+    fn without_a_paired_machine_the_strip_names_no_machine(cx: &mut gpui::TestAppContext) {
+        let (_, vcx) = sectioned_workspace(cx, &[]);
+        assert!(vcx.debug_bounds("workspace-tab-machine-0").is_none());
+    }
+
+    #[gpui::test]
+    fn one_session_list_grouped_by_machine_shows_each_session_once(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = sectioned_workspace(cx, &["work"]);
+        let remote = format!("paired://{}/remote_session", "0a".repeat(16));
+        workspace.update(vcx, |w, cx| {
+            w.open_session_with_identity(remote.clone(), Some("remote work".into()), None, ROWS_PER_SPACE, cx);
+            w.sessions = vec![
+                crate::workspace::tests::session_info("local session", Some("local session")),
+                crate::workspace::tests::session_info(&remote, Some("remote work")),
+            ];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let rows = (0..8)
+            .filter_map(|n| bounds(vcx, format!("sidebar-session-{n}")))
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2, "each session appears once, in the one list");
+        let (local, work) = (
+            bounds(vcx, "space-section-0".into()).unwrap(),
+            bounds(vcx, "space-section-1".into()).unwrap(),
+        );
+        assert!(local.bottom() <= rows[0].top(), "this machine's header leads its sessions");
+        assert!(rows[0].bottom() <= work.top() && work.bottom() <= rows[1].top(), "then the next machine's");
+    }
+
+    #[gpui::test]
+    fn a_machine_with_no_sessions_still_shows_its_workspaces(cx: &mut gpui::TestAppContext) {
+        let (_, vcx) = sectioned_workspace(cx, &["work"]);
+        assert!(vcx.debug_bounds("space-section-1").is_some());
+        assert!(vcx.debug_bounds("space-workspace-4").is_some());
+    }
+
+    #[gpui::test]
     fn without_a_paired_machine_the_sidebar_is_unchanged(cx: &mut gpui::TestAppContext) {
         let (_, vcx) = sectioned_workspace(cx, &[]);
-        assert!(vcx.debug_bounds("space-sections").is_none());
+        assert!(vcx.debug_bounds("space-section-0").is_none());
     }
 
     #[gpui::test]
@@ -380,7 +425,7 @@ mod tests {
         vcx.run_until_parked();
         let name = bounds(vcx, "space-name-1".into()).unwrap();
         let status = bounds(vcx, "space-status-1".into()).unwrap();
-        let section = vcx.debug_bounds("space-sections").unwrap();
+        let section = vcx.debug_bounds("space-section-1").unwrap();
         assert!(name.size.height < gpui::px(20.0), "name wrapped: {:?}", name.size);
         assert!(status.size.height < gpui::px(20.0), "status wrapped: {:?}", status.size);
         assert!(name.right() <= section.right() && status.right() <= section.right());

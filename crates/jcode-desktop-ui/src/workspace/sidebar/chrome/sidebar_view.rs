@@ -470,7 +470,9 @@ impl Workspace {
             .chain(other_sessions.into_iter().map(|session| (false, session)))
             .collect::<Vec<_>>();
         // Stable: open-before-history and recency survive inside each group.
-        grouped.sort_by_key(|(_, session)| rank_collection(session));
+        // One list, grouped by machine: this machine's projects, then each
+        // paired machine's in the order of its workspaces.
+        grouped.sort_by_key(|(_, session)| (self.session_machine(session), rank_collection(session)));
         for (live, session) in grouped {
             // open_marks contains exactly the non-closing local panel ids.
             let open = open_marks.contains_key(&session.session_id);
@@ -534,6 +536,7 @@ impl Workspace {
                 session,
                 project: index,
                 subdirectory,
+                machine_header: None,
                 header: false,
                 collapsed: false,
                 divider: false,
@@ -599,15 +602,23 @@ impl Workspace {
                 headers && self.sidebar_projects.collapsed(&project.key, default)
             })
             .collect::<Vec<_>>();
+        let machines_shown = self.machines_shown();
+        let mut machines_listed = std::collections::BTreeSet::new();
         let mut ordered_sessions = Vec::new();
         for (index, rows) in members.into_iter().enumerate() {
             let collapsed = collapsed_projects[index];
+            let machine = rows
+                .first()
+                .map_or(0, |row| self.session_machine(&row.session));
             let mut previous: Option<(bool, bool)> = None;
             let mut previous_checkout: Option<Option<String>> = None;
             for (position, mut row) in rows.into_iter().enumerate() {
                 if collapsed && position > 0 {
                     // One representative keeps the header a real list row.
                     break;
+                }
+                if position == 0 && machines_shown && machines_listed.insert(machine) {
+                    row.machine_header = Some(machine);
                 }
                 row.header = headers && position == 0;
                 row.collapsed = collapsed;
@@ -628,6 +639,12 @@ impl Workspace {
                 ordered_sessions.push(row);
             }
         }
+        // A machine with nothing listed still needs its workspaces reachable.
+        // Those ahead of the first listed machine lead the list; the rest trail it.
+        let first_listed = machines_listed.iter().next().copied();
+        let (machines_above, machines_below): (Vec<usize>, Vec<usize>) = (0..=self.space_hosts.len())
+            .filter(|machine| machines_shown && !machines_listed.contains(machine))
+            .partition(|machine| first_listed.is_none_or(|first| *machine < first));
         let selection_order = ordered_sessions
             .iter()
             .filter(|row| row.open && !row.collapsed)
@@ -646,6 +663,7 @@ impl Workspace {
                     session_id: session.session_id.clone(),
                     open: row.open,
                     project: row.project,
+                    machine_header: row.machine_header,
                     header: row.header,
                     checkout_header: row.checkout_header,
                     divider: row.divider,
@@ -725,6 +743,9 @@ impl Workspace {
         if let Some(empty) = self.render_empty_collections(&empty_collections, cx) {
             list = list.child(empty);
         }
+        for machine in machines_above {
+            list = list.child(self.render_machine_header(machine, cx));
+        }
         if !self.sidebar_selection.is_empty() {
             list = list.child(
                 div()
@@ -780,6 +801,9 @@ impl Workspace {
                                 .relative()
                                 .when(sidebar_index == 0, |el| el.pt_2())
                                 .when(sidebar_index + 1 == ordered_sessions.len(), |el| el.pb_2());
+                            if let Some(machine) = row.machine_header {
+                                list = list.child(this.render_machine_header(machine, cx));
+                            }
                             if row.header {
                                 let (project, _, count) = &groups[row.project];
                                 let header = if sidebar_collections::id_from_key(&project.key).is_some() {
@@ -1164,6 +1188,9 @@ impl Workspace {
                 )
                 .size_full(),
             ));
+        }
+        for machine in machines_below {
+            list = list.child(self.render_machine_header(machine, cx));
         }
 
         if self.sidebar_session_layout.is_empty() {
@@ -1619,11 +1646,6 @@ impl Workspace {
             })
             // Folder mode's header already is the destination row.
             .children((!folders).then(|| self.render_machine_switcher(None, cx)))
-            .children(
-                (self.sidebar_view == SidebarView::Sessions)
-                    .then(|| self.render_space_sections(cx))
-                    .flatten(),
-            )
             .children(
                 (self.sidebar_view == SidebarView::Sessions)
                     .then(|| self.session_catalog_controls("sidebar", cx).px_2().py_1()),

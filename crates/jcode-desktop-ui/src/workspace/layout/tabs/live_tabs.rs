@@ -34,6 +34,8 @@ const TAB_ACTIONS_WIDTH: f32 = TAB_ACTION_SLOT
     };
 const TAB_GROUP_LABEL_WIDTH: f32 = 24.0;
 const TAB_GROUP_GAP: f32 = 28.0;
+/// Room for a machine's name before the first of its workspaces.
+const TAB_MACHINE_LABEL_WIDTH: f32 = 56.0;
 
 fn fps_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -42,14 +44,27 @@ fn fps_enabled() -> bool {
 
 type TabEntry = (Option<usize>, usize, usize);
 
-fn fit_tabs(entries: &mut Vec<TabEntry>, selected: usize, available: f32) -> Vec<usize> {
+fn fit_tabs(
+    entries: &mut Vec<TabEntry>,
+    selected: usize,
+    available: f32,
+    named: bool,
+) -> Vec<usize> {
     let groups = entries
         .iter()
         .filter(|(_, _, position)| *position == 0)
         .count();
+    let machines = if named {
+        let mut spaces: Vec<_> = entries.iter().map(|(_, row, _)| row / ROWS_PER_SPACE).collect();
+        spaces.dedup();
+        spaces.len()
+    } else {
+        0
+    };
     let capacity = |width: f32| {
         let width = width.max(0.0);
         let group_space = groups as f32 * group_label_width(width, groups)
+            + machines as f32 * machine_label_width(width, groups)
             + groups.saturating_sub(1) as f32
                 * TAB_GROUP_GAP.min(width / (groups.max(1) as f32 * 4.0));
         ((width - group_space) / MIN_TAB_EXPOSURE).floor() as usize
@@ -131,6 +146,19 @@ fn group_label_width(available: f32, group_count: usize) -> f32 {
     TAB_GROUP_LABEL_WIDTH.min(available.max(0.0) / (group_count.max(1) as f32 * 4.0))
 }
 
+fn machine_label_width(available: f32, group_count: usize) -> f32 {
+    TAB_MACHINE_LABEL_WIDTH.min(available.max(0.0) / (group_count.max(1) as f32 * 3.0))
+}
+
+/// Whether the group starting at `rows[start]` is the first of its machine's
+/// workspaces, so it carries the machine's name.
+fn names_machine(named: bool, rows: &[usize], groups: &[std::ops::Range<usize>], group: usize) -> bool {
+    named
+        && (group == 0
+            || rows[groups[group].start] / ROWS_PER_SPACE
+                != rows[groups[group - 1].start] / ROWS_PER_SPACE)
+}
+
 /// The floating tabs are independent of the panel camera. Selection adds a
 /// small width accent and a 4px lift, so the panels do the large slide.
 #[derive(Clone, Copy, Debug)]
@@ -187,7 +215,18 @@ impl TabLayout {
     /// Keep each workspace together, with the active workspace taking priority.
     /// `rows` is in workspace/session navigation order, including an empty
     /// active workspace's placeholder. Geometry never changes that order.
+    #[cfg(test)]
     fn grouped(available: f32, rows: &[usize], selected: usize) -> Vec<TabGeometry> {
+        Self::grouped_named(available, rows, selected, false)
+    }
+
+    /// `named` reserves a machine's name before its first workspace.
+    fn grouped_named(
+        available: f32,
+        rows: &[usize],
+        selected: usize,
+        named: bool,
+    ) -> Vec<TabGeometry> {
         if rows.is_empty() {
             return Vec::new();
         }
@@ -207,7 +246,12 @@ impl TabLayout {
         // outline. On tiny tracks reserve most of the width for actual tabs.
         let gap = TAB_GROUP_GAP.min(available / (groups.len() as f32 * 4.0));
         let label_width = group_label_width(available, groups.len());
-        let labels_width = label_width * groups.len() as f32;
+        let machine_width = machine_label_width(available, groups.len());
+        let heads: Vec<bool> = (0..groups.len())
+            .map(|group| names_machine(named, rows, &groups, group))
+            .collect();
+        let labels_width = label_width * groups.len() as f32
+            + machine_width * heads.iter().filter(|head| **head).count() as f32;
         let content = (available - gap * (groups.len() - 1) as f32 - labels_width).max(0.0);
         let compact_ideal =
             |count: usize| (56.0 + (56.0 + TAB_GAP) * (count - 1) as f32).min(144.0);
@@ -227,7 +271,7 @@ impl TabLayout {
         let mut left = 0.0;
         let mut tabs = Vec::with_capacity(rows.len());
         for (group_index, group) in groups.iter().enumerate() {
-            left += label_width;
+            left += label_width + if heads[group_index] { machine_width } else { 0.0 };
             let width = if group_index == active_group {
                 active_used
             } else {
@@ -876,7 +920,8 @@ impl Workspace {
                 .unwrap_or(0)
         };
         let selected = selected_entry(&entries);
-        let hidden = fit_tabs(&mut entries, selected, available);
+        let named = !self.space_hosts.is_empty();
+        let hidden = fit_tabs(&mut entries, selected, available, named);
         let selected = selected_entry(&entries);
         let overflow_width = if hidden.is_empty() {
             0.0
@@ -888,7 +933,7 @@ impl Workspace {
             self.live_tabs.close_overflow();
         }
         let rows: Vec<_> = entries.iter().map(|(_, row, _)| *row).collect();
-        let layout = TabLayout::grouped(available, &rows, selected);
+        let layout = TabLayout::grouped_named(available, &rows, selected, named);
         let keys: Vec<u64> = entries
             .iter()
             .map(|(index, row, _)| {
@@ -1239,10 +1284,37 @@ impl Workspace {
             .filter(|(_, _, position)| *position == 0)
             .count();
         let label_width = group_label_width(available, group_count);
+        let machine_width = machine_label_width(available, group_count);
+        let mut previous_space = None;
         for (position, &(_, row, row_position)) in entries.iter().enumerate() {
             if row_position != 0 {
                 continue;
             }
+            let space = row / ROWS_PER_SPACE;
+            if named && previous_space != Some(space) {
+                tabs = tabs.child(
+                    div()
+                        .debug_selector(move || format!("workspace-tab-machine-{space}"))
+                        .absolute()
+                        .left(px((layout[position].left - label_width - machine_width).max(0.0)))
+                        .bottom(px(TAB_FLOAT_GAP))
+                        .w(px(machine_width))
+                        .h(px(TAB_HEIGHT))
+                        .flex()
+                        .items_center()
+                        .pl_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(11.0))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child(self.row_host(row).map_or_else(
+                            || "Local".to_owned(),
+                            machines::machine_label,
+                        )),
+                );
+            }
+            previous_space = Some(space);
             let accent = Theme::global().workspace_accent(row);
             let active = row == self.active_row;
             tabs = tabs.child(
