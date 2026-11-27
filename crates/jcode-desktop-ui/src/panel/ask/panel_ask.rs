@@ -899,14 +899,12 @@ impl Panel {
                 _ => false,
             };
         }
-        if chord.other_modifier
-            || (!self.focus_handle.is_focused(window)
-                && !self
-                    .transcript_selection
-                    .read(cx)
-                    .focus_handle()
-                    .is_focused(window))
-        {
+        // The card's own selectable text (its question) takes focus when clicked.
+        let keys_here = self.focus_handle.is_focused(window)
+            || [&self.transcript_selection, &self.applet_selection]
+                .iter()
+                .any(|selection| selection.read(cx).focus_handle().is_focused(window));
+        if chord.other_modifier || !keys_here {
             return false;
         }
         let action = choice_keys::classify(chord, Scope::List, count);

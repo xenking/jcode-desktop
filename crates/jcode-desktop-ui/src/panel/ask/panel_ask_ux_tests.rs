@@ -703,3 +703,73 @@ fn the_first_card_of_a_new_session_takes_the_keys_from_the_composer(cx: &mut gpu
     vcx.simulate_keystrokes("2");
     assert_eq!(card(&panel, vcx, |card| card.chosen[0].clone()), [1]);
 }
+
+#[gpui::test]
+fn arrows_still_move_the_highlight_after_clicking_the_questions_text(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = open(cx, None, vec![question(false, &AB)]);
+    let text = vcx.debug_bounds("ask-question-0").unwrap().center();
+    vcx.simulate_click(text, Default::default());
+    vcx.run_until_parked();
+    let before = cursor(&panel, vcx);
+    vcx.simulate_keystrokes("down");
+    assert_ne!(
+        cursor(&panel, vcx),
+        before,
+        "the card still takes the arrows"
+    );
+}
+
+#[gpui::test]
+fn arrows_still_work_after_the_transcript_scrolls_or_streams_and_after_the_first_answer(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = open(cx, None, vec![question(false, &AB), question(false, &AB)]);
+    vcx.simulate_keystrokes("down");
+    let transcript = vcx.debug_bounds("transcript").unwrap().center();
+    vcx.simulate_event(gpui::ScrollWheelEvent {
+        position: transcript,
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-120.))),
+        ..Default::default()
+    });
+    vcx.run_until_parked();
+    panel.update(vcx, |panel, cx| {
+        panel.items.push(Item::Assistant("streaming text".into()));
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("up");
+    assert_eq!(
+        cursor(&panel, vcx),
+        (0, 1),
+        "after a scroll and a streaming update"
+    );
+    vcx.simulate_keystrokes("enter");
+    assert_eq!(cursor(&panel, vcx).0, 1);
+    vcx.simulate_keystrokes("down");
+    assert_eq!(
+        cursor(&panel, vcx),
+        (1, 2),
+        "after answering the first question"
+    );
+    vcx.simulate_keystrokes("right");
+    assert_eq!(cursor(&panel, vcx).0, 2);
+    vcx.simulate_keystrokes("up");
+    assert_eq!(cursor(&panel, vcx), (2, 1), "on the review");
+}
+
+#[gpui::test]
+fn the_second_ask_of_a_session_takes_the_arrows_from_the_composer(cx: &mut gpui::TestAppContext) {
+    let one = question(false, &AB);
+    let (panel, vcx) = open(cx, None, vec![one.clone()]);
+    vcx.simulate_keystrokes("1 enter");
+    settle(&panel, vcx, "ask-1");
+    vcx.update(|window, cx| {
+        let input = panel.read(cx).input_focus_handle(cx);
+        window.focus(&input, cx);
+    });
+    show(&panel, vcx, "ask-2", vec![one]);
+    vcx.simulate_keystrokes("down");
+    assert_eq!(cursor(&panel, vcx), (0, 2));
+}
