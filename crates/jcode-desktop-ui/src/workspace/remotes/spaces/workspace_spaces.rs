@@ -10,6 +10,20 @@ impl Workspace {
         self.space_hosts.get(space).map(String::as_str)
     }
 
+    /// What an empty workspace says when its machine cannot sync, in place of
+    /// the daemon status line that belongs to this machine.
+    pub(super) fn machine_notice(&self, row: usize) -> Option<String> {
+        let host = self.row_host(row)?;
+        let name = machines::machine_label(host);
+        match self.remotes.machine_status.get(host)? {
+            machines::MachineStatus::NeedsUpdate => {
+                Some(format!("Update Jcode on {name} to sync its workspaces"))
+            }
+            machines::MachineStatus::Lost => Some(format!("Lost connection to {name}")),
+            _ => None,
+        }
+    }
+
     /// First workspace of a machine's space.
     pub(super) fn space_first_row(&self, host: &str) -> Option<usize> {
         let space = self.space_hosts.iter().position(|known| known == host)?;
@@ -432,6 +446,27 @@ mod tests {
     }
 
     #[gpui::test]
+    fn an_empty_workspace_of_a_machine_that_cannot_sync_says_so_and_a_healthy_one_does_not(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = sectioned_workspace(cx, &["work"]);
+        let host = workspace.read_with(vcx, |w, _| w.remotes.paired[0].host());
+        let notice = |vcx: &mut gpui::VisualTestContext, row: usize| {
+            workspace.read_with(vcx, |w, _| w.machine_notice(row))
+        };
+        assert_eq!(notice(vcx, ROWS_PER_SPACE), None);
+        workspace.update(vcx, |w, _| {
+            w.remotes.machine_status.insert(host.clone(), machines::MachineStatus::NeedsUpdate);
+        });
+        assert!(notice(vcx, ROWS_PER_SPACE).unwrap().contains("Update Jcode on work"));
+        workspace.update(vcx, |w, _| {
+            w.remotes.machine_status.insert(host, machines::MachineStatus::Lost);
+        });
+        assert!(notice(vcx, ROWS_PER_SPACE + 1).unwrap().contains("work"));
+        assert_eq!(notice(vcx, 0), None, "this machine's workspaces keep the daemon status");
+    }
+
+    #[gpui::test]
     fn link_results_set_the_machine_status_shown_in_its_header(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = sectioned_workspace(cx, &["work"]);
         let host = workspace.read_with(vcx, |w, _| w.remotes.paired[0].host());
@@ -464,7 +499,6 @@ mod tests {
         assert_eq!(status(vcx), Some(machines::MachineStatus::Lost));
         report(vcx, "Remote session failed: too old", Some(jcode_sdk::PairedFailure::TooOld));
         assert_eq!(status(vcx), Some(machines::MachineStatus::NeedsUpdate));
-        assert_eq!(machines::MachineStatus::NeedsUpdate.label("work"), "Update Jcode on work");
     }
 
     #[gpui::test]

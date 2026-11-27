@@ -70,7 +70,11 @@ impl Workspace {
                         .debug_selector(|| "empty-strip-shortcut".into())
                         .child("Press Super+Enter to start a new session here"),
                 )
-                .child(div().text_size(px(12.0)).child(self.status.clone()))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .child(self.machine_notice(row).unwrap_or_else(|| self.status.clone())),
+                )
                 .into_any_element()
         }
     }

@@ -33,7 +33,7 @@ impl Workspace {
                 .local_link
                 .filter(|link| *link == machines::MachineStatus::NeedsUpdate),
         };
-        let status = link.map(|status| status.label(host.map_or("this machine", |_| name.as_str())));
+        let status = link.map(machines::MachineStatus::label);
         let offline = host.is_some()
             && matches!(
                 link,
@@ -60,7 +60,12 @@ impl Workspace {
                 .text_color(if occupied || active { theme.TEXT } else { theme.TEXT_DIM })
                 .when(active, |el| el.bg(theme.HEADER_BG))
                 .hover(|el| el.bg(theme.HEADER_BG))
+                .relative()
                 .child((offset + 1).to_string())
+                .children(crate::fixture_control_targets::marker(
+                    move || format!("space-workspace-{row}"),
+                    || None,
+                ))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {

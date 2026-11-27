@@ -102,12 +102,13 @@ pub(super) enum MachineStatus {
 }
 
 impl MachineStatus {
-    pub(super) fn label(self, machine: &str) -> String {
+    pub(super) fn label(self) -> &'static str {
         match self {
-            Self::Connecting => "Connecting…".into(),
-            Self::Connected => "Connected".into(),
-            Self::Lost => "Lost connection".into(),
-            Self::NeedsUpdate => format!("Update Jcode on {machine}"),
+            Self::Connecting => "Connecting…",
+            Self::Connected => "Connected",
+            Self::Lost => "Lost connection",
+            // The header already names the machine; the full line must fit it.
+            Self::NeedsUpdate => "Update Jcode",
         }
     }
 }

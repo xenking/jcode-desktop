@@ -152,6 +152,8 @@ pub(crate) fn is_selector(selector: &str) -> bool {
             "clean-chat-on" | "clean-chat-off" | "hover:clean-chat-on" | "hover:clean-chat-off"
         )
         || selector == "transcript-activity"
+        // A machine's workspace pill, to move between machines' spaces.
+        || selector.starts_with("space-workspace-")
         || selector.starts_with("session-status-")
         || selector == "openrig-section-menu"
         || (files_panel()
