@@ -71,9 +71,8 @@ impl Panel {
                 account,
                 reason,
                 warnings,
-                pending,
                 ..
-            } => self.routing_decision(account, reason, warnings, pending.as_deref(), cx),
+            } => self.routing_decision(account, reason, warnings, cx),
             ApiEvent::RoutingGate {
                 gate_id,
                 reason,

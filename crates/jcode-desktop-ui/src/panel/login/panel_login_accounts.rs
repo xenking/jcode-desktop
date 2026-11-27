@@ -914,6 +914,39 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_auto_switch_switch_turns_the_pool_manual_and_back_keeping_the_list(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new_accounts("pool-test", None, crate::harness::spawn_inert(), cx)
+        });
+        vcx.run_until_parked();
+        let state = |vcx: &mut gpui::VisualTestContext| {
+            panel.read_with(vcx, |panel, _| {
+                let pool = &panel.login.as_ref().unwrap().accounts.pool;
+                (pool.auto_switch(), pool.members.clone())
+            })
+        };
+        let (on, members) = state(vcx);
+        assert!(on, "a pool nobody touched is automatic");
+        let toggle = |vcx: &mut gpui::VisualTestContext| {
+            let bounds = vcx
+                .debug_bounds("login-auto-switch-toggle")
+                .expect("the switch");
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        toggle(vcx);
+        assert_eq!(state(vcx), (false, members.clone()), "off keeps the list");
+        assert!(
+            vcx.debug_bounds("login-group-auto").is_some(),
+            "the list stays on the page"
+        );
+        toggle(vcx);
+        assert_eq!(state(vcx), (true, members));
+    }
+
+    #[gpui::test]
     fn reorder_controls_and_dragging_move_accounts_without_opening_sign_in(
         cx: &mut gpui::TestAppContext,
     ) {

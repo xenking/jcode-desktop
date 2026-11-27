@@ -65,8 +65,9 @@ pub fn composer_picker_fixture_runtime(
 }
 
 /// Four accounts (three Claude logins, one ChatGPT) serving overlapping
-/// models, with the session on `claude:claude-fox`, for the routing screenshots.
-pub fn routing_fixture_runtime(session_id: &str) -> ApiEvent {
+/// models, with the session on `claude:claude-fox`, for the routing screenshots;
+/// with `several` false only that one login exists, so no route carries an icon.
+pub fn routing_fixture_runtime(session_id: &str, several: bool) -> ApiEvent {
     let route = |model: &str, provider: &str, method: &str, account: &str, icon: &str| {
         jcode_sdk::ModelRouteInfo {
             model: model.into(),
@@ -78,11 +79,18 @@ pub fn routing_fixture_runtime(session_id: &str) -> ApiEvent {
             reasoning_efforts: None,
             usage: None,
             account: Some(account.into()),
-            icon: Some(icon.into()),
+            icon: several.then(|| icon.into()),
         }
     };
     let mut routes = Vec::new();
-    for (label, icon) in [("claude-otter", "🦦"), ("claude-fox", "🦊"), ("claude-panda", "🐼")] {
+    for (label, icon) in [
+        ("claude-otter", "🦦"),
+        ("claude-fox", "🦊"),
+        ("claude-panda", "🐼"),
+    ]
+    .into_iter()
+    .filter(|(label, _)| several || *label == "claude-fox")
+    {
         for model in ["claude-sonnet-5-5", "claude-opus-4-8"] {
             routes.push(route(
                 model,
@@ -93,13 +101,15 @@ pub fn routing_fixture_runtime(session_id: &str) -> ApiEvent {
             ));
         }
     }
-    routes.push(route(
-        "gpt-6.2-astra",
-        "OpenAI",
-        "openai-oauth@openai-otter",
-        "openai:openai-otter",
-        "🦦",
-    ));
+    if several {
+        routes.push(route(
+            "gpt-6.2-astra",
+            "OpenAI",
+            "openai-oauth@openai-otter",
+            "openai:openai-otter",
+            "🦦",
+        ));
+    }
     ApiEvent::RuntimeInfo {
         session_id: session_id.into(),
         provider: Some("Anthropic".into()),
@@ -113,25 +123,17 @@ pub fn routing_fixture_runtime(session_id: &str) -> ApiEvent {
     }
 }
 
-/// The daemon's decision for the routing fixture.
-pub fn routing_fixture_decision(session_id: &str) -> ApiEvent {
+/// The daemon's decision for the routing fixture. The fixture sends two: the
+/// session starts on `claude-otter`, then the daemon moves it to `claude-fox`.
+pub fn routing_fixture_decision(session_id: &str, account: &str, warnings: &[&str]) -> ApiEvent {
     ApiEvent::RoutingDecision {
         session_id: session_id.into(),
-        account: "claude:claude-fox".into(),
-        reason: "behind pace, room would be lost at the reset".into(),
-        warnings: Vec::new(),
+        account: account.into(),
+        reason: "claude:claude-fox resets soon and its room would be lost".into(),
+        warnings: warnings.iter().map(|w| (*w).to_owned()).collect(),
         pending: None,
     }
 }
-
-/// `/acct status` as the daemon words it for the routing fixture.
-pub const ROUTING_FIXTURE_STATUS: &str = "routing: auto
-this session: 🦊 claude:claude-fox
-paid: auto (config auto)
-  🦦 claude:claude-otter  subscription  priority 1
-* 🦊 claude:claude-fox  subscription  priority 2
-  🐼 claude:claude-panda  credits  priority 9
-  🦦 openai:openai-otter  subscription  priority 1";
 
 /// A bridge that answers from fixtures, so the screenshot harness can
 /// render the results screen without a daemon, an index, or a network.

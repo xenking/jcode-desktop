@@ -1282,7 +1282,6 @@ mod tests {
                 "claude:claude-fox".into(),
                 "priority 1".into(),
                 Vec::new(),
-                None,
             );
             cx.notify();
         });

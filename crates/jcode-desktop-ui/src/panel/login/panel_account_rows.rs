@@ -120,6 +120,57 @@ struct AccountRowView<'a> {
     live_error: Option<&'a str>,
 }
 
+impl Panel {
+    /// Auto-switch on or off. Off keeps the list but no session moves to another
+    /// account until it is switched back on.
+    fn toggle_auto_switch(&mut self, cx: &mut Context<Self>) {
+        let offline =
+            self.preview_state.is_some() || cfg!(test) || crate::harness::screenshot_mode();
+        let Some(state) = self.login.as_mut() else {
+            return;
+        };
+        state.accounts.pool.manual = !state.accounts.pool.manual;
+        if !offline {
+            let pool = state.accounts.pool.clone();
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(error) = pool.save() {
+                        eprintln!("[accounts] could not save the auto-switch setting: {error}");
+                    }
+                })
+                .detach();
+        }
+        cx.notify();
+    }
+
+    fn render_auto_switch_toggle(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let on = self
+            .login
+            .as_ref()
+            .is_some_and(|state| state.accounts.pool.auto_switch());
+        div()
+            .id("login-auto-switch-toggle")
+            .debug_selector(|| "login-auto-switch-toggle".into())
+            .px_2()
+            .py_0p5()
+            .rounded_full()
+            .cursor_pointer()
+            .text_size(px(11.))
+            .when(on, |el| {
+                el.bg(theme.wash(crate::theme::Ink::Accent, 0.2))
+                    .text_color(theme.ACCENT)
+            })
+            .when(!on, |el| {
+                el.bg(theme.wash(crate::theme::Ink::HeaderBg, 0.5))
+                    .text_color(theme.TEXT_DIM)
+            })
+            .child(if on { "On" } else { "Off" })
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_auto_switch(cx)))
+            .into_any_element()
+    }
+}
+
 impl AccountRowView<'_> {
     /// The saved resets a login can use right now. Clicking only opens the
     /// workspace review, which prepares against the provider and needs an
@@ -672,7 +723,10 @@ impl Panel {
                                     .text_color(theme.TEXT)
                                     .child(title),
                             )
-                            .child(chip(rows.len().to_string(), theme.TEXT_DIM)),
+                            .child(chip(rows.len().to_string(), theme.TEXT_DIM))
+                            .children(pooled.then(|| {
+                                div().ml_auto().child(self.render_auto_switch_toggle(cx))
+                            })),
                     )
                     .child(
                         div()
@@ -728,7 +782,11 @@ impl Panel {
             out.push(self.render_account_group(
                 "login-group-auto",
                 "Auto-switch",
-                "The first account is the default for new sessions. The rest take over in order when one runs out or fails. Drag the ≡ handle or use ↑ ↓ to reorder.",
+                if state.accounts.pool.auto_switch() {
+                    "The first account is the default for new sessions. The rest take over in order when one runs out or fails. Drag the ≡ handle or use ↑ ↓ to reorder."
+                } else {
+                    "Off: no session moves to another account by itself. A session stays on its account, and when that account is blocked the request fails and names it."
+                },
                 &groups.pooled,
                 true,
                 &visible,

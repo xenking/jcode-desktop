@@ -204,51 +204,43 @@ fn a_finished_turn_cannot_leave_a_gate_open(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn the_chip_names_the_account_with_a_warning_marker_and_a_pending_move(
-    cx: &mut gpui::TestAppContext,
-) {
+fn the_chip_shows_only_for_a_warning_or_after_a_move(cx: &mut gpui::TestAppContext) {
     let (panel, vcx, _commands) = panel_with_bridge(cx);
     assert!(
         vcx.debug_bounds("composer-routing-chip").is_none(),
         "no chip before a decision"
     );
 
+    // Running on the one account with nothing to say: no chip.
     panel.update(vcx, |panel, cx| {
         panel.apply(&decision("claude:team", &[], None), cx)
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("composer-routing-account").is_some());
-    assert!(vcx.debug_bounds("composer-routing-warning").is_none());
-    assert!(vcx.debug_bounds("composer-routing-pending").is_none());
+    assert!(vcx.debug_bounds("composer-routing-chip").is_none());
+    panel.read_with(vcx, |panel, _| {
+        assert_eq!(
+            panel.routing_chip.as_ref().unwrap().account,
+            "claude:team",
+            "the model chip still learns which account serves the session"
+        );
+    });
 
+    // A warning brings it up, named without the provider prefix.
     panel.update(vcx, |panel, cx| {
-        panel.apply(
-            &decision(
-                "claude:team",
-                &["budget hf 90 of 100"],
-                Some("claude:spare"),
-            ),
-            cx,
-        )
+        panel.apply(&decision("claude:team", &["budget hf 90 of 100"], None), cx)
     });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("composer-routing-warning").is_some());
-    assert!(vcx.debug_bounds("composer-routing-pending").is_some());
     panel.read_with(vcx, |panel, _| {
         let chip = panel.routing_chip.as_ref().unwrap();
-        assert_eq!(
-            chip.account_text(),
-            "claude:team",
-            "no route names a second account, so no icon"
-        );
+        assert_eq!(chip.account_text(), "team");
         assert_eq!(chip.warning_marker().as_deref(), Some("⚠"));
-        assert_eq!(chip.pending_text().as_deref(), Some("claude:spare"));
         assert!(
             !panel
                 .items
                 .iter()
                 .any(|item| matches!(item, Item::SwarmWorkerNotice(_))),
-            "a warning or pending move is not an account change"
+            "a warning is not an account change"
         );
     });
 }
@@ -280,8 +272,8 @@ fn moving_to_another_account_is_announced_once(cx: &mut gpui::TestAppContext) {
             panic!("the move is one notice row");
         };
         assert_eq!(
-            notice, "Account: claude:team → claude:spare (priority 1)",
-            "with one account per provider the move names no icons"
+            notice, "Account: team → spare (priority 1)",
+            "accounts are named, not spelled as provider ids, and carry no icon among a lone provider account"
         );
     });
 }
@@ -344,71 +336,49 @@ fn acct_sends_the_parsed_intent_and_a_bad_command_explains_itself(cx: &mut gpui:
     });
 }
 
-fn status_requests(commands: &std::sync::mpsc::Receiver<Bridge>) -> usize {
-    commands
-        .try_iter()
-        .filter(|command| {
-            matches!(
-                command,
-                Bridge::RoutingIntent {
-                    action: jcode_session_types::routing::RoutingIntentAction::Status,
-                    ..
-                }
-            )
-        })
-        .count()
-}
-
 #[gpui::test]
-fn the_chip_click_toggles_a_popover_and_the_status_table_never_enters_the_transcript(
+fn after_a_move_the_chip_opens_a_short_popover_and_goes_once_it_was_seen(
     cx: &mut gpui::TestAppContext,
 ) {
     let (panel, vcx, commands) = panel_with_bridge(cx);
     panel.update(vcx, |panel, cx| {
-        panel.apply(&decision("claude:claude-fox", &[], None), cx)
+        panel.apply(&decision("claude:claude-otter", &[], None), cx);
+        panel.apply(&decision("claude:claude-fox", &[], None), cx);
     });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("routing-popover").is_none());
 
-    let chip = vcx.debug_bounds("composer-routing-chip").expect("chip");
+    let chip = vcx
+        .debug_bounds("composer-routing-chip")
+        .expect("a move shows the chip");
     vcx.simulate_click(chip.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
-    assert_eq!(
-        status_requests(&commands),
-        1,
-        "one click asks for the table once"
-    );
     assert!(
-        vcx.debug_bounds("routing-popover").is_some(),
-        "the click opens the popover"
+        commands
+            .try_iter()
+            .all(|command| !matches!(command, Bridge::RoutingIntent { .. })),
+        "the popover needs no status table"
     );
-
-    let table = "routing: auto\nthis session: claude:claude-fox\n* \u{1f98a} claude:claude-fox  subscription  priority 2";
-    for _ in 0..3 {
-        panel.update(vcx, |panel, cx| {
-            panel.routing_intent_reply(Ok(table.into()), cx)
-        });
-    }
-    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("routing-popover").is_some());
+    assert!(vcx.debug_bounds("routing-popover-manage").is_some());
     panel.read_with(vcx, |panel, _| {
-        assert!(
-            panel.items.is_empty(),
-            "the table is never a transcript item: {:?}",
-            panel.items.len()
-        );
         let rows = panel
             .routing_popover
             .as_ref()
             .unwrap()
             .rows(panel.routing_chip.as_ref());
+        assert!(
+            rows.len() + 1 <= 3,
+            "{rows:?}: two facts and the action at most"
+        );
+        assert_eq!(rows[0].text, "Running on claude-fox");
+        assert_eq!(rows[1].text, "Moved from claude-otter: priority 1");
         assert_eq!(
-            rows.iter()
-                .filter(|row| row.text == "routing: auto")
-                .count(),
-            1
+            panel.items.len(),
+            1,
+            "only the one-line account change, no table"
         );
     });
-    assert!(vcx.debug_bounds("routing-popover-row-0").is_some());
 
     let chip = vcx.debug_bounds("composer-routing-chip").expect("chip");
     vcx.simulate_click(chip.center(), gpui::Modifiers::default());
@@ -417,7 +387,10 @@ fn the_chip_click_toggles_a_popover_and_the_status_table_never_enters_the_transc
         vcx.debug_bounds("routing-popover").is_none(),
         "a second click closes it"
     );
-    assert_eq!(status_requests(&commands), 0);
+    assert!(
+        vcx.debug_bounds("composer-routing-chip").is_none(),
+        "a move that was looked at no longer needs the chip"
+    );
 }
 
 #[gpui::test]
@@ -451,49 +424,4 @@ fn an_opening_gate_takes_the_keyboard_so_keys_answer_without_a_click(
         }],
         "Enter answers the focused switch with no prior click"
     );
-}
-
-/// Hover the chip and read back the tooltip rows it paints.
-fn hover_rows(vcx: &mut gpui::VisualTestContext, chip: gpui::Bounds<gpui::Pixels>) -> Vec<gpui::Bounds<gpui::Pixels>> {
-    vcx.simulate_mouse_move(chip.center(), None, Default::default());
-    vcx.run_until_parked();
-    vcx.executor().advance_clock(std::time::Duration::from_secs(1));
-    vcx.run_until_parked();
-    (0..12)
-        .map_while(|index| vcx.debug_bounds(Box::leak(format!("rows-tooltip-row-{index}").into_boxed_str())))
-        .collect()
-}
-
-#[gpui::test]
-fn a_long_why_wraps_inside_the_chips_tooltip_and_never_paints_over_the_next_row(
-    cx: &mut gpui::TestAppContext,
-) {
-    let (panel, vcx, _commands) = panel_with_bridge(cx);
-    let reason = "behind pace: claude:claude-otter would be at 91% of its weekly window by the reset, \
-                  so the other subscription takes the next turns until the pace evens out";
-    panel.update(vcx, |panel, cx| {
-        panel.apply(
-            &event(serde_json::json!({
-                "ev": "routing_decision", "session_id": "session-a", "account": "claude:claude-fox",
-                "reason": reason, "warnings": [], "pending": null,
-            })),
-            cx,
-        )
-    });
-    vcx.run_until_parked();
-    let chip = vcx.debug_bounds("composer-routing-chip").expect("chip");
-    let rows = hover_rows(vcx, chip);
-    assert!(rows.len() >= 2, "the tooltip lists the decision rows: {rows:?}");
-    assert!(
-        rows.iter().any(|row| row.size.height > px(16.5)),
-        "the Why row wraps to several lines: {rows:?}"
-    );
-    for pair in rows.windows(2) {
-        assert!(
-            pair[0].bottom() <= pair[1].top() + px(0.5) && !pair[0].intersects(&pair[1]),
-            "tooltip rows overlap: {pair:?}"
-        );
-    }
-    let tooltip = vcx.debug_bounds("rows-tooltip").expect("tooltip");
-    assert!(rows.iter().all(|row| row.right() <= tooltip.right()), "a row spills out of the tooltip");
 }

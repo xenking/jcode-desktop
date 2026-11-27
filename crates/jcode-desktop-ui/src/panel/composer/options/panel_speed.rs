@@ -37,20 +37,45 @@ impl Panel {
             Ok("effort") => PickerKind::Effort,
             Ok("context") => {
                 if self.working_dir.is_none() {
-                    self.working_dir = std::env::current_dir().ok().map(|path| path.display().to_string());
+                    self.working_dir = std::env::current_dir()
+                        .ok()
+                        .map(|path| path.display().to_string());
                 }
                 self.seed_mode_picker_fixture(cx);
                 self.open_picker_search(PickerKind::Context, cx);
                 return;
             }
-            Ok(fixture @ ("accounts" | "routing-popover")) => {
-                self.apply(&crate::harness::routing_fixture_runtime(&self.session_id), cx);
-                self.apply(&crate::harness::routing_fixture_decision(&self.session_id), cx);
-                if fixture == "accounts" {
-                    self.open_picker_search(PickerKind::Model, cx);
-                } else {
-                    let status = crate::harness::ROUTING_FIXTURE_STATUS;
-                    self.routing_intent_reply(Ok(status.into()), cx);
+            Ok(
+                fixture @ ("accounts" | "routing-popover" | "routing-warning" | "routing-calm"
+                | "routing-single"),
+            ) => {
+                let id = self.session_id.clone();
+                let decide = |account: &str, warnings: &[&str]| {
+                    crate::harness::routing_fixture_decision(&id, account, warnings)
+                };
+                self.apply(
+                    &crate::harness::routing_fixture_runtime(&id, fixture != "routing-single"),
+                    cx,
+                );
+                match fixture {
+                    "accounts" | "routing-popover" => {
+                        // The session starts on one account and the daemon moves it.
+                        self.apply(&decide("claude:claude-otter", &[]), cx);
+                        self.apply(&decide("claude:claude-fox", &[]), cx);
+                    }
+                    "routing-warning" => self.apply(
+                        &decide("claude:claude-fox", &["claude:claude-fox 5h 97%"]),
+                        cx,
+                    ),
+                    _ => self.apply(&decide("claude:claude-fox", &[]), cx),
+                }
+                match fixture {
+                    "accounts" => self.open_picker_search(PickerKind::Model, cx),
+                    "routing-popover" | "routing-warning" => {
+                        self.routing_popover = Some(Default::default());
+                        cx.notify();
+                    }
+                    _ => {}
                 }
                 return;
             }
@@ -70,7 +95,9 @@ impl Panel {
         });
         self.open_picker_search(kind, cx);
         if let Some((_, input)) = &self.picker_search {
-            input.update(cx, |input, cx| input.focus_next_picker_row_for_screenshot(cx));
+            input.update(cx, |input, cx| {
+                input.focus_next_picker_row_for_screenshot(cx)
+            });
         }
     }
 

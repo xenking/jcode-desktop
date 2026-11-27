@@ -239,7 +239,7 @@ impl Panel {
                 "account": chip.account,
                 "reason": chip.reason,
                 "warnings": chip.warnings,
-                "pending": chip.pending,
+                "moved_from": chip.moved_from,
             })),
             "popover": self.routing_popover.as_ref().map(|popover| {
                 popover

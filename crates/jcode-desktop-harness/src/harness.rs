@@ -41,7 +41,7 @@ pub use local_runtime::controlled_runtime_socket;
 pub use protocol::*;
 pub use remote::{is_remote_session, remote_host, session_address};
 pub use screenshot::{
-    GALLERY_FIXTURE_IMAGES, ROUTING_FIXTURE_STATUS, composer_picker_fixture_runtime,
+    GALLERY_FIXTURE_IMAGES, composer_picker_fixture_runtime,
     gallery_fixture_image_id, routing_fixture_decision, routing_fixture_runtime,
 };
 pub use session::events::collection_reminder;

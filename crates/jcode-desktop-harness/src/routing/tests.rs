@@ -1,12 +1,11 @@
 use super::feed::fixture;
 use super::*;
 
-fn chip(warnings: &[&str], pending: Option<&str>) -> RoutingChip {
+fn chip(warnings: &[&str]) -> RoutingChip {
     RoutingChip::new(
         "claude:team".into(),
-        "priority 1".into(),
+        "claude:team ranks first".into(),
         warnings.iter().map(|w| w.to_string()).collect(),
-        pending.map(str::to_string),
     )
     .unwrap()
 }
@@ -21,84 +20,52 @@ fn with_default_icons(chip: RoutingChip) -> RoutingChip {
 }
 
 #[test]
-fn chip_parts_lead_with_the_icon_then_add_the_warning_and_the_pending_move() {
-    let team = icon("claude:team");
-    let spare = icon("claude:spare");
-    let parts = |chip: RoutingChip| {
-        let chip = with_default_icons(chip);
-        (
-            chip.account_text(),
-            chip.warning_marker(),
-            chip.pending_text(),
-        )
-    };
+fn the_chip_names_the_account_by_its_name_with_the_icon_first() {
+    assert_eq!(chip(&[]).account_text(), "team");
+    let iconed = chip(&[]).with_icons(|account| Some(icon(account)));
     assert_eq!(
-        parts(chip(&[], None)),
-        (format!("{team} claude:team"), None, None)
+        iconed.account_text(),
+        format!("{} team", icon("claude:team"))
     );
+}
+
+#[test]
+fn the_chip_is_an_alert_only_after_a_move_or_with_a_warning() {
+    assert!(!chip(&[]).is_alert());
+    assert!(chip(&["budget hf 90 of 100"]).is_alert());
+    let mut moved = chip(&[]);
+    moved.moved_from = Some("claude:other".into());
+    assert!(moved.is_alert());
     assert_eq!(
-        parts(chip(&["budget hf 90 of 100"], None)).1.as_deref(),
+        chip(&["budget hf 90 of 100"]).warning_marker().as_deref(),
         Some("⚠")
     );
-    assert_eq!(parts(chip(&["a", "b", "c"], None)).1.as_deref(), Some("⚠3"));
     assert_eq!(
-        parts(chip(&["a"], Some("claude:spare"))).2,
-        Some(format!("{spare} claude:spare"))
+        chip(&["a", "b", "c"]).warning_marker().as_deref(),
+        Some("⚠3")
     );
-}
-
-#[test]
-fn a_lone_account_names_itself_without_an_icon() {
-    let chip = chip(&["a"], Some("claude:spare"));
-    assert_eq!(chip.account_text(), "claude:team");
-    assert_eq!(chip.pending_text().as_deref(), Some("claude:spare"));
-    assert_eq!(chip.tooltip()[0], "Running on claude:team");
-}
-
-#[test]
-fn only_the_accounts_the_lookup_names_get_an_icon() {
-    let chip = chip(&[], Some("claude:spare"))
-        .with_icons(|account| (account == "claude:spare").then(|| "🚀".to_owned()));
-    assert_eq!(chip.account_text(), "claude:team");
-    assert_eq!(chip.pending_text().as_deref(), Some("🚀 claude:spare"));
 }
 
 #[test]
 fn chip_needs_an_account_and_strips_control_characters() {
-    assert_eq!(
-        RoutingChip::new("  ".into(), "r".into(), vec![], None),
-        None
-    );
-    let chip = RoutingChip::new(
-        "a\nb".into(),
-        "why\t\u{7}".into(),
-        vec!["\n".into()],
-        Some("".into()),
-    )
-    .unwrap();
+    assert_eq!(RoutingChip::new("  ".into(), "r".into(), vec![]), None);
+    let chip = RoutingChip::new("a\nb".into(), "why\t\u{7}".into(), vec!["\n".into()]).unwrap();
     assert_eq!(chip.account, "a b");
     assert_eq!(chip.reason, "why");
     assert!(chip.warnings.is_empty(), "blank warnings are dropped");
-    assert_eq!(chip.pending, None);
 }
 
 #[test]
-fn tooltip_explains_the_account_the_move_and_each_warning() {
-    let lines =
-        with_default_icons(chip(&["budget hf-month 45 of 50"], Some("claude:spare"))).tooltip();
+fn ids_in_a_reason_are_said_as_names() {
+    let mut moved = chip(&[]);
+    moved.moved_from = Some("claude:claude-otter".into());
+    moved.reason =
+        "claude:claude-otter cannot serve (claude:claude-otter 5h 99%), moving to claude:team"
+            .into();
     assert_eq!(
-        lines[0],
-        format!("Running on {} claude:team", icon("claude:team"))
+        moved.lines()[1],
+        "Claude-otter cannot serve (claude-otter 5h 99%), moving to team"
     );
-    assert_eq!(lines[1], "Why: priority 1");
-    assert_eq!(
-        lines[2],
-        format!(
-            "Moves to {} claude:spare at the next cache-cold turn",
-            icon("claude:spare")
-        )
-    );
-    assert_eq!(lines[3], "⚠ budget hf-month 45 of 50");
 }
 
 #[test]

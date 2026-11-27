@@ -10,16 +10,30 @@ repository: [ROUTING.md](https://github.com/xenking/jcode/blob/master/docs/ROUTI
 
 ## Account chip
 
-A pill in the composer's status row names the account the session runs on.
-Hover it for the reason the policy chose it, the account a warm session will move
-to at its next cache-cold turn, and any warnings. Every account leads with
-its own icon (an animal by default, `icon` under `[[routing.accounts]]` overrides
-it). A `⚠` after the name marks warnings (`⚠3` for three), and `→ name` marks a
-pending move. Click it to open the account popover above the composer: the same
-facts as the hover, then the daemon's `/acct status` table. Click again or press
-`Esc` to close it. Routing text never enters the transcript: every `/acct` answer,
-errors included, shows in the popover. When a decision moves the session to
-another account, a one-line notice row says so once, with the reason.
+The pill in the composer's status row appears only when something needs a look:
+the daemon moved the session to another account, or warns about its account. It
+names the account by the name you gave it (never `provider:id`) and a `⚠` after
+the name marks warnings (`⚠3` for three). With one account, or with several and
+nothing to report, there is no pill: the model chip already leads with the serving
+account's icon.
+
+Click the pill to open the popover above the composer. It has at most three
+lines: where the session runs, one plain reason when a move happened (otherwise
+the first warning), and **Manage accounts**, which opens the accounts page. There
+is no table, mode or config note in it. Click again or press `Esc` to close it;
+once a move has been looked at the pill goes. Routing text never enters the
+transcript: the full table is `/acct status`, whose answer (like every `/acct`
+answer, errors included) replaces the popover's lines. When a decision moves the
+session to another account, a one-line notice row says so once, with the reason.
+
+## Auto-switch on the accounts page
+
+The Auto-switch group of the accounts page is the pool: its order is the priority
+(the first account is the default for new sessions, the rest take over in order
+when one runs out or fails). Metered API keys stay in Manual until you drag them
+in. The **On / Off** switch on the group turns every automatic move off: no
+routing, rotation or failover; a session stays on its account and a blocked
+account fails the request and names itself. The list is kept while it is off.
 
 ## Spending-limit gate
 

@@ -16,26 +16,45 @@ pub struct RoutingChip {
     pub account: String,
     pub reason: String,
     pub warnings: Vec<String>,
-    /// The account a warm session moves to at its next cache-cold seam.
-    pub pending: Option<String>,
-    /// Icons of `account` and `pending`, shown first wherever they are named.
-    /// `None` when the account's provider has no other account to tell it from.
+    /// The account the session left when the daemon moved it, until the user
+    /// has looked at the popover.
+    pub moved_from: Option<String>,
+    /// Icon of `account`, shown first wherever it is named. `None` when the
+    /// account's provider has no other account to tell it from.
     pub icon: Option<String>,
-    pub pending_icon: Option<String>,
+}
+
+/// An account as people say it: the name they gave the login, without the
+/// provider prefix of its id.
+pub fn account_name(account: &str) -> &str {
+    account.split_once(':').map_or(account, |(_, name)| name)
+}
+
+/// `text` with every `provider:name` id in it said as `name`.
+fn named(text: &str) -> String {
+    text.split(' ')
+        .map(|word| {
+            let id = word.trim_matches(|c| matches!(c, '(' | ')' | ',' | '.' | ';' | ':'));
+            match id.split_once(':') {
+                Some((provider, name))
+                    if !provider.is_empty()
+                        && !name.is_empty()
+                        && !provider.contains(|c: char| !c.is_ascii_lowercase() && c != '-') =>
+                {
+                    word.replacen(id, name, 1)
+                }
+                _ => word.to_owned(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 impl RoutingChip {
-    pub fn new(
-        account: String,
-        reason: String,
-        warnings: Vec<String>,
-        pending: Option<String>,
-    ) -> Option<Self> {
+    pub fn new(account: String, reason: String, warnings: Vec<String>) -> Option<Self> {
         let account = clean(&account);
-        let pending = pending.map(|p| clean(&p)).filter(|p| !p.is_empty());
         (!account.is_empty()).then(|| Self {
             icon: None,
-            pending_icon: None,
             account,
             reason: clean(&reason),
             warnings: warnings
@@ -43,32 +62,30 @@ impl RoutingChip {
                 .map(|w| clean(w))
                 .filter(|w| !w.is_empty())
                 .collect(),
-            pending,
+            moved_from: None,
         })
     }
 
-    /// Give the accounts their icons: `lookup` answers for an account id, or
+    /// Give the account its icon: `lookup` answers for an account id, or
     /// `None` when the account shows none.
     pub fn with_icons(mut self, lookup: impl Fn(&str) -> Option<String>) -> Self {
         self.icon = lookup(&self.account);
-        self.pending_icon = self.pending.as_deref().and_then(lookup);
         self
     }
 
-    /// `🦊 claude:claude-fox`: the account with its icon first.
+    /// `🦊 claude-fox`: the account's name with its icon first.
     pub fn account_text(&self) -> String {
+        let name = account_name(&self.account);
         match &self.icon {
-            Some(icon) => format!("{icon} {}", self.account),
-            None => self.account.clone(),
+            Some(icon) => format!("{icon} {name}"),
+            None => name.to_owned(),
         }
     }
 
-    pub fn pending_text(&self) -> Option<String> {
-        let pending = self.pending.as_deref()?;
-        Some(match &self.pending_icon {
-            Some(icon) => format!("{icon} {pending}"),
-            None => pending.to_owned(),
-        })
+    /// The chip is worth showing only when something needs looking at: the
+    /// daemon moved the session, or warns about the account.
+    pub fn is_alert(&self) -> bool {
+        self.moved_from.is_some() || !self.warnings.is_empty()
     }
 
     /// `⚠` for one warning, `⚠3` for several, nothing for none.
@@ -80,16 +97,27 @@ impl RoutingChip {
         }
     }
 
-    /// The hover text, one entry per line.
-    pub fn tooltip(&self) -> Vec<String> {
+    /// The popover's facts: the account, then at most one line that says why
+    /// it is worth a look: the move that happened, else the first warning.
+    pub fn lines(&self) -> Vec<String> {
         let mut lines = vec![format!("Running on {}", self.account_text())];
-        if !self.reason.is_empty() {
-            lines.push(format!("Why: {}", self.reason));
+        if let Some(from) = &self.moved_from {
+            let from = account_name(from);
+            let why = named(&self.reason);
+            lines.push(if why.is_empty() {
+                format!("Moved from {from}")
+            } else if why.contains(from) {
+                // The daemon's reason already says who left.
+                let mut chars = why.chars();
+                chars.next().map_or(String::new(), |first| {
+                    first.to_uppercase().chain(chars).collect()
+                })
+            } else {
+                format!("Moved from {from}: {why}")
+            });
+        } else if let Some(warning) = self.warnings.first() {
+            lines.push(format!("⚠ {}", named(warning)));
         }
-        if let Some(pending) = self.pending_text() {
-            lines.push(format!("Moves to {pending} at the next cache-cold turn"));
-        }
-        lines.extend(self.warnings.iter().map(|warning| format!("⚠ {warning}")));
         lines
     }
 }

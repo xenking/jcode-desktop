@@ -16,30 +16,29 @@ use jcode_session_types::routing_gate::GateKey;
 
 impl Panel {
     /// Record the daemon's decision for the chip. A move to another account is
-    /// announced once as a notice row, with its reason.
+    /// announced once as a notice row, with its reason, and keeps the chip up
+    /// until the popover has been looked at.
     pub(super) fn routing_decision(
         &mut self,
         account: &str,
         reason: &str,
         warnings: &[String],
-        pending: Option<&str>,
         cx: &mut Context<Self>,
     ) {
-        let Some(chip) = RoutingChip::new(
-            account.to_owned(),
-            reason.to_owned(),
-            warnings.to_vec(),
-            pending.map(str::to_owned),
-        ) else {
+        let Some(chip) = RoutingChip::new(account.to_owned(), reason.to_owned(), warnings.to_vec())
+        else {
             return;
         };
-        let chip = self.with_account_icons(chip, cx);
-        let moved = self
-            .routing_chip
-            .as_ref()
+        let mut chip = self.with_account_icons(chip, cx);
+        let previous = self.routing_chip.as_ref();
+        let left = previous
             .filter(|previous| previous.account != chip.account)
-            .map(RoutingChip::account_text);
-        if let Some(previous) = moved {
+            .map(|previous| (previous.account.clone(), previous.account_text()));
+        chip.moved_from = match &left {
+            Some((account, _)) => Some(account.clone()),
+            None => previous.and_then(|previous| previous.moved_from.clone()),
+        };
+        if let Some((_, previous)) = left {
             self.items.push(Item::SwarmWorkerNotice(format!(
                 "Account: {previous} → {} ({})",
                 chip.account_text(),
@@ -52,6 +51,13 @@ impl Panel {
         if self.routing_chip.as_ref() != Some(&chip) {
             self.routing_chip = Some(chip);
             cx.notify();
+        }
+    }
+
+    /// The popover has been looked at: a past move no longer needs the chip.
+    pub(crate) fn routing_move_seen(&mut self) {
+        if let Some(chip) = self.routing_chip.as_mut() {
+            chip.moved_from = None;
         }
     }
 
@@ -269,7 +275,7 @@ impl Panel {
         cx.notify();
     }
 
-    /// The chip click: open the popover and ask for the table, or close it.
+    /// The chip click: open the popover, or close it.
     fn toggle_routing_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.routing_popover.is_some() {
             self.close_routing_popover(window, cx);
@@ -280,9 +286,8 @@ impl Panel {
         }
         self.swarm_list_open = false;
         self.composer_popover_trigger = Some(self.routing_trigger_focus.clone());
-        self.routing_popover = Some(RoutingPopover::awaiting_status());
+        self.routing_popover = Some(RoutingPopover::default());
         window.focus(&self.routing_popover_focus, cx);
-        self.send_routing_intent(RoutingIntentAction::Status, cx);
         cx.notify();
     }
 
@@ -331,13 +336,6 @@ impl Panel {
                         .text_size(px(11.))
                         .child(
                             div()
-                                .flex_none()
-                                .text_color(theme.TEXT)
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .child("Account routing"),
-                        )
-                        .child(
-                            div()
                                 .id("routing-popover-rows")
                                 .debug_selector(|| "routing-popover-rows".into())
                                 .min_h_0()
@@ -361,6 +359,28 @@ impl Panel {
                                         })
                                         .child(row.text)
                                 })),
+                        )
+                        .child(
+                            div()
+                                .id("routing-popover-manage")
+                                .debug_selector(|| "routing-popover-manage".into())
+                                .flex_none()
+                                .line_height(px(16.))
+                                .text_color(theme.ACCENT)
+                                .cursor_pointer()
+                                .hover(|el| el.underline())
+                                .child("Manage accounts")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_routing_popover(window, cx);
+                                    window.dispatch_action(
+                                        Box::new(crate::ui_actions::OpenAccounts {
+                                            source: cx.entity_id(),
+                                            login_command: None,
+                                        }),
+                                        cx,
+                                    );
+                                })),
                         ),
                     px(5.),
                 )
@@ -376,16 +396,16 @@ impl Panel {
         )
     }
 
-    /// The account chip, or nothing before the first decision.
+    /// The account chip: only while the daemon moved the session or warns about
+    /// its account. The model chip already carries the account's icon.
     pub(super) fn render_routing_chip(
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let chip = self.with_account_icons(self.routing_chip.clone()?, cx);
+        let chip =
+            self.with_account_icons(self.routing_chip.clone().filter(RoutingChip::is_alert)?, cx);
         let theme = Theme::global();
-        let rows = chip.tooltip();
         let marker = chip.warning_marker();
-        let pending = chip.pending_text();
         let account = chip.account_text();
         Some(
             crate::keyboard::popover_trigger(
@@ -403,13 +423,6 @@ impl Panel {
             .overflow_hidden()
             .px_2()
             .gap_1()
-            .tooltip(move |_, cx| {
-                cx.new(|_| super::meter::RowsTooltip {
-                    title: "Account routing".into(),
-                    rows: rows.clone(),
-                })
-                .into()
-            })
             .on_click(cx.listener(|this, _, window, cx| {
                 cx.stop_propagation();
                 this.toggle_routing_popover(window, cx);
@@ -427,14 +440,6 @@ impl Panel {
                     .flex_none()
                     .text_color(theme.WARN)
                     .child(marker)
-            }))
-            .children(pending.map(|pending| {
-                div()
-                    .debug_selector(|| "composer-routing-pending".into())
-                    .min_w_0()
-                    .truncate()
-                    .text_color(theme.ACCENT)
-                    .child(format!("→ {pending}"))
             }))
             .into_any_element(),
         )

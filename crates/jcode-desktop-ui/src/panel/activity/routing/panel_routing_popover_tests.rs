@@ -1,10 +1,10 @@
-//! The routing popover shows the whole Why: wrapped, never cut, scrollable.
+//! The routing popover shows the whole reason: wrapped, never cut, scrollable.
 use super::*;
 use gpui::{Bounds, Pixels};
 
-const SHORT: &str = "priority 1";
-const LONG: &str = "behind pace: claude:claude-otter would be at 91% of its weekly window by the reset, \
-                    so the other subscription takes the next turns until the pace evens out";
+const SHORT: &str = "claude-fox ranks first";
+const LONG: &str = "claude-fox resets soon and its room would be lost, and the other subscription \
+                    would take the next turns until the pace evens out for every account here";
 
 fn open<'a>(
     cx: &'a mut gpui::TestAppContext,
@@ -16,12 +16,18 @@ fn open<'a>(
         cx.add_window_view(|_, cx| Panel::new("session-a".into(), None, None, bridge, cx));
     let handle = vcx.update(|window, _| window.window_handle());
     vcx.simulate_window_resize(handle, gpui::size(px(900.), px(height)));
-    let decided = serde_json::from_value(serde_json::json!({
-        "ev": "routing_decision", "session_id": "session-a", "account": "claude:claude-fox",
-        "reason": reason, "warnings": [], "pending": null,
-    }))
-    .unwrap();
-    panel.update(vcx, |panel, cx| panel.apply(&decided, cx));
+    // The first decision is where the session starts; the second one moves it.
+    for (account, reason) in [
+        ("claude:claude-otter", "start"),
+        ("claude:claude-fox", reason),
+    ] {
+        let decided = serde_json::from_value(serde_json::json!({
+            "ev": "routing_decision", "session_id": "session-a", "account": account,
+            "reason": reason, "warnings": [], "pending": null,
+        }))
+        .unwrap();
+        panel.update(vcx, |panel, cx| panel.apply(&decided, cx));
+    }
     vcx.run_until_parked();
     let chip = vcx.debug_bounds("composer-routing-chip").expect("chip");
     vcx.simulate_click(chip.center(), gpui::Modifiers::default());
@@ -42,7 +48,7 @@ fn a_long_why_wraps_inside_the_popover_and_the_next_row_starts_below_it(
 ) {
     let (vcx, rows) = open(cx, LONG, 800.);
     let popover = vcx.debug_bounds("routing-popover").expect("popover");
-    assert!(rows.len() >= 3, "{rows:?}");
+    assert!(rows.len() >= 2, "{rows:?}");
     let why = rows
         .iter()
         .position(|row| row.size.height > px(20.))
@@ -53,7 +59,11 @@ fn a_long_why_wraps_inside_the_popover_and_the_next_row_starts_below_it(
             "rows overlap: {pair:?}"
         );
     }
-    assert!(why + 1 < rows.len(), "a row follows the Why");
+    let manage = vcx.debug_bounds("routing-popover-manage").expect("action");
+    assert!(
+        manage.top() >= rows[why].bottom() - px(0.5),
+        "Manage accounts starts below the Why: {manage:?} {rows:?}"
+    );
     assert!(
         rows.iter()
             .all(|row| row.right() <= popover.right() && row.bottom() <= popover.bottom()),
@@ -64,7 +74,7 @@ fn a_long_why_wraps_inside_the_popover_and_the_next_row_starts_below_it(
 #[gpui::test]
 fn a_short_why_stays_on_one_line(cx: &mut gpui::TestAppContext) {
     let (_vcx, rows) = open(cx, SHORT, 800.);
-    assert!(rows.len() >= 2);
+    assert_eq!(rows.len(), 2);
     assert!(rows.iter().all(|row| row.size.height < px(17.)), "{rows:?}");
 }
 

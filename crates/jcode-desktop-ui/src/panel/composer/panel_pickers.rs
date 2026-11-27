@@ -119,7 +119,9 @@ impl Panel {
             self.model_picker_open = false;
         } else {
             self.swarm_list_open = false;
-            self.routing_popover = None;
+            if self.routing_popover.take().is_some() {
+                self.routing_move_seen();
+            }
             self.select_background_job(None, cx);
         }
         self.composer_popover_trigger = None;
