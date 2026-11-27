@@ -3754,6 +3754,7 @@ dependencies = [
  "chrono",
  "ignore",
  "image",
+ "jcode-session-types",
  "reqwest 0.12.28",
  "ropey",
  "serde",

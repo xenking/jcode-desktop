@@ -22,6 +22,7 @@ pub mod fs_probe;
 #[path = "search/global.rs"]
 pub mod global_search;
 pub mod learning;
+pub mod machine_state;
 #[path = "text/markdown_file.rs"]
 pub mod markdown_file;
 pub mod pdf_render;
