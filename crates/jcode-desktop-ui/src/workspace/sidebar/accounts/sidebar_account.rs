@@ -2,8 +2,8 @@
 //!
 //! It names the signed-in Jcode account (not an AI provider login) with its
 //! plan. Clicking it opens the in-app account menu, or sign-in when signed out.
-use super::account_sign_in::account_button;
 use super::jcode_account::{JcodeAccount, set_show_email, show_email};
+use super::account_sign_in::account_button;
 use super::*;
 
 impl Workspace {
@@ -475,8 +475,7 @@ mod tests {
         assert!(vcx.debug_bounds("sidebar-quota-claude-icon").is_none());
         vcx.update(|window, cx| window.simulate_mouse_move(chip.center(), cx));
         vcx.run_until_parked();
-        vcx.executor()
-            .advance_clock(std::time::Duration::from_secs(1));
+        vcx.executor().advance_clock(std::time::Duration::from_secs(1));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("panel-limits-tooltip").is_some());
         assert!(vcx.debug_bounds("panel-limits-tooltip-icon").is_none());
@@ -609,14 +608,10 @@ mod tests {
             .expect("the login's icon on the chip");
         assert!(icon.left() >= chip.left() && icon.right() <= chip.right());
         let figure_start = chip.left() + (chip.size.width - icon.size.width) / 2.0;
-        assert!(
-            icon.left() < figure_start,
-            "the icon comes first: {icon:?} in {chip:?}"
-        );
+        assert!(icon.left() < figure_start, "the icon comes first: {icon:?} in {chip:?}");
         vcx.update(|window, cx| window.simulate_mouse_move(chip.center(), cx));
         vcx.run_until_parked();
-        vcx.executor()
-            .advance_clock(std::time::Duration::from_secs(1));
+        vcx.executor().advance_clock(std::time::Duration::from_secs(1));
         vcx.run_until_parked();
         assert!(
             vcx.debug_bounds("panel-limits-tooltip-icon").is_some(),

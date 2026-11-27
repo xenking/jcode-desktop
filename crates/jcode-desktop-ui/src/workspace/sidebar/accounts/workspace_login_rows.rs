@@ -368,10 +368,7 @@ mod tests {
                 .debug_bounds(selector(format!("account-claude-login-{login}-name")))
                 .unwrap();
             assert!(icon.right() <= name.left(), "icon first: {icon:?} {name:?}");
-            assert!(
-                icon.top() < name.bottom() && name.top() < icon.bottom(),
-                "one line"
-            );
+            assert!(icon.top() < name.bottom() && name.top() < icon.bottom(), "one line");
         }
         workspace.read_with(vcx, |w, _| {
             assert_eq!(

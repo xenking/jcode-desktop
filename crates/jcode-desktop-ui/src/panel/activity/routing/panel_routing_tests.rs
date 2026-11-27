@@ -454,21 +454,13 @@ fn an_opening_gate_takes_the_keyboard_so_keys_answer_without_a_click(
 }
 
 /// Hover the chip and read back the tooltip rows it paints.
-fn hover_rows(
-    vcx: &mut gpui::VisualTestContext,
-    chip: gpui::Bounds<gpui::Pixels>,
-) -> Vec<gpui::Bounds<gpui::Pixels>> {
+fn hover_rows(vcx: &mut gpui::VisualTestContext, chip: gpui::Bounds<gpui::Pixels>) -> Vec<gpui::Bounds<gpui::Pixels>> {
     vcx.simulate_mouse_move(chip.center(), None, Default::default());
     vcx.run_until_parked();
-    vcx.executor()
-        .advance_clock(std::time::Duration::from_secs(1));
+    vcx.executor().advance_clock(std::time::Duration::from_secs(1));
     vcx.run_until_parked();
     (0..12)
-        .map_while(|index| {
-            vcx.debug_bounds(Box::leak(
-                format!("rows-tooltip-row-{index}").into_boxed_str(),
-            ))
-        })
+        .map_while(|index| vcx.debug_bounds(Box::leak(format!("rows-tooltip-row-{index}").into_boxed_str())))
         .collect()
 }
 
@@ -491,10 +483,7 @@ fn a_long_why_wraps_inside_the_chips_tooltip_and_never_paints_over_the_next_row(
     vcx.run_until_parked();
     let chip = vcx.debug_bounds("composer-routing-chip").expect("chip");
     let rows = hover_rows(vcx, chip);
-    assert!(
-        rows.len() >= 2,
-        "the tooltip lists the decision rows: {rows:?}"
-    );
+    assert!(rows.len() >= 2, "the tooltip lists the decision rows: {rows:?}");
     assert!(
         rows.iter().any(|row| row.size.height > px(16.5)),
         "the Why row wraps to several lines: {rows:?}"
@@ -506,8 +495,5 @@ fn a_long_why_wraps_inside_the_chips_tooltip_and_never_paints_over_the_next_row(
         );
     }
     let tooltip = vcx.debug_bounds("rows-tooltip").expect("tooltip");
-    assert!(
-        rows.iter().all(|row| row.right() <= tooltip.right()),
-        "a row spills out of the tooltip"
-    );
+    assert!(rows.iter().all(|row| row.right() <= tooltip.right()), "a row spills out of the tooltip");
 }
