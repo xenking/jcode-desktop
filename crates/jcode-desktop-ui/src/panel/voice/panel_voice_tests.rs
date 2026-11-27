@@ -918,8 +918,12 @@ fn focused_ask_comment_receives_shortcut_voice_and_recording_indicator(cx: &mut 
     vcx.update(|window, cx| window.focus(&panel.read(cx).focus_handle.clone(), cx));
     vcx.simulate_keystrokes("2 n");
     vcx.run_until_parked();
+    // The shortcut must pick the ask comment as the target without opening a real
+    // microphone: its capture thread wakes the test scheduler from another thread.
+    panel.update(vcx, |panel, _| panel.preview_state = Some(PreviewState::Empty));
     vcx.update(|window, cx| window.dispatch_action(Box::new(ToggleVoice), cx));
     panel.update(vcx, |panel, cx| {
+        assert!(panel.voice.error().is_some(), "the shortcut reached the panel");
         panel.voice.set_phase(Phase::Recording);
         panel.apply_voice_event(NariEvent::Transcript("partial".into()), cx);
         let card = panel.ask_card.as_ref().unwrap();
