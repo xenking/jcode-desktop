@@ -704,3 +704,152 @@ fn a_daemon_that_refuses_the_compose_directory_is_written_without_it(cx: &mut gp
         "without the field the daemon refused"
     );
 }
+
+// ---- local state that was lost is never mistaken for the user's removals ----
+
+/// Every deletion among the writes queued so far.
+fn deleted(commands: &Receiver<Command>) -> Vec<String> {
+    writes(commands)
+        .into_iter()
+        .flat_map(|(_, _, changes)| changes)
+        .filter(|c| c.value.is_none())
+        .map(|c| c.key)
+        .collect()
+}
+
+fn open_panels(vcx: &mut gpui::VisualTestContext, w: &Entity<Workspace>) -> usize {
+    w.read_with(vcx, |w, _| w.slots.len())
+}
+
+#[gpui::test]
+fn a_lost_snapshot_with_a_surviving_record_adopts_the_daemons_state_and_deletes_nothing(
+    cx: &mut gpui::TestAppContext,
+) {
+    let path = scratch("lost-snapshot");
+    let held = synced_once(cx, &path, "draft kept by the daemon");
+    // A fresh window: nothing restored from a missing, corrupt or refused snapshot.
+    let (w, vcx, commands) = new_workspace(cx, false);
+    keep(vcx, &w, &path);
+    link(vcx, &w, None, LinkStatus::Connected);
+    state(vcx, &w, None, snapshot(1, held));
+    tick(vcx, &w);
+    tick(vcx, &w);
+    assert_eq!(deleted(&commands), Vec::<String>::new(), "the daemon's state is not deleted");
+    assert_eq!(open_panels(vcx, &w), 1, "its panel is shown again");
+    assert_eq!(draft_text(vcx, &w, 0), "draft kept by the daemon");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[gpui::test]
+fn a_snapshot_with_fewer_panels_than_the_record_gets_the_missing_ones_back(cx: &mut gpui::TestAppContext) {
+    let path = scratch("truncated");
+    // Two panels synced; the snapshot that survives parses but holds one.
+    let (w, vcx, commands) = new_workspace(cx, false);
+    keep(vcx, &w, &path);
+    w.update(vcx, |w, cx| {
+        w.push_test_panel("session_fox_1_aa", cx);
+        w.push_test_panel("session_owl_2_bb", cx);
+    });
+    link(vcx, &w, None, LinkStatus::Connected);
+    state(vcx, &w, None, snapshot(0, vec![]));
+    let seed = writes(&commands);
+    applied(vcx, &w, None, &seed[0], 1);
+    tick(vcx, &w);
+    let held = entries_of(&seed[0].2, 1);
+
+    let (again, vcx, commands) = new_workspace(cx, false);
+    keep(vcx, &again, &path);
+    again.update(vcx, |w, cx| w.push_test_panel("session_fox_1_aa", cx));
+    link(vcx, &again, None, LinkStatus::Connected);
+    state(vcx, &again, None, snapshot(1, held));
+    tick(vcx, &again);
+    assert_eq!(deleted(&commands), Vec::<String>::new());
+    assert_eq!(open_panels(vcx, &again), 2);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[gpui::test]
+fn a_panel_the_user_closes_is_deleted_from_the_daemon_and_stays_closed_after_a_restart(
+    cx: &mut gpui::TestAppContext,
+) {
+    let path = scratch("closed");
+    let (w, vcx, commands) = new_workspace(cx, false);
+    keep(vcx, &w, &path);
+    w.update(vcx, |w, cx| {
+        w.push_test_panel("session_fox_1_aa", cx);
+        w.push_test_panel("session_owl_2_bb", cx);
+    });
+    link(vcx, &w, None, LinkStatus::Connected);
+    state(vcx, &w, None, snapshot(0, vec![]));
+    let seed = writes(&commands);
+    applied(vcx, &w, None, &seed[0], 1);
+    tick(vcx, &w);
+    let held = entries_of(&seed[0].2, 1);
+
+    // The user closes one while the machine is unreachable, then the Desktop restarts.
+    link(vcx, &w, None, LinkStatus::Lost);
+    w.update(vcx, |w, _| {
+        w.slots.remove(1);
+    });
+    tick(vcx, &w);
+    let (again, vcx, commands) = new_workspace(cx, false);
+    keep(vcx, &again, &path);
+    again.update(vcx, |w, cx| w.push_test_panel("session_fox_1_aa", cx));
+    link(vcx, &again, None, LinkStatus::Connected);
+    state(vcx, &again, None, snapshot(1, held));
+    tick(vcx, &again);
+    assert!(deleted(&commands).contains(&"panel/session_owl_2_bb".to_owned()), "the removal reaches the daemon");
+    assert_eq!(open_panels(vcx, &again), 1, "and the panel is not brought back");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[gpui::test]
+fn a_corrupt_or_missing_record_with_good_local_state_deletes_nothing_on_either_side(
+    cx: &mut gpui::TestAppContext,
+) {
+    let path = scratch("lost-record");
+    let held = synced_once(cx, &path, "kept");
+    std::fs::write(&path, b"{ not json").unwrap();
+    let (w, vcx, commands) = relaunched(cx, &path, "kept");
+    w.update(vcx, |w, cx| w.push_test_panel("session_extra_9_zz", cx));
+    link(vcx, &w, None, LinkStatus::Connected);
+    state(vcx, &w, None, snapshot(1, held));
+    tick(vcx, &w);
+    assert_eq!(deleted(&commands), Vec::<String>::new());
+    assert_eq!(open_panels(vcx, &w), 2, "nothing local is closed");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[gpui::test]
+fn with_the_snapshot_and_the_record_both_lost_the_daemons_state_is_adopted(cx: &mut gpui::TestAppContext) {
+    let path = scratch("both-lost");
+    let held = synced_once(cx, &path, "kept by the daemon");
+    std::fs::write(&path, b"garbage").unwrap();
+    let (w, vcx, commands) = new_workspace(cx, false);
+    keep(vcx, &w, &path);
+    link(vcx, &w, None, LinkStatus::Connected);
+    state(vcx, &w, None, snapshot(1, held));
+    tick(vcx, &w);
+    assert_eq!(deleted(&commands), Vec::<String>::new());
+    assert_eq!(open_panels(vcx, &w), 1);
+    assert_eq!(draft_text(vcx, &w, 0), "kept by the daemon");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[gpui::test]
+fn a_record_written_before_removals_were_kept_is_still_read(cx: &mut gpui::TestAppContext) {
+    let path = scratch("old-record");
+    let held = synced_once(cx, &path, "kept");
+    // The earlier format: fingerprints only, no removals.
+    let now: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let old: serde_json::Map<String, Value> = now["machines"]["local"]["applied"].as_object().unwrap().clone();
+    std::fs::write(&path, serde_json::to_vec(&json!({"v": 1, "machines": {"local": old}})).unwrap()).unwrap();
+    let (w, vcx, commands) = new_workspace(cx, false);
+    keep(vcx, &w, &path);
+    link(vcx, &w, None, LinkStatus::Connected);
+    state(vcx, &w, None, snapshot(1, held));
+    tick(vcx, &w);
+    assert_eq!(deleted(&commands), Vec::<String>::new());
+    assert_eq!(open_panels(vcx, &w), 1);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}

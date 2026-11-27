@@ -289,6 +289,11 @@ pub struct Plan {
 ///   daemon's.
 /// - A `protected` composer (the user is typing there) is left alone when only
 ///   the daemon changed it.
+/// - Absence here is a deletion only for a key in `tombstones`, one this
+///   Desktop saw the user remove. Any other key it lacks but the daemon holds
+///   (a lost, truncated, corrupt or refused snapshot) is local state that was
+///   lost: it is shown again, never deleted from the daemon. No plan deletes
+///   more than its tombstones, and `focus` is never deleted.
 /// - `first` (this process has not yet seen this machine): a daemon with no
 ///   entries at all is a new store, so what was agreed with an earlier one no
 ///   longer counts and this Desktop seeds it; and the daemon's focus is shown.
@@ -297,6 +302,7 @@ pub fn reconcile(
     remote: &Entries,
     local: &Entries,
     protected: &BTreeSet<String>,
+    tombstones: &BTreeSet<String>,
     first: bool,
 ) -> Plan {
     let mut plan = Plan::default();
@@ -319,6 +325,9 @@ pub fn reconcile(
         }
         match (lf != a.copied(), rf != a.copied()) {
             (false, false) => {}
+            (true, false) if l.is_none() && !tombstones.contains(key) => {
+                plan.adopt.insert(key.clone());
+            }
             (true, false) => plan.push.push((key.clone(), l.cloned())),
             (false, true) if protected.contains(key) => {}
             (false, true) => {
@@ -342,6 +351,8 @@ pub fn reconcile(
             }
         }
     }
+    // Whatever the rules above did, only removals the user made reach the daemon.
+    plan.push.retain(|(key, value)| value.is_some() || (key != FOCUS && tombstones.contains(key)));
     plan
 }
 
@@ -522,7 +533,7 @@ mod tests {
     }
 
     fn plan(applied: &Entries, remote: &Entries, local: &Entries, first: bool) -> Plan {
-        reconcile(&fingerprints(applied), remote, local, &BTreeSet::new(), first)
+        reconcile(&fingerprints(applied), remote, local, &BTreeSet::new(), &BTreeSet::new(), first)
     }
 
     #[test]
@@ -624,9 +635,112 @@ mod tests {
         // A deletion is a change like any other.
         let p = plan(&base, &Entries::new(), &base, false);
         assert_eq!(p.adopt.iter().collect::<Vec<_>>(), ["draft/a"]);
-        let p = plan(&base, &base, &Entries::new(), false);
+        // Absence here is a deletion only when the user was seen removing it.
+        let removed: BTreeSet<String> = ["draft/a".to_owned()].into();
+        let p = reconcile(&fingerprints(&base), &base, &Entries::new(), &BTreeSet::new(), &removed, false);
         assert_eq!(p.push, [("draft/a".to_owned(), None)]);
     }
+
+    fn synced_state() -> Entries {
+        e(&[
+            ("layout", json!({"rows": 1})),
+            ("focus", json!({"row": 0})),
+            ("panel/a", json!(1)),
+            ("panel/b", json!(2)),
+            ("draft/a", json!("kept in the daemon")),
+        ])
+    }
+
+    #[test]
+    fn local_state_that_was_lost_is_shown_again_never_deleted_from_the_daemon() {
+        // The snapshot is missing, corrupt, refused or empty while the record
+        // of what was agreed survived: this Desktop has nothing, the daemon has
+        // everything, and nobody removed anything.
+        let held = synced_state();
+        let p = plan(&held, &held, &Entries::new(), true);
+        assert!(p.push.is_empty(), "nothing is deleted: {:?}", p.push);
+        assert_eq!(
+            p.adopt.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["draft/a", "focus", "layout", "panel/a", "panel/b"]
+        );
+    }
+
+    #[test]
+    fn a_truncated_snapshot_loses_only_what_the_user_was_seen_removing() {
+        let held = synced_state();
+        let truncated = e(&[("panel/a", json!(1)), ("draft/a", json!("kept in the daemon")), ("focus", json!({"row": 0})), ("layout", json!({"rows": 1}))]);
+        let removed: BTreeSet<String> = ["panel/b".to_owned()].into();
+        let p = reconcile(&fingerprints(&held), &held, &truncated, &BTreeSet::new(), &removed, true);
+        assert_eq!(p.push, [("panel/b".to_owned(), None)]);
+        assert!(p.adopt.is_empty());
+        let p = plan(&held, &held, &truncated, true);
+        assert!(p.push.is_empty());
+        assert_eq!(p.adopt.iter().collect::<Vec<_>>(), ["panel/b"], "the unexplained gap is shown again");
+    }
+
+    #[test]
+    fn focus_is_never_deleted_from_the_daemon() {
+        let held = e(&[("focus", json!({"row": 1}))]);
+        let removed: BTreeSet<String> = ["focus".to_owned()].into();
+        let p = reconcile(&fingerprints(&held), &held, &Entries::new(), &BTreeSet::new(), &removed, false);
+        assert!(p.push.is_empty());
+    }
+
+    #[test]
+    fn no_plan_deletes_more_than_its_tombstones() {
+        let values = [None, Some(json!("one")), Some(json!("two")), Some(json!("three"))];
+        for key in ["panel/x", "draft/x", "layout", "focus"] {
+            for a in &values {
+                for r in &values {
+                    for l in &values {
+                        for tombstoned in [false, true] {
+                            for protected in [false, true] {
+                                for first in [false, true] {
+                                    let one = |v: &Option<Value>| v.iter().map(|v| (key.to_owned(), v.clone())).collect::<Entries>();
+                                    let tombstones: BTreeSet<String> = tombstoned.then(|| key.to_owned()).into_iter().collect();
+                                    let protect: BTreeSet<String> = protected.then(|| key.to_owned()).into_iter().collect();
+                                    let p = reconcile(&fingerprints(&one(a)), &one(r), &one(l), &protect, &tombstones, first);
+                                    for (k, v) in &p.push {
+                                        assert!(
+                                            v.is_some() || (tombstones.contains(k) && k != FOCUS),
+                                            "{key}: a={a:?} r={r:?} l={l:?} tombstoned={tombstoned} first={first} deleted {k}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_lost_agreement_record_with_good_local_state_deletes_nothing_on_either_side() {
+        let local = e(&[("panel/mine", json!(1)), ("draft/mine", json!("a")), ("panel/both", json!(3))]);
+        let remote = e(&[("panel/theirs", json!(2)), ("draft/theirs", json!("b")), ("panel/both", json!(3))]);
+        let p = plan(&Entries::new(), &remote, &local, true);
+        assert!(p.push.iter().all(|(_, v)| v.is_some()), "no deletion");
+        assert_eq!(p.push.len(), 2, "what only this Desktop has is written");
+        assert_eq!(p.adopt.iter().collect::<Vec<_>>(), ["draft/theirs", "panel/theirs"]);
+    }
+
+    #[test]
+    fn with_both_local_state_and_the_record_lost_the_daemons_state_is_adopted_whole() {
+        let remote = synced_state();
+        let p = plan(&Entries::new(), &remote, &Entries::new(), true);
+        assert!(p.push.is_empty());
+        assert_eq!(p.adopt.len(), remote.len(), "everything, the focus included");
+    }
+
+    #[test]
+    fn a_desktop_that_lost_its_local_state_leaves_the_daemon_as_a_live_desktop_wrote_it() {
+        // Desktop B lost its snapshot while Desktop A is live on the same daemon.
+        let held = synced_state();
+        let b = plan(&held, &held, &Entries::new(), true);
+        assert!(b.push.is_empty(), "so A, which reads the daemon, sees no panel closed");
+    }
+
 
     #[test]
     fn a_draft_typed_on_both_sides_is_never_replaced_whether_or_not_it_is_focused() {
@@ -635,7 +749,7 @@ mod tests {
         let there = e(&[("draft/a", json!("theirs"))]);
         let focused: BTreeSet<String> = ["draft/a".to_owned()].into();
         for protected in [&focused, &BTreeSet::new()] {
-            let p = reconcile(&fingerprints(&base), &there, &here, protected, false);
+            let p = reconcile(&fingerprints(&base), &there, &here, protected, &BTreeSet::new(), false);
             assert_eq!(p.push, [("draft/a".to_owned(), Some(json!("mine")))]);
             assert!(p.adopt.is_empty());
         }
@@ -648,9 +762,9 @@ mod tests {
         let base = e(&[("draft/a", json!("mine, already written"))]);
         let there = e(&[("draft/a", json!("theirs"))]);
         let focused: BTreeSet<String> = ["draft/a".to_owned()].into();
-        let p = reconcile(&fingerprints(&base), &there, &base, &focused, false);
+        let p = reconcile(&fingerprints(&base), &there, &base, &focused, &BTreeSet::new(), false);
         assert_eq!(p, Plan::default());
-        let p = reconcile(&fingerprints(&base), &there, &base, &BTreeSet::new(), false);
+        let p = reconcile(&fingerprints(&base), &there, &base, &BTreeSet::new(), &BTreeSet::new(), false);
         assert_eq!(p.adopt.iter().collect::<Vec<_>>(), ["draft/a"]);
     }
 

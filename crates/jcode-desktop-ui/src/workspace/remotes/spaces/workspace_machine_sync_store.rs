@@ -4,7 +4,7 @@
 //! lives in a file of its own: a draft such an older build edited still
 //! differs from what was agreed, and is written to the daemon, not replaced.
 use jcode_desktop_model::machine_state::Fingerprints;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// The machine's key in the file: `local` for this one, else its paired host.
@@ -12,10 +12,34 @@ pub(super) fn key(host: Option<&str>) -> String {
     host.unwrap_or("local").to_owned()
 }
 
+/// What is kept for one machine. A file from before removals were recorded
+/// holds only the fingerprints.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum Kept {
+    Now {
+        applied: BTreeMap<String, u64>,
+        /// Entries this Desktop saw the user remove and has not yet told the
+        /// daemon about: the only absences that may delete anything there.
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        removed: BTreeSet<String>,
+    },
+    Before(BTreeMap<String, u64>),
+}
+
+impl Kept {
+    fn split(&self) -> (Fingerprints, BTreeSet<String>) {
+        match self {
+            Kept::Now { applied, removed } => (applied.clone(), removed.clone()),
+            Kept::Before(applied) => (applied.clone(), BTreeSet::new()),
+        }
+    }
+}
+
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct File {
     v: u32,
-    machines: BTreeMap<String, BTreeMap<String, u64>>,
+    machines: BTreeMap<String, Kept>,
 }
 
 pub(super) struct Store {
@@ -36,13 +60,16 @@ impl Store {
         Self { path, file, dirty: false }
     }
 
-    pub(super) fn agreed(&self, host: Option<&str>) -> Fingerprints {
-        self.file.machines.get(&key(host)).cloned().unwrap_or_default()
+    /// What was agreed with the machine, and what the user removed since.
+    pub(super) fn kept(&self, host: Option<&str>) -> (Fingerprints, BTreeSet<String>) {
+        self.file.machines.get(&key(host)).map(Kept::split).unwrap_or_default()
     }
 
-    pub(super) fn record(&mut self, host: Option<&str>, applied: &Fingerprints) {
-        if self.file.machines.get(&key(host)) != Some(applied) {
-            self.file.machines.insert(key(host), applied.clone());
+    pub(super) fn record(&mut self, host: Option<&str>, applied: &Fingerprints, removed: &BTreeSet<String>) {
+        let now = Kept::Now { applied: applied.clone(), removed: removed.clone() };
+        let same = self.file.machines.get(&key(host)).map(Kept::split).is_some_and(|(a, r)| &a == applied && &r == removed);
+        if !same {
+            self.file.machines.insert(key(host), now);
             self.dirty = true;
         }
     }

@@ -72,15 +72,23 @@ struct MachineSync {
     dirs: bool,
     /// This Desktop has not yet seen the daemon's state.
     first: bool,
+    /// Entries this Desktop held at its last look, to notice the user remove one.
+    seen: BTreeSet<String>,
+    /// Entries the user was seen removing that the daemon may still hold. Only
+    /// these are ever deleted there: an entry missing for any other reason (a
+    /// snapshot that was lost or damaged) is shown again from the daemon.
+    removed: BTreeSet<String>,
     connected: bool,
     in_flight: Option<InFlight>,
 }
 
 impl MachineSync {
-    fn new(agreed: Fingerprints) -> Self {
+    fn new((agreed, removed): (Fingerprints, BTreeSet<String>)) -> Self {
         Self {
             mirror: DesktopStateMirror::default(),
             applied: agreed,
+            seen: BTreeSet::new(),
+            removed,
             dirs: true,
             first: true,
             connected: false,
@@ -248,8 +256,25 @@ impl Workspace {
     }
 
     /// What was agreed with a machine before this run, if anything is kept.
-    fn agreed(&self, host: Option<&str>) -> Fingerprints {
-        self.machine_sync.store.as_ref().map(|store| store.agreed(host)).unwrap_or_default()
+    fn agreed(&self, host: Option<&str>) -> (Fingerprints, BTreeSet<String>) {
+        self.machine_sync.store.as_ref().map(|store| store.kept(host)).unwrap_or_default()
+    }
+
+    /// Notice what the user removed since the last look, connected or not, so a
+    /// removal made while the machine was down still reaches it. An entry that
+    /// is simply absent from a restored snapshot was never seen here and is
+    /// not a removal.
+    fn observe_machine(&mut self, host: Option<&str>, local: &Entries) {
+        let agreed = self.agreed(host);
+        let machine = self
+            .machine_sync
+            .machines
+            .entry(host.map(str::to_owned))
+            .or_insert_with(|| MachineSync::new(agreed));
+        let gone: Vec<String> = machine.seen.iter().filter(|k| !local.contains_key(*k)).cloned().collect();
+        machine.removed.extend(gone.into_iter().filter(|key| key != shared::FOCUS));
+        machine.removed.retain(|key| !local.contains_key(key));
+        machine.seen = local.keys().cloned().collect();
     }
 
     /// Ask for the link to each machine the window needs: this one always, a
@@ -303,6 +328,21 @@ impl Workspace {
             }
         }
         self.machine_sync.typing = typing;
+        // Removals are noticed while a machine is down too.
+        let hosts: Vec<Option<String>> =
+            std::iter::once(None).chain(self.space_hosts.iter().cloned().map(Some)).collect();
+        for host in hosts {
+            let connected = self.machine_sync.machines.get(&host).is_some_and(|m| m.connected);
+            if !connected {
+                let local = self.machine_entries(host.as_deref(), None, cx);
+                self.observe_machine(host.as_deref(), &local);
+                if let Some(store) = &mut self.machine_sync.store
+                    && let Some(machine) = self.machine_sync.machines.get(&host)
+                {
+                    store.record(host.as_deref(), &machine.applied, &machine.removed);
+                }
+            }
+        }
         let connected: Vec<Option<String>> = self
             .machine_sync
             .machines
@@ -421,6 +461,7 @@ impl Workspace {
         let first = machine.first;
         let typing = self.machine_sync.typing.clone();
         let local = self.machine_entries(host, remote.get(shared::FOCUS), cx);
+        self.observe_machine(host, &local);
         let machine = self.machine_sync.machines.get_mut(&key).expect("present above");
         // Where both already agree there is nothing to decide later.
         for k in remote.keys().chain(local.keys()).cloned().collect::<BTreeSet<_>>() {
@@ -428,7 +469,9 @@ impl Workspace {
                 record(&mut machine.applied, k.clone(), remote.get(&k));
             }
         }
-        let plan = shared::reconcile(&machine.applied, &remote, &local, &typing, first);
+        let plan = shared::reconcile(&machine.applied, &remote, &local, &typing, &machine.removed, first);
+        // A removal the daemon no longer holds is done.
+        machine.removed.retain(|key| remote.contains_key(key));
         machine.first = false;
         let may_push = machine.in_flight.is_none();
         let token = {
@@ -455,7 +498,7 @@ impl Workspace {
         if let Some(store) = &mut self.machine_sync.store
             && let Some(machine) = self.machine_sync.machines.get(&key)
         {
-            store.record(host, &machine.applied);
+            store.record(host, &machine.applied, &machine.removed);
         }
         if may_push && !plan.push.is_empty() {
             let machine = self.machine_sync.machines.get_mut(&key).expect("present above");
