@@ -169,7 +169,7 @@ fn workspaces_outside_the_strip_are_rejected(cx: &mut gpui::TestAppContext) {
         w
     });
     workspace.update_in(vcx, |w, window, cx| {
-        for number in [0, STRIP_COUNT + 1] {
+        for number in [0, ROWS_PER_SPACE + 1] {
             let response = open_in_workspace(w, "review", Some(number), window, cx);
             assert!(
                 matches!(&response, DesktopResponse::Error { code, .. } if code == "workspace_out_of_range"),

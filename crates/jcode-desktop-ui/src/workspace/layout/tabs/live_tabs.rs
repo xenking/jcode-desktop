@@ -554,10 +554,10 @@ impl Workspace {
             self.row_indices(row)
                 .any(|index| !self.slots[index].closing)
         };
-        (1..STRIP_COUNT)
-            .map(|step| (self.active_row + step) % STRIP_COUNT)
+        (1..self.row_count())
+            .map(|step| (self.active_row + step) % self.row_count())
             .find(|&row| occupied(row))
-            .unwrap_or((self.active_row + 1) % STRIP_COUNT)
+            .unwrap_or((self.active_row + 1) % self.row_count())
     }
 
     fn tab_action(id: impl Into<gpui::ElementId>, size: f32) -> gpui::Stateful<gpui::Div> {
@@ -852,7 +852,7 @@ impl Workspace {
             slot.row == self.active_row && !slot.closing && self.panel_metadata(slot, cx).can_rename
         });
         let mut entries = Vec::new();
-        for row in 0..STRIP_COUNT {
+        for row in 0..self.row_count() {
             // Closing surfaces stay mounted for their fade, but their tabs
             // must leave now. Otherwise selection first animates right in the
             // old group, then reverses when the dismissed slot is retired.
@@ -1218,7 +1218,7 @@ impl Workspace {
                             }
                         }))
                     })
-                    .tooltip(tab_tooltip(format!("Workspace {} · {title}", row + 1)).builder())
+                    .tooltip(tab_tooltip(format!("{} · {title}", self.workspace_title(row))).builder())
                     .when_some(index, |el, index| {
                         let entity = cx.weak_entity();
                         crate::keyboard::press_button(el, move |window, cx| {
@@ -1263,7 +1263,7 @@ impl Workspace {
                     .text_color(accent)
                     .occlude()
                     .cursor_pointer()
-                    .tooltip(tab_tooltip(format!("Workspace {}", row + 1)).builder())
+                    .tooltip(tab_tooltip(self.workspace_title(row)).builder())
                     .child(
                         div()
                             .w(px((label_width - 4.0).max(0.0)))

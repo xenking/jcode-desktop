@@ -60,7 +60,7 @@ impl Workspace {
             if held && !self.gesture.switched && self.outgoing_row.is_none() && !self.overview {
                 let pull = self.gesture.break_progress() * PREVIEW_ROWS;
                 // The first/last workspace has no neighboring row to reveal.
-                (self.active_row as f32 + pull).clamp(0.0, (STRIP_COUNT - 1) as f32)
+                (self.active_row as f32 + pull).clamp(0.0, (self.row_count() - 1) as f32)
                     - self.active_row as f32
             } else {
                 0.0
@@ -261,7 +261,7 @@ mod tests {
         workspace.update(cx, |w, cx| {
             for (row, dy) in [
                 (0, STRIP_BREAK * 0.5),
-                (STRIP_COUNT - 1, -STRIP_BREAK * 0.5),
+                (ROWS_PER_SPACE - 1, -STRIP_BREAK * 0.5),
             ] {
                 w.active_row = row;
                 w.gesture.feed_vertical(dy, gpui::TouchPhase::Started);

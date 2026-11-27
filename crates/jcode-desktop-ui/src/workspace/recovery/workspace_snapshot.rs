@@ -99,16 +99,17 @@ impl Workspace {
                 })
                 .collect(),
             active,
+            space_hosts: self.space_hosts.clone(),
             active_row: if review_source.is_some() {
                 slots[active].row
             } else {
                 self.active_row
             },
-            row_focus: self.row_focus.map(|id| id.and_then(index_for_id)),
+            row_focus: self.row_focus.iter().map(|id| id.and_then(index_for_id)).collect(),
             previous: self.previous.and_then(index_for_id),
             last_voice_chat: self.last_voice_chat.and_then(index_for_id),
-            camera_x: self.camera_x,
-            camera_target: self.camera_target,
+            camera_x: self.camera_x.clone(),
+            camera_target: self.camera_target.clone(),
             overview: self.overview,
             hints_overlay: self.hints_overlay,
             folder_picker_sets_default: picker.as_ref().is_some_and(|p| p.read(cx).sets_default),
@@ -130,6 +131,11 @@ impl Workspace {
         self.session_catalog = snapshot.session_catalog;
         self.tutorial_page = snapshot.tutorial_page.min(2);
         self.slots.clear();
+        // Rows past this machine's own belong to the saved machines, in saved
+        // order; machines paired since are appended after them.
+        self.space_hosts = snapshot.space_hosts.clone();
+        self.add_paired_spaces();
+        let flat = snapshot.format_version <= LAST_FLAT_SNAPSHOT_VERSION;
         // Saved indices refer to the saved slot list. Some saved slots are
         // dropped below, so translate every index to the restored slot that
         // holds the same panel rather than whatever now sits at that index.
@@ -137,6 +143,20 @@ impl Workspace {
         for saved in snapshot.slots {
             restored_index.push(None);
             let mut panel_state = saved.panel;
+            // Version 1 put every panel in this machine's four rows. A panel of
+            // a paired machine moves to the same-numbered workspace of that
+            // machine's space.
+            let row = if flat {
+                crate::harness::remote_host(&panel_state.session_id)
+                    .or_else(|| {
+                        pending::remote_draft_host(&panel_state.session_id).map(str::to_owned)
+                    })
+                    .map_or(saved.row, |host| {
+                        self.bound_row(Some(&host), saved.row % ROWS_PER_SPACE)
+                    })
+            } else {
+                saved.row
+            };
             // Some(needs a session now) for a local draft from the last run.
             let mut restored_local_draft = None;
             // Preview fixture IDs are never runtime sessions, including old snapshots.
@@ -198,7 +218,7 @@ impl Workspace {
                 let terminal = PanelItem::Terminal(terminal);
                 self.slots.push(restored_slot(
                     terminal,
-                    saved.row,
+                    row,
                     saved.width_fraction,
                     saved.restore_fraction,
                 ));
@@ -209,7 +229,7 @@ impl Workspace {
                 *restored_index.last_mut().expect("pushed for this slot") = Some(self.slots.len());
                 self.slots.push(restored_slot(
                     PanelItem::File(file),
-                    saved.row,
+                    row,
                     saved.width_fraction,
                     saved.restore_fraction,
                 ));
@@ -300,7 +320,7 @@ impl Workspace {
             *restored_index.last_mut().expect("pushed for this slot") = Some(self.slots.len());
             self.slots.push(restored_slot(
                 PanelItem::Chat(panel),
-                saved.row,
+                row,
                 saved.width_fraction,
                 saved.restore_fraction,
             ));
@@ -317,11 +337,18 @@ impl Workspace {
                     .position(|slot| slot.row == self.active_row)
             })
             .unwrap_or(0);
-        self.row_focus = snapshot.row_focus.map(|index| {
-            index
-                .and_then(restored)
-                .map(|index| self.slots[index].panel.entity_id())
-        });
+        if flat && let Some(slot) = self.slots.get(self.active) {
+            self.active_row = slot.row;
+        }
+        self.row_focus = snapshot
+            .row_focus
+            .iter()
+            .map(|index| {
+                index
+                    .and_then(restored)
+                    .map(|index| self.slots[index].panel.entity_id())
+            })
+            .collect();
         self.previous = snapshot
             .previous
             .and_then(restored)
@@ -330,16 +357,19 @@ impl Workspace {
             .last_voice_chat
             .and_then(restored)
             .map(|index| self.slots[index].panel.entity_id());
-        self.camera_x = snapshot.camera_x;
+        self.camera_x = snapshot.camera_x.clone();
         // Resume from what was actually visible. With no restored animation
         // clock, retaining the old destination would snap there on first paint.
         // The dirty camera resolves a fresh smooth transition if focus needs it.
-        self.camera_target = snapshot.camera_x;
+        self.camera_target = snapshot.camera_x.clone();
         self.camera_from = snapshot.camera_x;
-        self.camera_started = [None; STRIP_COUNT];
-        self.camera_touch_pan = [false; STRIP_COUNT];
-        self.camera_dirty = [true; STRIP_COUNT];
-        self.camera_snap_pending = [false; STRIP_COUNT];
+        self.camera_started = vec![None; self.row_count()];
+        self.camera_touch_pan = vec![false; self.row_count()];
+        self.camera_dirty = vec![true; self.row_count()];
+        self.camera_snap_pending = vec![false; self.row_count()];
+        // Saved per-workspace state covers the saved rows; give machines paired
+        // since their empty ones.
+        self.sync_spaces();
         self.overview = snapshot.overview;
         self.overview_progress = AnimatedValue::new(
             if snapshot.overview { 1.0 } else { 0.0 },
@@ -417,7 +447,11 @@ impl Workspace {
     }
 }
 
-pub(super) const SNAPSHOT_FORMAT_VERSION: u32 = 1;
+/// Version 2 adds the machine spaces: rows past this machine's four belong to
+/// the paired machines in `space_hosts`. Version 1 files still load; their
+/// remote panels move to their machine's space.
+pub(super) const SNAPSHOT_FORMAT_VERSION: u32 = 2;
+const LAST_FLAT_SNAPSHOT_VERSION: u32 = 1;
 
 /// A slot restored from a snapshot, at its saved place and width.
 pub(super) fn restored_slot(
@@ -483,12 +517,15 @@ pub struct WorkspaceSnapshot {
     pub(super) slots: Vec<SlotSnapshot>,
     pub(super) active: usize,
     pub(super) active_row: usize,
-    pub(super) row_focus: [Option<usize>; STRIP_COUNT],
+    /// Paired machines in space order; absent in version 1.
+    #[serde(default)]
+    pub(super) space_hosts: Vec<String>,
+    pub(super) row_focus: Vec<Option<usize>>,
     pub(super) previous: Option<usize>,
     #[serde(default)]
     pub(super) last_voice_chat: Option<usize>,
-    pub(super) camera_x: [f32; STRIP_COUNT],
-    pub(super) camera_target: [f32; STRIP_COUNT],
+    pub(super) camera_x: Vec<f32>,
+    pub(super) camera_target: Vec<f32>,
     pub(super) overview: bool,
     pub(super) hints_overlay: bool,
     #[serde(default)]
@@ -536,17 +573,23 @@ impl WorkspaceSnapshot {
     pub fn decode(bytes: &[u8]) -> anyhow::Result<Self> {
         let snapshot: Self = serde_json::from_slice(bytes)?;
         anyhow::ensure!(
-            snapshot.format_version == SNAPSHOT_FORMAT_VERSION,
+            (LAST_FLAT_SNAPSHOT_VERSION..=SNAPSHOT_FORMAT_VERSION).contains(&snapshot.format_version),
             "unsupported workspace snapshot format {}",
             snapshot.format_version
         );
         anyhow::ensure!(
-            snapshot.active_row < STRIP_COUNT,
+            snapshot.active_row < snapshot.row_focus.len(),
             "active row is out of range"
         );
         anyhow::ensure!(
+            snapshot.row_focus.len() == snapshot.camera_x.len()
+                && snapshot.row_focus.len() == snapshot.camera_target.len()
+                && !snapshot.row_focus.is_empty(),
+            "per-row state does not match the row count"
+        );
+        anyhow::ensure!(
             snapshot.slots.iter().all(|slot| {
-                slot.row < STRIP_COUNT
+                slot.row < snapshot.row_focus.len()
                     && slot.width_fraction.is_finite()
                     && (0.1..=1.0).contains(&slot.width_fraction)
                     && slot

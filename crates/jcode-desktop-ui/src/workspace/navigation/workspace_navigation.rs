@@ -73,8 +73,8 @@ impl Workspace {
     }
 
     pub(super) fn select_row(&mut self, row: usize, preferred_position: usize) {
-        self.begin_map_navigation(row.min(STRIP_COUNT - 1));
-        self.active_row = row.min(STRIP_COUNT - 1);
+        self.begin_map_navigation(row.min(self.row_count() - 1));
+        self.active_row = row.min(self.row_count() - 1);
         let remembered = self.row_focus[self.active_row].and_then(|entity_id| {
             self.slots
                 .iter()
@@ -337,7 +337,7 @@ impl Workspace {
     pub(super) fn focus_down(&mut self, _: &FocusDown, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         self.showcase_motion("J", false, "Focus strip below", cx);
-        if self.active_row + 1 < STRIP_COUNT {
+        if self.active_row + 1 < self.row_count() {
             self.change_row(self.active_row + 1, window, cx);
             self.begin_action_capture("focus_down", window);
         } else {
@@ -500,7 +500,11 @@ impl Workspace {
 
     pub(super) fn move_panel_to_row(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         let target = self.active_row as isize + delta;
-        if !(0..STRIP_COUNT as isize).contains(&target) {
+        if !(0..self.row_count() as isize).contains(&target) {
+            return;
+        }
+        // A panel belongs to its machine's space and never moves into another's.
+        if target as usize / ROWS_PER_SPACE != self.active_row / ROWS_PER_SPACE {
             return;
         }
         if self

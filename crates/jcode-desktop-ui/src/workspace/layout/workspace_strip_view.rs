@@ -48,7 +48,7 @@ impl Workspace {
                         let switch = this.gesture.feed_vertical(dy, event.touch_phase);
                         if switch != 0 {
                             let target = if switch > 0 {
-                                (this.active_row + 1).min(STRIP_COUNT - 1)
+                                (this.active_row + 1).min(this.row_count() - 1)
                             } else {
                                 this.active_row.saturating_sub(1)
                             };
@@ -63,7 +63,7 @@ impl Workspace {
                     div()
                         .debug_selector(|| "empty-strip-hint".into())
                         .text_color(Theme::global().TEXT)
-                        .child(format!("Workspace {} is empty", row + 1)),
+                        .child(format!("{} is empty", self.workspace_title(row))),
                 )
                 .child(
                     div()
@@ -173,7 +173,7 @@ impl Workspace {
                 slot.order_offset.sample(now);
             }
         }
-        for row in 0..STRIP_COUNT {
+        for row in 0..self.row_count() {
             if !hidden(row) {
                 continue;
             }
@@ -663,7 +663,7 @@ impl Workspace {
             };
             if switch != 0 {
                 let target = if switch > 0 {
-                    (self.active_row + 1).min(STRIP_COUNT - 1)
+                    (self.active_row + 1).min(self.row_count() - 1)
                 } else {
                     self.active_row.saturating_sub(1)
                 };
@@ -714,7 +714,7 @@ impl Workspace {
                     // neighbouring strip. Remaining travel is latched until
                     // the next gesture rather than skipping more strips.
                     let target = if switch > 0 {
-                        (self.active_row + 1).min(STRIP_COUNT - 1)
+                        (self.active_row + 1).min(self.row_count() - 1)
                     } else {
                         self.active_row.saturating_sub(1)
                     };
@@ -789,7 +789,7 @@ impl Workspace {
 
     pub(super) fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let mut grid = div().relative().size_full().overflow_hidden();
-        let mut columns = [0usize; STRIP_COUNT];
+        let mut columns = vec![0usize; self.row_count()];
 
         for (index, slot) in self.slots.iter().enumerate() {
             let panel = self.panel_metadata(slot, cx);
@@ -934,7 +934,7 @@ impl Workspace {
     ) -> gpui::AnyElement {
         let y = self.map_row_position(progress);
         let mut scene = div().relative().size_full().overflow_hidden();
-        for row in 0..STRIP_COUNT {
+        for row in 0..self.row_count() {
             let top = (row as f32 - y) * height;
             // Keep the destination mounted even before the camera reaches it.
             // Its input owns keyboard focus during rapid successive shortcuts.
@@ -1025,7 +1025,7 @@ impl Workspace {
             .absolute()
             .size_full(),
         );
-        for row in 0..STRIP_COUNT {
+        for row in 0..self.row_count() {
             let top = (row as f32 - self.active_row as f32 - pull) * height;
             if top.abs() >= height {
                 continue;

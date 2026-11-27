@@ -127,7 +127,7 @@ fn interaction_latency_profile(cx: &mut gpui::TestAppContext) {
     cx.update(crate::bind_workspace_keys);
     let (workspace, vcx) = cx.add_window_view(|window, cx| {
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
-        for row in 0..STRIP_COUNT {
+        for row in 0..ROWS_PER_SPACE {
             workspace.active_row = row;
             for column in 0..8 {
                 workspace.push_test_panel(&format!("{row}-{column}"), cx);
@@ -294,7 +294,7 @@ fn loaded_animation_first_frame_profile(cx: &mut gpui::TestAppContext) {
     cx.update(crate::bind_workspace_keys);
     let (workspace, vcx) = cx.add_window_view(|window, cx| {
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
-        for row in 0..STRIP_COUNT {
+        for row in 0..ROWS_PER_SPACE {
             workspace.active_row = row;
             for column in 0..8 {
                 workspace.push_test_panel(&format!("loaded-{row}-{column}"), cx);
@@ -399,11 +399,12 @@ fn workspace_snapshot_round_trips_layout_focus_drafts_scroll_and_terminal_id() {
         }],
         active: 0,
         active_row: 2,
-        row_focus: [None, None, Some(0), None],
+        space_hosts: Vec::new(),
+        row_focus: vec![None, None, Some(0), None],
         previous: Some(0),
         last_voice_chat: Some(0),
-        camera_x: [0.0, 10.0, 20.0, 30.0],
-        camera_target: [1.0, 11.0, 21.0, 31.0],
+        camera_x: vec![0.0, 10.0, 20.0, 30.0],
+        camera_target: vec![1.0, 11.0, 21.0, 31.0],
         overview: true,
         hints_overlay: true,
         folder_picker_sets_default: false,
@@ -436,7 +437,7 @@ fn workspace_snapshot_rejects_invalid_layout_before_root_replacement() {
         "format_version": SNAPSHOT_FORMAT_VERSION,
         "slots": [],
         "active": 0,
-        "active_row": STRIP_COUNT,
+        "active_row": ROWS_PER_SPACE,
         "row_focus": [null, null, null, null],
         "previous": null,
         "camera_x": [0.0, 0.0, 0.0, 0.0],
@@ -695,11 +696,12 @@ fn session_catalog_refresh_keeps_a_restored_open_session_in_the_sidebar(
                 }],
                 active: 0,
                 active_row: 0,
-                row_focus: [Some(0), None, None, None],
+                space_hosts: Vec::new(),
+                row_focus: vec![Some(0), None, None, None],
                 previous: None,
                 last_voice_chat: None,
-                camera_x: [0.0; STRIP_COUNT],
-                camera_target: [0.0; STRIP_COUNT],
+                camera_x: vec![0.0; ROWS_PER_SPACE],
+                camera_target: vec![0.0; ROWS_PER_SPACE],
                 overview: false,
                 hints_overlay: false,
                 folder_picker_sets_default: false,

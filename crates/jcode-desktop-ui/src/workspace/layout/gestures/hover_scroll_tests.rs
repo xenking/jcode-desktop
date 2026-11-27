@@ -37,7 +37,7 @@ fn assert_hover_scroll(cx: &mut gpui::TestAppContext, precise: bool, active_empt
         .each_ref()
         .map(|panel| panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()));
     let target = vcx.debug_bounds("panel-1").unwrap().center();
-    let camera_before = workspace.read_with(vcx, |w, _| w.camera_x);
+    let camera_before = workspace.read_with(vcx, |w, _| w.camera_x.clone());
     vcx.simulate_event(gpui::ScrollWheelEvent {
         position: target,
         delta: if precise {

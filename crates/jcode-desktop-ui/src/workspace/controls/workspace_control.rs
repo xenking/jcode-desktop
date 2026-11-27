@@ -420,11 +420,11 @@ impl Workspace {
                 // filled. Absent means the active workspace.
                 let row = match workspace {
                     None => self.active_row,
-                    Some(number) if (1..=STRIP_COUNT).contains(&number) => number - 1,
+                    Some(number) if (1..=self.row_count()).contains(&number) => number - 1,
                     Some(_) => {
                         return error(
                             "workspace_out_of_range",
-                            &format!("workspace must be between 1 and {STRIP_COUNT}"),
+                            &format!("workspace must be between 1 and {}", self.row_count()),
                         );
                     }
                 };

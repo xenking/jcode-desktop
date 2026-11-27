@@ -38,7 +38,7 @@ pub(super) fn remote_draft_host(id: &str) -> Option<&str> {
 
 impl Workspace {
     pub(super) fn open_default_draft(&mut self, directory: Option<String>, cx: &mut Context<Self>) {
-        if let Some(host) = self.remotes.default_host.clone() {
+        if let Some(host) = self.new_session_destination() {
             self.open_remote_draft(host, cx);
         } else {
             self.open_local_draft(directory, cx);

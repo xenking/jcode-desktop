@@ -382,14 +382,14 @@ fn workspace_identity_follows_rows_and_number_badges_navigate(cx: &mut gpui::Tes
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
         workspace.show_sidebar = false;
         workspace.enable_test_minimap();
-        for row in 0..STRIP_COUNT {
+        for row in 0..ROWS_PER_SPACE {
             workspace.push_test_panel(&format!("identity-{row}"), cx);
             workspace.slots[row].row = row;
         }
         workspace
     });
     vcx.run_until_parked();
-    for row in 0..STRIP_COUNT {
+    for row in 0..ROWS_PER_SPACE {
         assert!(
             vcx.debug_bounds(format!("workspace-tab-group-label-{row}").leak())
                 .is_some()
@@ -824,7 +824,7 @@ fn live_tabs_two_panel_cluster_keeps_every_offscreen_tab_visible_and_clickable(
                 workspace.read_with(vcx, |w, _| w.active),
                 selected,
                 "window={width}, selected={selected}, track={track:?}, targets={targets:?}, camera={:?}",
-                workspace.read_with(vcx, |w, _| (w.camera_x, w.camera_target, w.camera_dirty))
+                workspace.read_with(vcx, |w, _| (w.camera_x.clone(), w.camera_target.clone(), w.camera_dirty.clone()))
             );
         }
     }

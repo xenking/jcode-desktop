@@ -60,6 +60,7 @@ impl Workspace {
             }
         }
         paired::publish_labels(&self.remotes.paired);
+        self.sync_spaces();
     }
 
     /// Where new sessions start on a paired machine. Never a local path.

@@ -402,7 +402,7 @@ fn crash_snapshot(
 /// restore. Recording mid-animation frames or streaming scroll offsets would
 /// rewrite the checkpoint every tick without changing what a crash restores.
 fn settle_motion(snapshot: &mut WorkspaceSnapshot) {
-    snapshot.camera_x = snapshot.camera_target;
+    snapshot.camera_x = snapshot.camera_target.clone();
     for slot in &mut snapshot.slots {
         if slot.panel.stick_to_bottom {
             slot.panel.scroll_x = 0.0;
@@ -1175,7 +1175,7 @@ mod tests {
         record.snapshot.format_version = 999;
         assert!(restore(&record, false).is_none());
         record.snapshot.format_version = 1;
-        record.snapshot.slots[0].row = super::super::STRIP_COUNT;
+        record.snapshot.slots[0].row = super::super::ROWS_PER_SPACE;
         assert!(restore(&record, false).is_none());
     }
 

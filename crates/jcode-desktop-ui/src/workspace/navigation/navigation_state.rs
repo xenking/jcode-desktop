@@ -21,7 +21,7 @@ impl Workspace {
             .slots
             .iter()
             .position(|slot| slot.panel.surface().input_focus_handle(cx).is_focused(window));
-        let rows: Vec<_> = (0..STRIP_COUNT)
+        let rows: Vec<_> = (0..self.row_count())
             .map(|row| {
                 let panels: Vec<_> = self
                     .row_indices(row)

@@ -381,6 +381,8 @@ mod hover_scroll_tests;
 mod focus_follow_tests;
 #[path = "workspace/remotes/workspace_pull.rs"]
 mod workspace_pull;
+#[path = "workspace/remotes/workspace_spaces.rs"]
+mod workspace_spaces;
 #[cfg(test)]
 #[path = "workspace/layout/gestures/workspace_scroll_tests.rs"]
 mod workspace_scroll_tests;
@@ -406,7 +408,8 @@ mod tutorial_geometry_tests;
 #[path = "workspace/onboarding/tutorial_minimalism_tests.rs"]
 mod tutorial_minimalism_tests;
 
-const STRIP_COUNT: usize = 4;
+/// Workspaces (rows) in each machine's space.
+const ROWS_PER_SPACE: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ShowcaseCue {
@@ -549,9 +552,9 @@ const ONBOARDING_SKILLS: &[&str] = &[
     "overview",
 ];
 /// Rows split the square's inner height evenly, one per strip.
-const MINIMAP_ROW_HEIGHT: f32 =
-    (MINIMAP_HEIGHT - MINIMAP_PADDING * 2.0 - MINIMAP_ROW_GAP * (STRIP_COUNT as f32 - 1.0))
-        / STRIP_COUNT as f32;
+fn minimap_row_height(rows: usize) -> f32 {
+    (MINIMAP_HEIGHT - MINIMAP_PADDING * 2.0 - MINIMAP_ROW_GAP * (rows as f32 - 1.0)) / rows as f32
+}
 /// Vertical inset between a panel rectangle and its track edge.
 const MINIMAP_PANEL_INSET: f32 = 1.5;
 /// The gesture reticle: how long it stays fully lit after the last touchpad
@@ -664,9 +667,12 @@ pub struct Workspace {
     slots: Vec<Slot>,
     active: usize,
     active_row: usize,
+    /// Paired machines with a space of their own, after this machine's. Space
+    /// `n` owns workspaces `(n + 1) * ROWS_PER_SPACE` onward.
+    space_hosts: Vec<String>,
     /// Last focused panel on each strip, so vertical navigation restores the
     /// place the user left instead of choosing by column position.
-    row_focus: [Option<gpui::EntityId>; STRIP_COUNT],
+    row_focus: Vec<Option<gpui::EntityId>>,
     /// Row being animated out and progress of the incoming row.
     outgoing_row: Option<usize>,
     row_progress: AnimatedValue,
@@ -676,17 +682,17 @@ pub struct Workspace {
     /// Previously focused panel, for niri's `focus-window-previous`.
     previous: Option<gpui::EntityId>,
     /// Each strip retains its own horizontal camera position.
-    camera_x: [f32; STRIP_COUNT],
-    camera_target: [f32; STRIP_COUNT],
+    camera_x: Vec<f32>,
+    camera_target: Vec<f32>,
     /// Where the current camera animation started, and when.
-    camera_from: [f32; STRIP_COUNT],
-    camera_started: [Option<Instant>; STRIP_COUNT],
-    camera_touch_pan: [bool; STRIP_COUNT],
+    camera_from: Vec<f32>,
+    camera_started: Vec<Option<Instant>>,
+    camera_touch_pan: Vec<bool>,
     /// Set when a strip's camera target must be recomputed at render time,
     /// once the viewport width is known.
-    camera_dirty: [bool; STRIP_COUNT],
+    camera_dirty: Vec<bool>,
     /// Newly created local editors must be fully visible on their first frame.
-    camera_snap_pending: [bool; STRIP_COUNT],
+    camera_snap_pending: Vec<bool>,
     overview: bool,
     overview_progress: AnimatedValue,
     map_gesture: map_gesture::MapGesture,

@@ -94,14 +94,14 @@ impl Workspace {
 
     fn move_session_map(&mut self, dx: f32, dy: f32, cx: &mut Context<Self>) {
         let width = self.last_canvas_width.unwrap_or(800.0);
-        let columns = (0..STRIP_COUNT)
+        let columns = (0..self.row_count())
             .map(|row| self.row_indices(row).count() + usize::from(row == self.active_row))
             .max()
             .unwrap_or(1);
         // Leave enough room to bring every row/column to the leading edge,
         // without letting the entire map disappear off screen.
         let min_x = -((columns.saturating_sub(1)) as f32 * 316.0);
-        let min_y = -((STRIP_COUNT.saturating_sub(1)) as f32 * 206.0);
+        let min_y = -((self.row_count().saturating_sub(1)) as f32 * 206.0);
         self.map_gesture.pan.0 =
             (self.map_gesture.pan.0 + dx).clamp(min_x, (width - 364.0).max(0.0));
         self.map_gesture.pan.1 = (self.map_gesture.pan.1 + dy).clamp(min_y, 0.0);

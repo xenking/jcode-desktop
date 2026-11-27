@@ -48,7 +48,8 @@ impl Workspace {
         row: usize,
         cx: &mut Context<Self>,
     ) -> usize {
-        debug_assert!(row < STRIP_COUNT);
+        let row = self.bound_row(crate::harness::remote_host(&session_id).as_deref(), row);
+        debug_assert!(row < self.row_count());
         let width_fraction = spawned_panel_width(
             self.row_indices(row)
                 .filter(|&index| !self.slots[index].closing)

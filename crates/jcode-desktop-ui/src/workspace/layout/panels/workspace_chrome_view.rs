@@ -126,8 +126,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let track_w = MINIMAP_WIDTH - MINIMAP_PADDING * 2.0 - MINIMAP_LABEL_WIDTH;
-        let panel_track_h = MINIMAP_ROW_HEIGHT - MINIMAP_PANEL_INSET * 2.0;
-        let widest = (0..STRIP_COUNT)
+        let row_height = minimap_row_height(self.row_count());
+        let panel_track_h = row_height - MINIMAP_PANEL_INSET * 2.0;
+        let widest = (0..self.row_count())
             .map(|row| {
                 self.row_indices(row)
                     .map(|index| self.slot_width(index, viewport_w) + GAP)
@@ -185,14 +186,14 @@ impl Workspace {
                 },
             ));
 
-        for row in 0..STRIP_COUNT {
+        for row in 0..self.row_count() {
             let active_row = row == self.active_row;
             let accent = Theme::global().workspace_accent(row);
             let mut track = div()
                 .id(("minimap-row", row))
                 .debug_selector(move || format!("minimap-row-{row}"))
                 .relative()
-                .h(px(MINIMAP_ROW_HEIGHT))
+                .h(px(row_height))
                 .rounded(px(3.0))
                 .cursor_pointer()
                 .bg(Theme::global().minimap_row_background(active_row, accent))
@@ -354,7 +355,7 @@ impl Workspace {
                         .left(px(lens_left))
                         .top(px(0.0))
                         .w(px(lens_width))
-                        .h(px(MINIMAP_ROW_HEIGHT))
+                        .h(px(row_height))
                         .rounded(px(3.0))
                         .border_1()
                         .border_color(accent),
@@ -371,7 +372,7 @@ impl Workspace {
                             .debug_selector(|| "minimap-you-pin".into())
                             .absolute()
                             .left(px(panel_left + panel_width / 2.0 - 2.0))
-                            .top(px(MINIMAP_ROW_HEIGHT / 2.0 - 2.0))
+                            .top(px(row_height / 2.0 - 2.0))
                             .w(px(4.0))
                             .h(px(4.0))
                             .rounded_full()
@@ -390,7 +391,7 @@ impl Workspace {
                             .debug_selector(|| "minimap-gesture-dot".into())
                             .absolute()
                             .left(px(dot_left))
-                            .top(px((MINIMAP_ROW_HEIGHT - MINIMAP_GESTURE_DOT) / 2.0))
+                            .top(px((row_height - MINIMAP_GESTURE_DOT) / 2.0))
                             .w(px(MINIMAP_GESTURE_DOT))
                             .h(px(MINIMAP_GESTURE_DOT))
                             .rounded_full()
