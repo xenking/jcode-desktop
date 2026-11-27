@@ -333,7 +333,7 @@ pub(super) fn intent_understanding_tone(state: jcode_base::todo::IntentUnderstan
     match state {
         I::Uncertain => TodoTone::Fail,
         I::Partial => TodoTone::Warn,
-        I::Clear | I::Complete => TodoTone::Ok,
+        I::Clear => TodoTone::Ok,
     }
 }
 
