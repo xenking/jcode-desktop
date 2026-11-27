@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::harness::catalog::persisted_todo_snapshot;
 use crate::harness::catalog::{EditWatch, SessionRefresh};
 use crate::harness::local_runtime::{connect, start_local_runtime};
+use crate::harness::machine_link::MachineLinks;
 use crate::harness::protocol::{AskResponseError, Command, SessionOperation, Update};
 use crate::harness::remote;
 use crate::harness::remote::sessions::{create_remote_session, list_remote_sessions};
@@ -61,6 +62,7 @@ pub(super) fn run_with_transports(
     let session_refresh = SessionRefresh::spawn(updates.clone());
 
     let mut edit_watch = EditWatch::new();
+    let mut machine_links = MachineLinks::new(updates.clone());
 
     // Per-session workers, keyed by session id.
     let mut workers: HashMap<String, Sender<SessionCommand>> = HashMap::new();
@@ -83,6 +85,26 @@ pub(super) fn run_with_transports(
         };
         match command {
             Command::Shutdown => break,
+            Command::AttachMachine { host } => {
+                let connect_machine: std::sync::Arc<
+                    dyn Fn() -> jcode_sdk::Result<jcode_sdk::JcodeClient> + Send + Sync,
+                > = match &host {
+                    None => std::sync::Arc::new(|| connect("state")),
+                    Some(paired) if crate::remote_targets::paired_id(paired).is_some() => {
+                        let (transports, paired) = (transports.clone(), paired.clone());
+                        std::sync::Arc::new(move || transports.connect(&paired))
+                    }
+                    // SSH and Cloud destinations have no workspaces of their own.
+                    Some(_) => continue,
+                };
+                machine_links.attach(host, connect_machine);
+            }
+            Command::PutMachineState {
+                host,
+                token,
+                expected_rev,
+                changes,
+            } => machine_links.put(host, token, expected_rev, changes),
             Command::SetCatalogForeground(focused) => {
                 edit_watch.set_foreground(focused);
             }

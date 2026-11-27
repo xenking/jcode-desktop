@@ -10,13 +10,15 @@
 //! Layers, lowest first. Each knows nothing of the ones above it:
 //! `protocol` (the `Update`/`Command` vocabulary), `updates` (ordered
 //! delivery), `remote` (session addresses, SSH and cloud connection pools,
-//! remote session listing), `local_runtime` (the local daemon), `catalog` (the
+//! remote session listing), `local_runtime` (the local daemon), `machine_link`
+//! (each machine's Desktop state link), `catalog` (the
 //! persisted session store), `session` (one panel's connection thread), `hub`
 //! (the coordinator), then this module's `Bridge`.
 
 mod catalog;
 mod hub;
 mod local_runtime;
+mod machine_link;
 mod protocol;
 mod remote;
 mod screenshot;

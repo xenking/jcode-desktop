@@ -28,9 +28,49 @@ pub struct SideQuestionThread {
     pub turns: Vec<SideQuestionTurn>,
 }
 
+/// Where the link to one machine's Desktop state stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkStatus {
+    Connecting,
+    Connected,
+    /// The connection dropped or could not be made; reconnecting by itself.
+    Lost,
+    /// That machine's Jcode lacks Desktop state. Desktop never restarts it:
+    /// the owner updates Jcode there, and Desktop keeps working without sync.
+    NeedsUpdate,
+}
+
+/// What a machine's daemon tells this Desktop about the shared state.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MachineStateEvent {
+    /// Everything held, after connecting, reconnecting or falling behind.
+    Snapshot(jcode_sdk::desktop_state::DesktopStateSnapshot),
+    /// Another Desktop changed the state.
+    Changed {
+        rev: u64,
+        device: String,
+        entries: Vec<jcode_sdk::api::DesktopStateEntry>,
+    },
+}
+
 /// Updates flowing from the harness threads into the UI.
 #[derive(Debug)]
 pub enum Update {
+    /// A machine's state link changed. `host` is `None` for this machine.
+    MachineLink {
+        host: Option<String>,
+        status: LinkStatus,
+    },
+    MachineState {
+        host: Option<String>,
+        event: MachineStateEvent,
+    },
+    /// The outcome of a `PutMachineState`, named by the caller's `token`.
+    MachineStatePut {
+        host: Option<String>,
+        token: u64,
+        result: Result<jcode_sdk::desktop_state::DesktopStatePut, String>,
+    },
     DraftModels {
         current: Option<String>,
         routes: Vec<jcode_sdk::ModelRouteInfo>,
@@ -270,6 +310,19 @@ pub enum Update {
 pub enum Command {
     /// Final UI handle dropped. Stop workers, including their SSH transports.
     Shutdown,
+    /// Start (once) the Desktop state link to a machine: `None` is this one,
+    /// `Some` a paired machine's host. Machines are attached when needed.
+    AttachMachine {
+        host: Option<String>,
+    },
+    /// Write changes to a machine's Desktop state on top of `expected_rev`.
+    /// The answer is `Update::MachineStatePut` carrying `token`.
+    PutMachineState {
+        host: Option<String>,
+        token: u64,
+        expected_rev: u64,
+        changes: Vec<jcode_sdk::api::DesktopStateChange>,
+    },
     RefreshSessions,
     SetCatalogForeground(bool),
     RefreshSessionsInitial,

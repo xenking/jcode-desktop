@@ -3,6 +3,8 @@
 
 #[cfg(test)]
 mod general;
+#[cfg(all(test, unix))]
+mod machine_link;
 #[cfg(all(test, target_os = "macos"))]
 mod paired_gateway;
 #[cfg(all(test, unix))]
