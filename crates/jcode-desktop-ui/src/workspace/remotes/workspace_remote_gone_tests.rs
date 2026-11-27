@@ -140,6 +140,35 @@ fn a_session_its_machine_lost_leaves_the_list_with_one_clear_message(
     });
 }
 
+fn runtime_info(routes: Vec<jcode_sdk::ModelRouteInfo>) -> jcode_sdk::ApiEvent {
+    jcode_sdk::ApiEvent::RuntimeInfo {
+        speed_mode: Default::default(),
+        speed_options: Vec::new(),
+        session_id: SESSION.into(),
+        provider: Some("Anthropic".into()),
+        model: Some("claude-opus-5-5".into()),
+        routes,
+        reasoning_effort: None,
+        auth_method: None,
+        account_label: None,
+    }
+}
+
+fn route(available: bool) -> jcode_sdk::ModelRouteInfo {
+    jcode_sdk::ModelRouteInfo {
+        model: "claude-opus-5-5".into(),
+        provider: "Anthropic".into(),
+        api_method: "claude-oauth@claude-fox".into(),
+        available,
+        detail: "account claude-fox".into(),
+        speed_options: Vec::new(),
+        reasoning_efforts: None,
+        usage: None,
+        account: Some("claude:claude-fox".into()),
+        icon: None,
+    }
+}
+
 /// An empty model picker must always say why, for every cause, naming the
 /// machine, and never offer a local sign-in for a remote session.
 #[gpui::test]
@@ -171,42 +200,38 @@ fn an_empty_model_picker_always_explains_itself(cx: &mut gpui::TestAppContext) {
         message.contains("request timed out") && message.contains("WORK"),
         "{message}"
     );
-    // The runtime answered with no accounts: say where to log in.
+    // The runtime answered with identity but no routes (a catalog too big for
+    // a live push arrives stripped of them): that says nothing about its
+    // models, so the failure stands.
     panel.update(vcx, |panel, cx| {
-        panel.apply_event(
-            &jcode_sdk::ApiEvent::RuntimeInfo {
-                speed_mode: Default::default(),
-                speed_options: Vec::new(),
-                session_id: SESSION.into(),
-                provider: None,
-                model: None,
-                routes: Vec::new(),
-                reasoning_effort: None,
-                auth_method: None,
-                account_label: None,
-            },
-            cx,
-        );
+        panel.apply_event(&runtime_info(Vec::new()), cx)
+    });
+    let (cause, _) = say(vcx, &panel);
+    assert_eq!(cause, EmptyModels::Failed("request timed out".into()));
+    // Routes that none can serve are said as that, never as a verdict on the
+    // machine's logins: nothing reports those.
+    panel.update(vcx, |panel, cx| {
+        panel.apply_event(&runtime_info(vec![route(false)]), cx)
     });
     let (cause, message) = say(vcx, &panel);
-    assert_eq!(cause, EmptyModels::NoAccounts);
+    assert_eq!(cause, EmptyModels::Failed("no model is available".into()));
     assert!(
-        message.contains("No accounts on WORK") && message.contains("jcode login"),
+        message.contains("WORK")
+            && !message.contains("No accounts")
+            && !message.contains("jcode login"),
         "{message}"
     );
     assert!(!message.contains(ID), "{message}");
-    // Opened, that is a popover with the machine's login command to copy and a
-    // refresh, never a local sign-in and never an empty panel of rows.
+    // Opened, that is a popover with a refresh, never a local sign-in, never
+    // a login command and never an empty panel of rows.
     panel.update(vcx, |panel, cx| panel.open_recovery_models(cx));
     vcx.run_until_parked();
-    for visible in [
-        "recovery-model-message",
-        "recovery-copy-login",
-        "recovery-refresh-models",
-    ] {
+    for visible in ["recovery-model-message", "recovery-refresh-models"] {
         assert!(vcx.debug_bounds(visible).is_some(), "{visible}");
     }
-    assert!(vcx.debug_bounds("recovery-connect-account").is_none());
+    for hidden in ["recovery-connect-account", "recovery-copy-login"] {
+        assert!(vcx.debug_bounds(hidden).is_none(), "{hidden}");
+    }
     // The lost session: the connection, not the accounts, is the cause.
     panel.update(vcx, |panel, cx| {
         panel.connection_lost("The gateway did not answer in time", cx)
@@ -225,4 +250,21 @@ fn an_empty_model_picker_always_explains_itself(cx: &mut gpui::TestAppContext) {
     ] {
         assert!(vcx.debug_bounds(hidden).is_none(), "{hidden}");
     }
+}
+
+/// A runtime answer with no routes must not wipe the list the panel already
+/// has: the next unsolicited identity push would otherwise empty a working picker.
+#[gpui::test]
+fn a_runtime_answer_without_routes_keeps_the_listed_models(cx: &mut gpui::TestAppContext) {
+    publish(Some("WORK"));
+    let (bridge, _commands) = harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new(SESSION.into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.apply_event(&runtime_info(vec![route(true)]), cx);
+        panel.apply_event(&runtime_info(Vec::new()), cx);
+        panel.open_recovery_models(cx);
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("recovery-model-picker").is_none());
 }

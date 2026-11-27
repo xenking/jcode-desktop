@@ -156,13 +156,27 @@ fn remote_session_is_gone(client: &JcodeClient, error: &jcode_sdk::Error, real_i
 /// Ask the runtime for this session's identity and model list and hand it to
 /// the panel. A failed request is reported, not swallowed: an empty model
 /// picker with no explanation is indistinguishable from "no accounts".
+///
+/// A runtime can answer with identity but no routes: its catalog was too big
+/// for the live push and arrived stripped of them. Its default catalog is the
+/// same list, so ask for that rather than call the machine empty.
 fn publish_runtime_info(
     client: &JcodeClient,
     real_id: &str,
     session_id: &str,
     updates: &UpdateSender,
 ) {
-    let update = match client.get_runtime_info(real_id) {
+    let info = client.get_runtime_info(real_id).and_then(|mut info| {
+        if info.routes.is_empty() {
+            info.routes = client.list_draft_models()?.1;
+        }
+        Ok(info)
+    });
+    let update = match info {
+        Ok(info) if info.routes.is_empty() => Update::ModelCatalogFailed {
+            session_id: session_id.to_owned(),
+            reason: "the runtime returned no model routes".to_owned(),
+        },
         Ok(info) => Update::Event {
             session_id: session_id.to_owned(),
             event: ApiEvent::RuntimeInfo {

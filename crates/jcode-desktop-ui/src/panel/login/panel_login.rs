@@ -128,17 +128,17 @@ fn completed_login_copy(
 /// What a user runs on a remote machine to give its daemon an account.
 const REMOTE_LOGIN_COMMAND: &str = "jcode login";
 
-/// Why the model list is empty.
+/// Why the model list is empty. Whether a machine has logins is not among the
+/// causes: no runtime reports its logins, and an empty list proves nothing
+/// about them.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum EmptyModels {
     /// The runtime has not answered yet.
     Loading,
     /// The session's connection is down, with the reason.
     Lost(String),
-    /// The runtime was asked and failed, with its error.
+    /// The runtime could not give a usable list, with the reason.
     Failed(String),
-    /// The runtime answered and has no account that can serve a model.
-    NoAccounts,
 }
 
 impl Panel {
@@ -185,7 +185,7 @@ impl Panel {
         } else if !self.models_loaded {
             EmptyModels::Loading
         } else {
-            EmptyModels::NoAccounts
+            EmptyModels::Failed("no model is available".to_owned())
         }
     }
 
@@ -208,12 +208,6 @@ impl Panel {
                 format!("Not connected{to}, so its models cannot be listed. {reason}")
             }
             EmptyModels::Failed(error) => format!("Could not load the model list{on}: {error}"),
-            EmptyModels::NoAccounts => match machine {
-                Some(name) => format!(
-                    "No accounts on {name}. Logins belong to each machine: run `{REMOTE_LOGIN_COMMAND}` on {name}, then choose Refresh."
-                ),
-                None => "No accounts are connected on this computer.".to_owned(),
-            },
         }
     }
 
@@ -281,15 +275,6 @@ impl Panel {
                             action("recovery-connect-account", "Connect account")
                                 .on_click(cx.listener(|this, _, _, cx| this.open_login_picker(cx))),
                         )
-                    })
-                    .when(remote && matches!(state, EmptyModels::NoAccounts), |el| {
-                        el.child(action("recovery-copy-login", "Copy login command").on_click(
-                            |_, _, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                    REMOTE_LOGIN_COMMAND.to_owned(),
-                                ));
-                            },
-                        ))
                     })
                     .when(connected, |el| {
                         el.child(action("recovery-refresh-models", "Refresh choices").on_click(

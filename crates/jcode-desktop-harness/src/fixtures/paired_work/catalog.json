@@ -1,0 +1,95 @@
+{
+ "_about": "Redacted shape of what a paired WORK machine (bridge jcode-harness-api-bridge/0.1.0) returned on 27 Nov 2026 to ListDraftModels: 486 routes (465 available), 142579 JSON bytes, over the daemon's 64 KiB live-push limit. One route kept per (provider, api_method, availability); emails and ids removed.",
+ "recorded_total_routes": 486,
+ "recorded_json_bytes": 142579,
+ "capabilities": [
+  "draft_model_catalog",
+  "runtime_info",
+  "routing_v1"
+ ],
+ "draft_current": "claude-opus-5-5",
+ "draft_routes": [
+  {
+   "model": "claude-opus-5-5",
+   "provider": "Anthropic",
+   "api_method": "claude-api",
+   "available": false,
+   "detail": "no API key"
+  },
+  {
+   "model": "claude-opus-5-5",
+   "provider": "Anthropic",
+   "api_method": "claude-oauth@claude-fox",
+   "available": true,
+   "detail": "account claude-fox [redacted]",
+   "account": "claude:claude-fox"
+  },
+  {
+   "model": "claude-fable-5",
+   "provider": "Anthropic",
+   "api_method": "claude-oauth@claude-fox",
+   "available": true,
+   "detail": "account claude-fox [redacted]",
+   "account": "claude:claude-fox"
+  },
+  {
+   "model": "claude-opus-5-5",
+   "provider": "Anthropic",
+   "api_method": "claude-oauth@claude-otter",
+   "available": true,
+   "detail": "account claude-otter [redacted]",
+   "account": "claude:claude-otter"
+  },
+  {
+   "model": "claude-opus-5-5",
+   "provider": "Anthropic",
+   "api_method": "claude-oauth@claude-panda",
+   "available": true,
+   "detail": "account claude-panda",
+   "account": "claude:claude-panda"
+  },
+  {
+   "model": "gpt-6.2-sol",
+   "provider": "OpenAI",
+   "api_method": "openai-oauth@openai-otter",
+   "available": true,
+   "detail": "account openai-otter [redacted]",
+   "account": "openai:openai-otter"
+  },
+  {
+   "model": "chatgpt-web",
+   "provider": "OpenAI",
+   "api_method": "chatgpt-web",
+   "available": true,
+   "detail": "logged-in Firefox ChatGPT session"
+  },
+  {
+   "model": "model-a",
+   "provider": "Cursor",
+   "api_method": "cursor",
+   "available": true,
+   "detail": ""
+  },
+  {
+   "model": "model-b",
+   "provider": "Hugging Face",
+   "api_method": "openai-compatible:huggingface",
+   "available": true,
+   "detail": ""
+  },
+  {
+   "model": "model-c",
+   "provider": "OpenCode Go",
+   "api_method": "openai-compatible:opencode-go",
+   "available": true,
+   "detail": ""
+  },
+  {
+   "model": "model-d",
+   "provider": "omlx",
+   "api_method": "openai-compatible:omlx",
+   "available": true,
+   "detail": ""
+  }
+ ]
+}

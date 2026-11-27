@@ -129,31 +129,45 @@ mod socket_tests {
                             runtime_identity: None,
                             version: jcode_sdk::api::API_VERSION_MAJOR,
                             server: "submission-regression".into(),
-                            capabilities: ["queued_prompt_editing", "skill_message_v1"]
-                                .into_iter()
-                                .chain(
-                                    supports_attachments
-                                        .then_some(jcode_sdk::api::FILE_ATTACHMENTS_CAPABILITY),
-                                )
-                                .map(str::to_owned)
-                                .collect(),
+                            capabilities: [
+                                "queued_prompt_editing",
+                                "skill_message_v1",
+                                "draft_model_catalog",
+                            ]
+                            .into_iter()
+                            .chain(
+                                supports_attachments
+                                    .then_some(jcode_sdk::api::FILE_ATTACHMENTS_CAPABILITY),
+                            )
+                            .map(str::to_owned)
+                            .collect(),
                         },
                         ApiRequest::GetHistory { .. } => ApiEvent::History {
                             session_id: "s1".into(),
                             messages: vec![],
                             images: vec![],
                         },
+                        // The shape a paired machine answers with when its catalog was
+                        // too big for the live push: identity, no routes.
                         ApiRequest::GetRuntimeInfo { .. } => ApiEvent::RuntimeInfo {
                             speed_mode: Default::default(),
                             speed_options: Vec::new(),
                             session_id: "s1".into(),
-                            provider: None,
-                            model: None,
+                            provider: Some("Anthropic".into()),
+                            model: Some("claude-opus-5-5".into()),
                             routes: vec![],
                             reasoning_effort: None,
                             auth_method: None,
                             account_label: None,
                         },
+                        ApiRequest::ListDraftModels => {
+                            let fixture = paired_work_catalog();
+                            ApiEvent::DraftModels {
+                                current: Some(fixture["draft_current"].as_str().unwrap().into()),
+                                routes: serde_json::from_value(fixture["draft_routes"].clone())
+                                    .unwrap(),
+                            }
+                        }
                         ApiRequest::SendMessage { .. } | ApiRequest::SendSkillMessage { .. } => {
                             let events = on_send(&frame.request);
                             request_tx.send(frame.request).unwrap();
@@ -297,6 +311,33 @@ mod socket_tests {
                 }
             }
         }
+    }
+
+    /// What a paired WORK machine answered to the default catalog request,
+    /// redacted (see the fixture's own note).
+    fn paired_work_catalog() -> serde_json::Value {
+        serde_json::from_str(include_str!("../../fixtures/paired_work/catalog.json")).unwrap()
+    }
+
+    /// A runtime that answers with identity but no routes (its catalog was too
+    /// big for the live push) still has models: the worker asks for its default
+    /// catalog instead of letting the panel call the machine empty.
+    #[test]
+    fn a_runtime_answer_without_routes_is_completed_from_its_default_catalog() {
+        let worker = Worker::new(|_| vec![]);
+        let expected = paired_work_catalog()["draft_routes"]
+            .as_array()
+            .unwrap()
+            .len();
+        worker
+            .commands
+            .send(SessionCommand::RefreshRuntime)
+            .unwrap();
+        worker.wait_for(|update| {
+            matches!(update, Update::Event {
+                event: ApiEvent::RuntimeInfo { routes, model, .. }, ..
+            } if routes.len() == expected && model.as_deref() == Some("claude-opus-5-5"))
+        });
     }
 
     #[test]

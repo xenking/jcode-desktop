@@ -715,41 +715,44 @@ impl Panel {
                     .as_deref()
                     .map(human_auth_method)
                     .or_else(|| auth_method_for_model(self.model.as_deref(), routes));
+                // A runtime that answers with no routes (a catalog too big for a
+                // live push arrives without them) says nothing about its models:
+                // keep the list this panel already has.
                 if !routes.is_empty() {
                     cx.set_global(KnownModelRoutes(routes.clone()));
-                }
-                let models = available_model_names(routes);
-                self.available_models = models.clone();
-                self.models_loaded = true;
-                self.models_error = None;
-                let current = self
-                    .model
-                    .as_ref()
-                    .and_then(|model| {
-                        let mut matching = routes.iter().filter(|route| {
-                            route.available
-                                && route.model == *model
-                                && self
-                                    .provider
-                                    .as_ref()
-                                    .is_none_or(|provider| route.provider == *provider)
-                                && self.auth_method.as_ref().is_none_or(|auth| {
-                                    human_auth_method(&route.api_method) == *auth
-                                })
-                        });
-                        let route = matching.next()?;
-                        matching
-                            .next()
-                            .is_none()
-                            .then(|| crate::input::model_menu::route_spec(route))
-                    })
-                    .or_else(|| self.model.clone());
-                let update = |input: &mut PromptInput, cx: &mut Context<PromptInput>| {
-                    input.set_model_routes(models.clone(), routes, current.clone(), cx);
-                };
-                self.input.update(cx, update);
-                if let Some((PickerKind::Model, search)) = &self.picker_search {
-                    search.update(cx, update);
+                    let models = available_model_names(routes);
+                    self.available_models = models.clone();
+                    self.models_loaded = true;
+                    self.models_error = None;
+                    let current = self
+                        .model
+                        .as_ref()
+                        .and_then(|model| {
+                            let mut matching = routes.iter().filter(|route| {
+                                route.available
+                                    && route.model == *model
+                                    && self
+                                        .provider
+                                        .as_ref()
+                                        .is_none_or(|provider| route.provider == *provider)
+                                    && self.auth_method.as_ref().is_none_or(|auth| {
+                                        human_auth_method(&route.api_method) == *auth
+                                    })
+                            });
+                            let route = matching.next()?;
+                            matching
+                                .next()
+                                .is_none()
+                                .then(|| crate::input::model_menu::route_spec(route))
+                        })
+                        .or_else(|| self.model.clone());
+                    let update = |input: &mut PromptInput, cx: &mut Context<PromptInput>| {
+                        input.set_model_routes(models.clone(), routes, current.clone(), cx);
+                    };
+                    self.input.update(cx, update);
+                    if let Some((PickerKind::Model, search)) = &self.picker_search {
+                        search.update(cx, update);
+                    }
                 }
                 self.sync_effort_menu(cx);
                 self.update_speed(*speed_mode, speed_options, cx);
