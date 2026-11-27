@@ -333,7 +333,13 @@ impl PromptInput {
                 return;
             }
             Action::McpServer(_) => return,
-            Action::Skill(name) if !alternate || name == "off" => {
+            // A mode pins; any other skill becomes a chip for the next message.
+            // Alt takes the other one.
+            Action::Skill(name)
+                if name == "off"
+                    || crate::mode_catalog::is_mode(&name, self.mode_catalog.get(&name))
+                        != alternate =>
+            {
                 self.toggle_mode_row(&name, window, cx);
                 None
             }

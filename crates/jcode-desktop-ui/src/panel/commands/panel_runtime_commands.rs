@@ -35,6 +35,37 @@ fn parse_runtime_command(content: &str) -> Option<(RuntimeCommand, Vec<String>)>
 }
 
 impl Panel {
+    /// The modes a `/mode` command will leave pinned, shown before the runtime answers.
+    fn show_pinned_modes(&mut self, args: &[String], cx: &mut Context<Self>) {
+        let mut modes = self.mode_names().to_vec();
+        match args {
+            [off] if off == "off" => modes.clear(),
+            [toggle, name] if toggle == "toggle" && self.mode_multiselect => {
+                if let Some(index) = modes.iter().position(|mode| mode == name) {
+                    modes.remove(index);
+                } else {
+                    modes.push(name.clone());
+                }
+            }
+            [toggle, name] if toggle == "toggle" => {
+                modes = if modes.contains(name) {
+                    Vec::new()
+                } else {
+                    vec![name.clone()]
+                };
+            }
+            [name] => modes = vec![name.clone()],
+            _ => return,
+        }
+        self.active_skill = if self.mode_multiselect {
+            None
+        } else {
+            modes.first().cloned()
+        };
+        self.pinned_modes = modes;
+        self.sync_mode_menu(cx);
+    }
+
     pub(super) fn handle_runtime_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
         let Some((command, mut args)) = parse_runtime_command(content) else {
             return false;
@@ -44,16 +75,21 @@ impl Panel {
                 "Runtime commands require a live session.".into(),
             ));
         } else {
-            if command == RuntimeCommand::Mode
-                && !self.mode_multiselect
-                && let [toggle, name] = args.as_slice()
-                && toggle == "toggle"
-            {
-                args = vec![if self.mode_names().contains(name) {
-                    "off".into()
-                } else {
-                    name.clone()
-                }];
+            if command == RuntimeCommand::Mode {
+                // The runtime applies a pin once the turn ends. Show it now.
+                if self.activity_active() {
+                    self.show_pinned_modes(&args, cx);
+                }
+                if !self.mode_multiselect
+                    && let [toggle, name] = args.as_slice()
+                    && toggle == "toggle"
+                {
+                    args = vec![if self.mode_names().contains(name) {
+                        "off".into()
+                    } else {
+                        name.clone()
+                    }];
+                }
             }
             self.bridge.send(Command::RuntimeCommand {
                 session_id: self.session_id.clone(),

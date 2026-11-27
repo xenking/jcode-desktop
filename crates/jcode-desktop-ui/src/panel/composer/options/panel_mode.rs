@@ -212,10 +212,14 @@ mod tests {
         vcx.simulate_click(plus.center(), Default::default());
         vcx.run_until_parked();
         vcx.simulate_input("verify-jcode");
-        vcx.simulate_keystrokes("alt-enter");
+        vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("picker-search").is_none());
         assert!(vcx.debug_bounds("composer-image-chip").is_some());
+        assert!(
+            commands.try_recv().is_err(),
+            "picking a skill sends nothing: the chip rides on the next message"
+        );
         vcx.simulate_input("Check the preview");
         vcx.simulate_keystrokes("enter");
         let sent = std::iter::from_fn(|| commands.try_recv().ok()).find_map(|command| {
@@ -293,7 +297,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn context_plus_opens_multi_file_attach_and_accepts_option_click_for_one_use(
+    fn context_plus_opens_multi_file_attach_and_a_plain_click_attaches_a_skill(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(crate::input::bind_keys);
@@ -324,13 +328,7 @@ mod tests {
         vcx.simulate_input("verify-jcode");
         while commands.try_recv().is_ok() {}
         let row = vcx.debug_bounds("slash-command-row-0").unwrap();
-        vcx.simulate_click(
-            row.center(),
-            gpui::Modifiers {
-                alt: true,
-                ..Default::default()
-            },
-        );
+        vcx.simulate_click(row.center(), Default::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("picker-search").is_none());
         assert!(panel.read_with(vcx, |panel, cx| {
@@ -402,6 +400,75 @@ mod tests {
         vcx.simulate_keystrokes("escape");
         assert!(panel.read_with(vcx, |panel, _| panel.picker_search.is_none()));
         assert!(commands.try_recv().is_err());
+    }
+
+    /// A mode pins, a skill is a chip, and Alt takes the other one.
+    #[gpui::test]
+    fn context_plus_alt_swaps_pinning_and_the_chip(cx: &mut gpui::TestAppContext) {
+        use jcode_sdk::api::RuntimeCommand;
+        cx.update(crate::input::bind_keys);
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("alt-picker".into(), None, None, bridge, cx));
+        panel.update(vcx, |panel, cx| panel.seed_mode_picker_fixture(cx));
+        vcx.run_until_parked();
+        let pick = |vcx: &mut gpui::VisualTestContext, name: &str, key: &str| {
+            let plus = vcx.debug_bounds("composer-context-plus").unwrap();
+            vcx.simulate_click(plus.center(), Default::default());
+            vcx.run_until_parked();
+            vcx.simulate_input(name);
+            vcx.simulate_keystrokes(key);
+            vcx.run_until_parked();
+        };
+        while commands.try_recv().is_ok() {}
+        pick(vcx, "verify-jcode", "alt-enter");
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::RuntimeCommand { command: RuntimeCommand::Mode, args, .. })
+                if args == ["toggle", "verify-jcode"]
+        ));
+        assert!(vcx.debug_bounds("composer-image-chip").is_none());
+        pick(vcx, "quiet", "alt-enter");
+        assert!(commands.try_recv().is_err(), "a mode used once is a chip, not a pin");
+        assert!(vcx.debug_bounds("composer-image-chip").is_some());
+    }
+
+    /// While a turn runs the daemon cannot apply a pin, so the picker shows
+    /// the choice at once and the transcript never hears about it.
+    #[gpui::test]
+    fn context_plus_while_a_turn_runs_shows_the_pin_and_no_error(cx: &mut gpui::TestAppContext) {
+        use jcode_sdk::api::RuntimeCommand;
+        cx.update(crate::input::bind_keys);
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("busy-picker".into(), None, None, bridge, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.seed_mode_picker_fixture(cx);
+            panel.status = "running".into();
+        });
+        vcx.run_until_parked();
+        while commands.try_recv().is_ok() {}
+        let pick = |vcx: &mut gpui::VisualTestContext, name: &str| {
+            let plus = vcx.debug_bounds("composer-context-plus").unwrap();
+            vcx.simulate_click(plus.center(), Default::default());
+            vcx.run_until_parked();
+            vcx.simulate_input(name);
+            vcx.simulate_keystrokes("enter");
+            vcx.run_until_parked();
+        };
+        pick(vcx, "quiet");
+        let pins = |panel: &Panel| panel.pinned_modes.iter().any(|mode| mode == "quiet");
+        assert!(panel.read_with(vcx, |panel, _| pins(panel)), "the pin shows before the daemon answers");
+        let sent: Vec<_> = std::iter::from_fn(|| commands.try_recv().ok()).collect();
+        assert!(matches!(
+            sent.as_slice(),
+            [Command::RuntimeCommand { command: RuntimeCommand::Mode, args, .. }] if *args == ["toggle", "quiet"]
+        ), "{} commands", sent.len());
+        pick(vcx, "quiet");
+        assert!(!panel.read_with(vcx, |panel, _| pins(panel)), "a second pick unpins it");
+        pick(vcx, "verify-jcode");
+        assert!(vcx.debug_bounds("composer-image-chip").is_some());
+        assert!(panel.read_with(vcx, |panel, _| {
+            !panel.items.iter().any(|item| matches!(item, Item::Error(_)))
+        }));
     }
 
     #[gpui::test]
