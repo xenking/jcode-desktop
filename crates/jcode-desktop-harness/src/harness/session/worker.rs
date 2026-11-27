@@ -122,6 +122,14 @@ pub(in crate::harness) fn should_log_reconnect(failed_attempts: u32) -> bool {
     failed_attempts < 3 || failed_attempts.is_power_of_two()
 }
 
+/// The daemon refuses a session command while a turn holds the agent.
+pub(super) fn runtime_command_is_busy(error: &jcode_sdk::Error) -> bool {
+    matches!(
+        error.kind,
+        jcode_sdk::ErrorKind::Harness(jcode_sdk::api::ErrorCode::Internal)
+    ) && error.message.contains("Session is busy")
+}
+
 pub(super) fn runtime_owner_is_busy(error: &jcode_sdk::Error) -> bool {
     matches!(
         error.kind,
@@ -283,6 +291,9 @@ pub(in crate::harness) fn session_worker_with_connector(
     let mut reported_attaching = false;
 
     let mut pending = VecDeque::new();
+    // Mode pins picked while a turn holds the session, replayed once it ends.
+    let mut held_pins = VecDeque::new();
+    let mut held_pins_retry_at = std::time::Instant::now();
     let mut reported_disconnected_events = false;
     // Survives reconnects: a retry scheduled before a dropped connection
     // fires once the replacement transport is attached.
@@ -1222,6 +1233,13 @@ pub(in crate::harness) fn session_worker_with_connector(
                         }
                     }
                     SessionCommand::RuntimeCommand(command, args) => {
+                        let is_pin = command == jcode_sdk::api::RuntimeCommand::Mode;
+                        if is_pin && (turn_active || !held_pins.is_empty()) {
+                            held_pins.push_back(SessionCommand::RuntimeCommand(command, args));
+                            held_pins_retry_at = std::time::Instant::now() + SKILLS_RETRY_INTERVAL;
+                            continue;
+                        }
+                        let held = is_pin.then(|| SessionCommand::RuntimeCommand(command, args.clone()));
                         // Route through the session's own client and native id,
                         // including remote transports, never the local runtime.
                         match client.runtime_command(real_id, command, args) {
@@ -1236,6 +1254,11 @@ pub(in crate::harness) fn session_worker_with_connector(
                                         message: output.message,
                                     },
                                 });
+                            }
+                            // Another client's turn can hold the session too.
+                            Err(error) if held.is_some() && runtime_command_is_busy(&error) => {
+                                held_pins.extend(held);
+                                held_pins_retry_at = std::time::Instant::now() + SKILLS_RETRY_INTERVAL;
                             }
                             Err(error) => {
                                 let _ = updates.send(Update::CommandFailed {
@@ -1489,6 +1512,12 @@ pub(in crate::harness) fn session_worker_with_connector(
             if history.due(std::time::Instant::now()) && !client.is_closed() {
                 history.load(&client, real_id, &session_id, &updates);
             }
+            if !turn_active
+                && !held_pins.is_empty()
+                && std::time::Instant::now() >= held_pins_retry_at
+            {
+                pending.extend(held_pins.drain(..));
+            }
             if !skills_loaded && !client.is_closed() && std::time::Instant::now() >= skills_retry_at
             {
                 skills_loaded = load_skill_catalog(&client, real_id, &session_id, None, &updates);
@@ -1597,6 +1626,7 @@ pub(in crate::harness) fn session_worker_with_connector(
                     event: namespace_event(event, &address),
                 });
                 if was_active && !turn_active {
+                    held_pins_retry_at = std::time::Instant::now();
                     tab_wait.refresh(&client, real_id, &session_id, &updates);
                 }
                 // The panel clears its phase when a turn ends, so announce

@@ -6,6 +6,7 @@ include!("history_recovery.rs");
 include!("protocol_recovery.rs");
 include!("turn_retry.rs");
 include!("remote_gone.rs");
+include!("busy_pins.rs");
 use jcode_sdk::api::{ApiRequest, ClientFrame, ServerFrame, read_frame, write_frame};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -47,6 +48,8 @@ fn info(id: &str) -> SessionInfo {
 struct Server {
     requests: Receiver<ApiRequest>,
     writer: Arc<Mutex<UnixStream>>,
+    /// How many mode pins the daemon still refuses as "Session is busy".
+    busy_pins: Arc<std::sync::atomic::AtomicUsize>,
 }
 impl Server {
     fn new() -> (JcodeClient, Self) {
@@ -71,6 +74,8 @@ impl Server {
         let writer = Arc::new(Mutex::new(server));
         let reply_writer = writer.clone();
         let (tx, requests) = channel();
+        let busy_pins = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let busy = busy_pins.clone();
         std::thread::spawn(move || {
             while let Ok(frame) = read_frame::<_, ClientFrame>(&mut reader) {
                 let event = match &frame.request {
@@ -133,6 +138,22 @@ impl Server {
                         speed_options: Vec::new(),
                     },
                     ApiRequest::RuntimeCommand {
+                        command: jcode_sdk::api::RuntimeCommand::Mode,
+                        ..
+                    } if busy
+                        .try_update(
+                            std::sync::atomic::Ordering::SeqCst,
+                            std::sync::atomic::Ordering::SeqCst,
+                            |left| left.checked_sub(1),
+                        )
+                        .is_ok() =>
+                    {
+                        ApiEvent::Error {
+                            code: jcode_sdk::api::ErrorCode::Internal,
+                            message: "Session is busy. Retry this runtime command after the current turn.".into(),
+                        }
+                    }
+                    ApiRequest::RuntimeCommand {
                         session_id,
                         command,
                         args,
@@ -184,7 +205,7 @@ impl Server {
             },
         )
         .unwrap();
-        (client, Self { requests, writer })
+        (client, Self { requests, writer, busy_pins })
     }
     fn next(&self) -> ApiRequest {
         self.requests
