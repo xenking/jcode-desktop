@@ -90,6 +90,21 @@ impl Workspace {
         self.active_row = self.active_row.min(rows - 1);
     }
 
+    /// The short label on a workspace's tab group: "3" on this machine, "W2" for
+    /// the second workspace of the machine whose name starts with W.
+    pub(super) fn workspace_tab_label(&self, row: usize) -> String {
+        match self.row_host(row) {
+            None => (row + 1).to_string(),
+            Some(host) => {
+                let initial = machines::machine_label(host)
+                    .chars()
+                    .find(|c| c.is_alphanumeric())
+                    .map_or('·', |c| c.to_ascii_uppercase());
+                format!("{initial}{}", row % ROWS_PER_SPACE + 1)
+            }
+        }
+    }
+
     /// "Workspace 3" on this machine; "work · Workspace 2" on a paired one,
     /// numbered within its own space.
     pub(super) fn workspace_title(&self, row: usize) -> String {
@@ -135,6 +150,9 @@ mod tests {
             assert_eq!(w.space_first_row(&w.remotes.paired[1].host()), Some(2 * ROWS_PER_SPACE));
             paired::publish_labels(&w.remotes.paired);
             assert_eq!(w.workspace_title(2), "Workspace 3");
+            assert_eq!(w.workspace_tab_label(2), "3");
+            assert_eq!(w.workspace_tab_label(ROWS_PER_SPACE + 1), "W2");
+            assert_eq!(w.workspace_tab_label(2 * ROWS_PER_SPACE), "L1");
             assert_eq!(w.workspace_title(ROWS_PER_SPACE + 1), "work · Workspace 2");
             // Pairing again, or a second sync, changes nothing.
             w.sync_spaces();
@@ -295,6 +313,126 @@ mod tests {
             assert_eq!((w.slots[0].row, w.active_row), (ROWS_PER_SPACE - 1, ROWS_PER_SPACE - 1));
             w.move_panel_to_row(-1, window, cx);
             assert_eq!(w.slots[0].row, ROWS_PER_SPACE - 2);
+        });
+    }
+
+    /// Selector text is `'static`; a test leaks the few it builds.
+    fn bounds(vcx: &mut gpui::VisualTestContext, selector: String) -> Option<gpui::Bounds<gpui::Pixels>> {
+        vcx.debug_bounds(Box::leak(selector.into_boxed_str()))
+    }
+
+    fn sectioned_workspace<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        labels: &[&str],
+    ) -> (Entity<Workspace>, &'a mut gpui::VisualTestContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.bridge = harness::spawn_inert();
+            w.remotes.paired = labels
+                .iter()
+                .enumerate()
+                .map(|(n, label)| paired_machine(&format!("{n:x}a"), label))
+                .collect();
+            paired::publish_labels(&w.remotes.paired);
+            w.sync_spaces();
+            w.push_test_panel("local session", cx);
+            w
+        });
+        vcx.run_until_parked();
+        (workspace, vcx)
+    }
+
+    #[gpui::test]
+    fn the_sidebar_has_a_labelled_section_per_machine_with_its_four_workspaces(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = sectioned_workspace(cx, &["work", "lab"]);
+        for space in 0..3 {
+            assert!(bounds(vcx, format!("space-section-{space}")).is_some(), "section {space}");
+        }
+        for row in 0..3 * ROWS_PER_SPACE {
+            assert!(bounds(vcx, format!("space-workspace-{row}")).is_some(), "workspace {row}");
+        }
+        // The session open on this machine is listed under its section only.
+        workspace.read_with(vcx, |w, _| assert_eq!(w.slots.len(), 1));
+        assert!(vcx.debug_bounds("space-session-0").is_some());
+        // Picking a workspace of a machine switches to it.
+        let target = bounds(vcx, format!("space-workspace-{}", ROWS_PER_SPACE + 1)).unwrap();
+        vcx.simulate_click(target.center(), gpui::Modifiers::default());
+        workspace.read_with(vcx, |w, _| assert_eq!(w.active_row, ROWS_PER_SPACE + 1));
+    }
+
+    #[gpui::test]
+    fn without_a_paired_machine_the_sidebar_is_unchanged(cx: &mut gpui::TestAppContext) {
+        let (_, vcx) = sectioned_workspace(cx, &[]);
+        assert!(vcx.debug_bounds("space-sections").is_none());
+    }
+
+    #[gpui::test]
+    fn section_chrome_stays_on_one_line_however_long_the_label(cx: &mut gpui::TestAppContext) {
+        let long = "a very long machine label that cannot possibly fit a narrow sidebar";
+        let (workspace, vcx) = sectioned_workspace(cx, &[long]);
+        let host = workspace.read_with(vcx, |w, _| w.remotes.paired[0].host());
+        workspace.update(vcx, |w, cx| {
+            w.remotes.machine_status.insert(host, machines::MachineStatus::NeedsUpdate);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let name = bounds(vcx, "space-name-1".into()).unwrap();
+        let status = bounds(vcx, "space-status-1".into()).unwrap();
+        let section = vcx.debug_bounds("space-sections").unwrap();
+        assert!(name.size.height < gpui::px(20.0), "name wrapped: {:?}", name.size);
+        assert!(status.size.height < gpui::px(20.0), "status wrapped: {:?}", status.size);
+        assert!(name.right() <= section.right() && status.right() <= section.right());
+    }
+
+    #[gpui::test]
+    fn link_results_set_the_machine_status_shown_in_its_header(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = sectioned_workspace(cx, &["work"]);
+        let host = workspace.read_with(vcx, |w, _| w.remotes.paired[0].host());
+        let status = |vcx: &mut gpui::VisualTestContext| {
+            workspace.read_with(vcx, |w, _| w.remotes.machine_status.get(&host).copied())
+        };
+        let report = |vcx: &mut gpui::VisualTestContext, message: &str, failure: Option<jcode_sdk::PairedFailure>| {
+            workspace.update(vcx, |w, cx| {
+                w.apply(
+                    Update::RemoteStatus {
+                        host: host.clone(),
+                        message: message.into(),
+                        request_id: None,
+                        failed: failure.is_some(),
+                        failure: failure.map(|kind| {
+                            crate::connect_failure::ConnectFailure::from_error(&jcode_sdk::Error::new(
+                                jcode_sdk::ErrorKind::Paired(kind),
+                                "fixture",
+                            ))
+                        }),
+                    },
+                    cx,
+                );
+            });
+        };
+        assert_eq!(status(vcx), None);
+        report(vcx, "Connected to paired machine", None);
+        assert_eq!(status(vcx), Some(machines::MachineStatus::Connected));
+        report(vcx, "Remote session failed: timeout", Some(jcode_sdk::PairedFailure::TimedOut));
+        assert_eq!(status(vcx), Some(machines::MachineStatus::Lost));
+        report(vcx, "Remote session failed: too old", Some(jcode_sdk::PairedFailure::TooOld));
+        assert_eq!(status(vcx), Some(machines::MachineStatus::NeedsUpdate));
+        assert_eq!(machines::MachineStatus::NeedsUpdate.label("work"), "Update Jcode on work");
+    }
+
+    #[gpui::test]
+    fn keyboard_workspace_switching_crosses_from_one_machine_to_the_next(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = sectioned_workspace(cx, &["work"]);
+        workspace.update_in(vcx, |w, window, cx| {
+            w.active_row = ROWS_PER_SPACE - 1;
+            w.focus_down(&FocusDown, window, cx);
+            assert_eq!(w.active_row, ROWS_PER_SPACE, "down from this machine's last workspace");
+            w.focus_up(&FocusUp, window, cx);
+            assert_eq!(w.active_row, ROWS_PER_SPACE - 1);
         });
     }
 }

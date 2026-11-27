@@ -383,6 +383,8 @@ mod focus_follow_tests;
 mod workspace_pull;
 #[path = "workspace/remotes/workspace_spaces.rs"]
 mod workspace_spaces;
+#[path = "workspace/remotes/workspace_spaces_view.rs"]
+mod workspace_spaces_view;
 #[cfg(test)]
 #[path = "workspace/layout/gestures/workspace_scroll_tests.rs"]
 mod workspace_scroll_tests;

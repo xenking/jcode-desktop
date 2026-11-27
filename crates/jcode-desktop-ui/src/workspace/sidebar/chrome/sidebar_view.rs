@@ -1621,6 +1621,11 @@ impl Workspace {
             .children((!folders).then(|| self.render_machine_switcher(None, cx)))
             .children(
                 (self.sidebar_view == SidebarView::Sessions)
+                    .then(|| self.render_space_sections(cx))
+                    .flatten(),
+            )
+            .children(
+                (self.sidebar_view == SidebarView::Sessions)
                     .then(|| self.session_catalog_controls("sidebar", cx).px_2().py_1()),
             )
             .child(

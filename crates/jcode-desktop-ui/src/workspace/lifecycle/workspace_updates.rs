@@ -189,6 +189,21 @@ impl Workspace {
                     }
                     _ => (format!("{label}: {message}"), None),
                 };
+                let status = match &failure {
+                    Some(failure)
+                        if failed
+                            && failure.kind
+                                == crate::connect_failure::FailureKind::Paired(
+                                    jcode_sdk::PairedFailure::TooOld,
+                                ) =>
+                    {
+                        machines::MachineStatus::NeedsUpdate
+                    }
+                    _ if failed => machines::MachineStatus::Lost,
+                    _ if message.starts_with("Connected") => machines::MachineStatus::Connected,
+                    _ => machines::MachineStatus::Connecting,
+                };
+                self.remotes.machine_status.insert(key.clone(), status);
                 self.update_pending_remote_status(request_id.as_deref(), &line, failed, cx);
                 self.remotes.failed = failed;
                 self.remotes.status = Some(line);

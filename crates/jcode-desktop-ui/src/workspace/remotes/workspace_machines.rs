@@ -89,6 +89,29 @@ pub(super) fn live_cloud_panel(
             .is_some_and(|id| !id.is_empty())
 }
 
+/// Where a paired machine's link stands, for its section header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MachineStatus {
+    Connecting,
+    Connected,
+    /// The link dropped or never came up; its last content stays visible.
+    Lost,
+    /// Its Jcode lacks what Desktop needs. Desktop never restarts it: the
+    /// owner updates Jcode there.
+    NeedsUpdate,
+}
+
+impl MachineStatus {
+    pub(super) fn label(self, machine: &str) -> String {
+        match self {
+            Self::Connecting => "Connecting…".into(),
+            Self::Connected => "Connected".into(),
+            Self::Lost => "Lost connection".into(),
+            Self::NeedsUpdate => format!("Update Jcode on {machine}"),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Machines {
     pub(super) default_host: Option<String>,
@@ -120,6 +143,8 @@ pub(super) struct Machines {
     pub(super) details_open: std::collections::HashSet<String>,
     /// Machines whose last connect worked in this run.
     pub(super) reachable: std::collections::HashSet<String>,
+    /// The last known link state per paired machine host.
+    pub(super) machine_status: std::collections::HashMap<String, MachineStatus>,
     /// The machine the current `status` line is about.
     pub(super) status_host: Option<String>,
 }

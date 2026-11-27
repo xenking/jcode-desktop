@@ -1270,7 +1270,7 @@ impl Workspace {
                             .rounded(px(3.0))
                             .text_center()
                             .when(active, |el| el.bg(accent.opacity(0.16)))
-                            .child(format!("{}", row + 1)),
+                            .child(self.workspace_tab_label(row)),
                     )
                     .on_mouse_down(
                         gpui::MouseButton::Left,

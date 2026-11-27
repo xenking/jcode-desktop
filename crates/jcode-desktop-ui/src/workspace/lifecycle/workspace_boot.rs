@@ -651,6 +651,9 @@ impl Workspace {
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_TAB_STATUSES").as_deref() == Ok("1") {
                 workspace.seed_tab_status_fixture(cx);
             }
+            if let Ok(variant) = std::env::var("JCODE_DESKTOP_SCREENSHOT_SPACES") {
+                workspace.show_spaces_fixture(&variant, window, cx);
+            }
             if let Some(path) = std::env::var_os("JCODE_DESKTOP_SCREENSHOT_MARKDOWN_FILE") {
                 let file = cx.new(|cx| FilePanel::new(PathBuf::from(path), cx));
                 workspace.slots[workspace.active].panel = PanelItem::File(file);
