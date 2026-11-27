@@ -164,6 +164,8 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector == "finished-workers"
         || selector == "hover:panel-cache"
         || selector == "panel-model-pending"
+        // The composer's model chip: the only way to open the picker on a live session.
+        || selector == "panel-model"
         || selector == "hover:panel-openrig"
         || selector == "hover:panel-context-meter"
         || selector.starts_with("sidebar-worker:")
@@ -196,7 +198,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
             && (selector.starts_with("model-speed:")
                 || matches!(
                     selector,
-                    "panel-model" | "panel-model-effort" | "panel-model-speed"
+                    "panel-model-effort" | "panel-model-speed"
                 )))
         || (draft_session()
             && (selector.starts_with("draft-model-row:")
@@ -207,7 +209,6 @@ pub(crate) fn is_selector(selector: &str) -> bool {
                         | "folder-picker-entry-0"
                         | "folder-picker-open"
                         | "panel-mode"
-                        | "panel-model"
                         | "panel-model-effort"
                         | "draft-effort-high"
                 )))
