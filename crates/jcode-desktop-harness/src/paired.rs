@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::{fs, io::Write, path::PathBuf, sync::Mutex};
 
 const SERVICE: &str = "com.jcode.desktop.paired-harness";
+/// A debug build started with this set to `1` may pair with a loopback `http`
+/// gateway and keeps the token in a file under `$JCODE_HOME` instead of the
+/// Keychain, so a private daemon on this machine can stand in for a paired
+/// one. Release builds ignore it: pairing is HTTPS only.
+pub const DEBUG_LOOPBACK_ENV: &str = "JCODE_DESKTOP_DEBUG_LOOPBACK_PAIRING";
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,6 +45,29 @@ pub fn label(host: &str) -> Option<String> {
     }))
 }
 
+#[cfg(debug_assertions)]
+fn debug_loopback_pairing() -> bool {
+    std::env::var(DEBUG_LOOPBACK_ENV).as_deref() == Ok("1")
+}
+
+/// Compiled out of release builds: nothing there can switch it on.
+#[cfg(not(debug_assertions))]
+fn debug_loopback_pairing() -> bool {
+    false
+}
+
+/// HTTPS always; plain HTTP only to a loopback address, and only when `loopback_http`.
+fn scheme_allowed(url: &reqwest::Url, loopback_http: bool) -> bool {
+    url.scheme() == "https"
+        || (loopback_http
+            && url.scheme() == "http"
+            && url.host_str().is_some_and(|host| {
+                host.trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+            }))
+}
+
 impl Destination {
     pub fn new(endpoint: &str, label: &str, working_dir: &str) -> Result<Self, String> {
         Self::with_id(
@@ -60,13 +88,7 @@ impl Destination {
     ) -> Result<Self, String> {
         let url =
             reqwest::Url::parse(endpoint.trim()).map_err(|_| "Enter a valid HTTPS endpoint")?;
-        let loopback_http = cfg!(test)
-            && url.scheme() == "http"
-            && url.host_str().is_some_and(|h| {
-                h.parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-            });
-        if !(url.scheme() == "https" || loopback_http)
+        if !scheme_allowed(&url, debug_loopback_pairing())
             || url.host_str().is_none()
             || !url.username().is_empty()
             || url.password().is_some()
@@ -208,7 +230,16 @@ pub(crate) fn with_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
     unsafe { std::env::set_var("JCODE_HOME", home.path()) };
     let result = f(home.path());
     unsafe { std::env::remove_var("JCODE_HOME") };
+    unsafe { std::env::remove_var(DEBUG_LOOPBACK_ENV) };
     result
+}
+
+/// Allow loopback HTTP pairing for the rest of the enclosing `with_home`,
+/// the way a debug build started with the variable would.
+#[cfg(test)]
+pub(crate) fn enable_debug_loopback() {
+    // SAFETY: only called inside `with_home`, which serializes environment use.
+    unsafe { std::env::set_var(DEBUG_LOOPBACK_ENV, "1") };
 }
 
 #[cfg(test)]
@@ -218,8 +249,81 @@ pub(crate) fn set_test_token(id: &str, token: &str) {
     tokens.push((id.to_owned(), token.to_owned()));
 }
 
-#[cfg(target_os = "macos")]
 fn set_token(id: &str, token: &str) -> Result<(), String> {
+    #[cfg(all(debug_assertions, not(test)))]
+    if debug_loopback_pairing() {
+        return debug_tokens::set(id, token);
+    }
+    os_set_token(id, token)
+}
+
+pub fn token(id: &str) -> Result<String, String> {
+    #[cfg(all(debug_assertions, not(test)))]
+    if debug_loopback_pairing() {
+        return debug_tokens::get(id);
+    }
+    os_token(id)
+}
+
+fn delete_token(id: &str) -> Result<(), String> {
+    #[cfg(all(debug_assertions, not(test)))]
+    if debug_loopback_pairing() {
+        return debug_tokens::delete(id);
+    }
+    os_delete_token(id)
+}
+
+/// Tokens of private test machines, never the Keychain: an unsigned debug
+/// build prompts for it, and a throwaway token should not outlive its daemon.
+/// Tests keep tokens in memory like every other paired test, so only the
+/// store itself is exercised there.
+#[cfg(debug_assertions)]
+mod debug_tokens {
+    use std::collections::BTreeMap;
+
+    fn file() -> std::path::PathBuf {
+        super::path().with_file_name("desktop-paired-tokens-debug.json")
+    }
+
+    fn load() -> BTreeMap<String, String> {
+        std::fs::read(file())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn store(tokens: &BTreeMap<String, String>) -> Result<(), String> {
+        use std::io::Write;
+        let path = file();
+        let mut file = tempfile::NamedTempFile::new_in(path.parent().ok_or("Invalid token path")?)
+            .map_err(|_| "Could not save token")?;
+        serde_json::to_writer(&mut file, tokens).map_err(|_| "Could not encode token")?;
+        file.flush().map_err(|_| "Could not save token")?;
+        file.persist(path).map_err(|_| "Could not save token")?;
+        Ok(())
+    }
+
+    pub(super) fn set(id: &str, token: &str) -> Result<(), String> {
+        let mut tokens = load();
+        tokens.insert(id.to_owned(), token.to_owned());
+        store(&tokens)
+    }
+
+    pub(super) fn get(id: &str) -> Result<String, String> {
+        load()
+            .remove(id)
+            .ok_or_else(|| "Paired token unavailable".into())
+    }
+
+    pub(super) fn delete(id: &str) -> Result<(), String> {
+        let mut tokens = load();
+        tokens.remove(id);
+        store(&tokens)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn os_set_token(id: &str, token: &str) -> Result<(), String> {
     #[cfg(test)]
     {
         set_test_token(id, token);
@@ -230,7 +334,7 @@ fn set_token(id: &str, token: &str) -> Result<(), String> {
         .map_err(|_| "Could not save token in Keychain".into())
 }
 #[cfg(target_os = "macos")]
-pub fn token(id: &str) -> Result<String, String> {
+fn os_token(id: &str) -> Result<String, String> {
     #[cfg(test)]
     {
         TEST_TOKENS
@@ -249,20 +353,20 @@ pub fn token(id: &str) -> Result<String, String> {
     }
 }
 #[cfg(target_os = "macos")]
-fn delete_token(id: &str) -> Result<(), String> {
+fn os_delete_token(id: &str) -> Result<(), String> {
     security_framework::passwords::delete_generic_password(SERVICE, id)
         .map_err(|_| "Could not remove token from Keychain".into())
 }
 #[cfg(not(target_os = "macos"))]
-fn set_token(_: &str, _: &str) -> Result<(), String> {
+fn os_set_token(_: &str, _: &str) -> Result<(), String> {
     Err("Paired machines require macOS Keychain".into())
 }
 #[cfg(not(target_os = "macos"))]
-pub fn token(_: &str) -> Result<String, String> {
+fn os_token(_: &str) -> Result<String, String> {
     Err("Paired machines require macOS Keychain".into())
 }
 #[cfg(not(target_os = "macos"))]
-fn delete_token(_: &str) -> Result<(), String> {
+fn os_delete_token(_: &str) -> Result<(), String> {
     Ok(())
 }
 
@@ -283,6 +387,69 @@ mod tests {
         let d = Destination::new("https://host", "Work", "/work").unwrap();
         assert!(crate::remote_targets::paired_id(&d.host()).is_some());
         assert!(!serde_json::to_string(&d).unwrap().contains("token"));
+    }
+
+    fn url(text: &str) -> reqwest::Url {
+        reqwest::Url::parse(text).unwrap()
+    }
+
+    #[test]
+    fn plain_http_is_refused_unless_loopback_http_is_explicitly_allowed() {
+        // The release rule: nothing allows it, so only HTTPS is accepted.
+        for http in ["http://127.0.0.1:7643", "http://[::1]:7643", "http://work.example"] {
+            assert!(!scheme_allowed(&url(http), false), "{http}");
+        }
+        assert!(scheme_allowed(&url("https://work.example"), false));
+        // The debug allowance reaches loopback only, never another host.
+        assert!(scheme_allowed(&url("http://127.0.0.1:7643"), true));
+        assert!(scheme_allowed(&url("http://[::1]:7643"), true));
+        assert!(!scheme_allowed(&url("http://work.example"), true));
+        assert!(!scheme_allowed(&url("http://192.168.1.5"), true));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_debug_build_pairs_over_loopback_http_only_with_the_variable() {
+        with_home(|_| {
+            let loopback = "http://127.0.0.1:7643";
+            assert!(Destination::new(loopback, "Work", "/work").is_err());
+            enable_debug_loopback();
+            assert!(Destination::new(loopback, "Work", "/work").is_ok());
+            // Even then a remote host must be HTTPS.
+            assert!(Destination::new("http://work.example", "Work", "/work").is_err());
+        });
+        // The allowance ends with the scope that enabled it.
+        with_home(|_| assert!(Destination::new("http://127.0.0.1:7643", "Work", "/work").is_err()));
+    }
+
+    /// The release rule: no environment can switch loopback HTTP on.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn a_release_build_ignores_the_loopback_variable_and_pairs_over_https_only() {
+        with_home(|_| {
+            enable_debug_loopback();
+            assert!(Destination::new("http://127.0.0.1:7643", "Work", "/work").is_err());
+            assert!(Destination::new("https://work.example", "Work", "/work").is_ok());
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_tokens_stay_in_a_private_file_under_the_home_not_the_keychain() {
+        with_home(|home| {
+            debug_tokens::set("m1", "token-one").unwrap();
+            debug_tokens::set("m2", "token-two").unwrap();
+            assert_eq!(debug_tokens::get("m1").unwrap(), "token-one");
+            debug_tokens::delete("m1").unwrap();
+            assert!(debug_tokens::get("m1").is_err());
+            assert_eq!(debug_tokens::get("m2").unwrap(), "token-two");
+            let file = home.join("desktop-paired-tokens-debug.json");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(std::fs::metadata(file).unwrap().permissions().mode() & 0o777, 0o600);
+            }
+        });
     }
 
     #[test]

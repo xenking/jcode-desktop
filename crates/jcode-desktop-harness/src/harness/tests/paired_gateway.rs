@@ -67,8 +67,11 @@ fn classify(host: &str) -> Result<(), ConnectFailure> {
 }
 
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "fixture gateways need the debug-only loopback pairing")]
 fn paired_gateways_report_why_they_fail_and_recover_on_retry() {
     crate::paired::with_home(|_| {
+        // The fixture gateways speak plain HTTP on loopback.
+        crate::paired::enable_debug_loopback();
         let endpoint =
             |listener: &TcpListener| format!("http://{}", listener.local_addr().unwrap());
         let machine = |id: &str, label: &str, endpoint: &str, token: &str| {
