@@ -241,7 +241,8 @@ pub struct Plan {
 /// - Changed only here: write it. Changed only there: show it.
 /// - Changed on both and different: the daemon wins, except for a draft in a
 ///   `protected` composer (the user is typing there) and for `focus`, which is
-///   every Desktop's own. Those are written over.
+///   every Desktop's own. Those are written over. A protected composer is also
+///   left alone when only the daemon changed it.
 /// - `first`: this Desktop has not yet seen the daemon's state. A daemon that
 ///   holds state is the truth (this Desktop's cache is older); an empty one is
 ///   seeded from this Desktop.
@@ -277,6 +278,11 @@ pub fn reconcile(
         match (local_changed, remote_changed) {
             (false, false) => {}
             (true, false) => plan.push.push((key.clone(), l.cloned())),
+            // The composer being typed in keeps its text even when the user has
+            // not changed it since the last write. Nothing is written back, so
+            // two Desktops in one composer do not overwrite each other forever;
+            // the daemon's text shows once the user leaves the composer.
+            (false, true) if protected.contains(key) => {}
             (false, true) => {
                 plan.adopt.insert(key.clone());
             }
@@ -505,6 +511,17 @@ mod tests {
         assert!(p.push.is_empty());
         // Both sides arriving at the same text needs no write at all.
         assert_eq!(plan(&base, &here, &here, false), Plan::default());
+    }
+
+    #[test]
+    fn the_focused_composer_keeps_its_text_when_only_another_desktop_changed_it() {
+        let base = e(&[("draft/a", json!("mine, already written"))]);
+        let there = e(&[("draft/a", json!("theirs"))]);
+        let focused: BTreeSet<String> = ["draft/a".to_owned()].into();
+        let p = reconcile(&base, &there, &base, &focused, false);
+        assert_eq!(p, Plan::default());
+        let p = reconcile(&base, &there, &base, &BTreeSet::new(), false);
+        assert_eq!(p.adopt.iter().collect::<Vec<_>>(), ["draft/a"]);
     }
 
     #[test]
