@@ -68,8 +68,6 @@ pub(super) struct AccountRow {
     pub plan: Option<String>,
     /// Banked usage resets this login holds (OpenAI) or a Claude session reset.
     pub banked: Option<BankedReset>,
-    /// Explicit provider eligibility, or an unavailable lookup. Never a count.
-    pub reset_status: Option<String>,
     /// The auth report says a credential is stored, whatever its health.
     pub configured: bool,
     /// Why the last usage probe failed, for a rejected credential.
@@ -166,25 +164,33 @@ fn usage_summary(report: &UsageReport) -> (Option<String>, Option<String>) {
             .map(|(_, v)| v.as_str())
     };
     let plan = value("Plan").map(str::to_owned);
+    // A balance the provider stated leads. An unknown one is not a figure.
+    let balance = report
+        .credits
+        .as_ref()
+        .filter(|credits| credits.known)
+        .map(|credits| credits.summary.clone());
     if let Some(spend) = value("Local spend (this machine)") {
         return (Some(spend.to_owned()), plan);
     }
+    // A period with no dollar figure (unpriced model, no recording) is left out
+    // rather than shown as "n/a".
     let period = |key: &str| {
-        value(key).map(|text| {
-            let amount = if text.starts_with("No recorded usage") {
-                "$0.00".to_owned()
-            } else {
-                dollars(text).unwrap_or_else(|| "n/a".into())
-            };
-            format!("{} {amount}", key.to_lowercase())
-        })
+        let text = value(key)?;
+        let amount = if text.starts_with("No recorded usage") {
+            "$0.00".to_owned()
+        } else {
+            dollars(text)?
+        };
+        Some(format!("{} {amount}", key.to_lowercase()))
     };
-    let parts: Vec<String> = [period("Today"), period("Lifetime")]
+    let spend: Vec<String> = [period("Today"), period("Lifetime")]
         .into_iter()
         .flatten()
         .collect();
-    let usage = (!parts.is_empty()).then(|| format!("{} (est.)", parts.join(" · ")));
-    (usage, plan)
+    let spend = (!spend.is_empty()).then(|| format!("{} (est.)", spend.join(" · ")));
+    let usage = [balance, spend].into_iter().flatten().collect::<Vec<_>>();
+    ((!usage.is_empty()).then(|| usage.join(" · ")), plan)
 }
 
 pub(super) fn build_rows(
@@ -241,16 +247,6 @@ pub(super) fn build_rows(
             // A confirmed zero is useful information. Only missing provider
             // data is unknown, not an empty reset bank.
             let banked = report.and_then(|r| r.banked_reset.clone());
-            // Only a known answer earns a chip. "Unavailable" when nothing is
-            // known is noise next to every Claude row.
-            let reset_status = (provider.id == "claude"
-                && banked.is_none()
-                && report.is_some_and(|r| {
-                    r.extra_info
-                        .iter()
-                        .any(|(key, value)| key == "Session resets" && value == "Not eligible")
-                }))
-            .then(|| "Resets not eligible".to_owned());
             AccountRow {
                 key: account_key(provider.id, label),
                 provider: *provider,
@@ -265,7 +261,6 @@ pub(super) fn build_rows(
                 usage,
                 plan,
                 banked,
-                reset_status,
                 configured: account.is_some_and(|a| a.status != "not_configured"),
                 error,
                 first_of_provider: first,
@@ -588,17 +583,9 @@ fn httpdate_rfc3339(at: std::time::SystemTime) -> String {
     )
 }
 
-/// Caption for a login's banked resets, e.g. "2 resets banked".
-pub(super) fn banked_reset_label(reset: &BankedReset) -> String {
-    super::super::usage::banked_reset_label(reset)
-}
-
+/// What the reset chip says: how many saved resets can be used right now.
 pub(super) fn reset_pill_label(reset: &BankedReset) -> String {
-    let status = reset
-        .inactive_reason()
-        .map(str::to_owned)
-        .unwrap_or_else(|| reset.pill_label());
-    format!("{status} · {}", banked_reset_label(reset))
+    format!("Use saved reset ({})", reset.usable())
 }
 
 /// What clicking a row in the composer's provider picker would do.
@@ -666,6 +653,7 @@ impl super::LoginState {
 mod tests {
     use super::super::account_rows::short_limit_name;
     use super::*;
+    use crate::accounts::Credits;
 
     fn provider(id: &'static str, method: LoginMethod) -> LoginProvider {
         LoginProvider {
@@ -1113,19 +1101,27 @@ mod tests {
             })
             .detach();
         });
+        // Both OpenAI logins hold a saved reset the provider reports usable.
         assert!(vcx.debug_bounds("login-reset-openai:openai-fox").is_some());
+        // The Claude login holds none: no chip at all, not an "unavailable" one.
         assert!(
             vcx.debug_bounds("login-reset-claude:claude-otter")
-                .is_some()
+                .is_none()
         );
-        // Not offerable yet (limit not binding): showing it must not redeem.
+        // Clicking only requests the review, never spends: that stays with the
+        // confirmed dialog. The limit not binding does not make the chip dead.
         let fox = vcx
             .debug_bounds("login-reset-openai:openai-fox")
             .unwrap()
             .center();
         vcx.simulate_click(fox, gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(requested.borrow().is_empty());
+        assert_eq!(requested.borrow().len(), 1);
+        assert_eq!(
+            requested.borrow()[0].account_label.as_deref(),
+            Some("openai-fox")
+        );
+        requested.borrow_mut().clear();
         let otter = vcx
             .debug_bounds("login-reset-openai:openai-otter")
             .unwrap()
@@ -1139,6 +1135,131 @@ mod tests {
         assert!(panel.read_with(vcx, |panel, _| {
             panel.login.as_ref().unwrap().provider.is_none()
         }));
+    }
+
+    #[gpui::test]
+    fn a_saved_claude_reset_below_the_wall_is_a_working_button(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new_accounts("saved-reset-test", None, crate::harness::spawn_inert(), cx)
+        });
+        vcx.run_until_parked();
+        let requested = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        vcx.update(|_, cx| {
+            let requested = requested.clone();
+            cx.subscribe(&panel, move |_, event: &AccountsPanelRedeemReset, _| {
+                requested.borrow_mut().push(event.0.clone());
+            })
+            .detach();
+        });
+        let set_reset = |vcx: &mut gpui::VisualTestContext, available, usable| {
+            panel.update(vcx, |panel, cx| {
+                let account = panel
+                    .login
+                    .as_mut()
+                    .unwrap()
+                    .accounts
+                    .accounts
+                    .as_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|account| account.id == "claude")
+                    .unwrap();
+                // As `jcode usage --json` reports it: no session reset on offer,
+                // the limit not reached, saved grants as counted.
+                account.usage_reports[0].banked_reset = Some(BankedReset {
+                    provider: ResetProvider::Claude,
+                    account_label: Some("claude-otter".into()),
+                    available_count: available,
+                    usable_count: Some(usable),
+                    expires_at: Some("2099-03-09T07:59:00Z".into()),
+                    cached_source: None,
+                    session_reset_available: Some(false),
+                    limit_reached: false,
+                    next_available_at: None,
+                });
+                cx.notify();
+            });
+            vcx.run_until_parked();
+        };
+        // Saved but none usable: nothing to show or click.
+        set_reset(vcx, 3, 0);
+        assert!(
+            vcx.debug_bounds("login-reset-claude:claude-otter")
+                .is_none()
+        );
+        // One reported usable: the chip appears and asks for the review.
+        set_reset(vcx, 1, 1);
+        let chip = vcx
+            .debug_bounds("login-reset-claude:claude-otter")
+            .expect("a usable saved reset shows its chip");
+        vcx.simulate_click(chip.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let requested = requested.borrow();
+        assert_eq!(requested.len(), 1);
+        assert_eq!(requested[0].account_label.as_deref(), Some("claude-otter"));
+        assert_eq!(requested[0].usable_count, Some(1));
+        assert_eq!(reset_pill_label(&requested[0]), "Use saved reset (1)");
+    }
+
+    #[test]
+    fn the_usage_line_leads_with_a_stated_balance_and_never_says_n_a() {
+        let report = |credits: Option<Credits>, extra: &[(&str, &str)]| UsageReport {
+            identity: None,
+            credits,
+            provider_name: "x".into(),
+            account_label: None,
+            limits: Vec::new(),
+            banked_reset: None,
+            extra_info: extra
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+        };
+        let balance = Credits {
+            known: true,
+            summary: "45001.54 credits left".into(),
+            used_fraction: None,
+        };
+        // ChatGPT: a balance, today unpriced, lifetime partly priced.
+        let chatgpt = report(
+            Some(balance.clone()),
+            &[
+                ("Today", "109,441 in · 729 out · cost unknown"),
+                (
+                    "Lifetime",
+                    "11.498 Bil in · $259.64 est. + unknown cost (78,122 unpriced)",
+                ),
+            ],
+        );
+        assert_eq!(
+            usage_summary(&chatgpt).0.as_deref(),
+            Some("45001.54 credits left · lifetime $259.64 (est.)")
+        );
+        // Nothing priced at all: the balance alone, not "today n/a · lifetime n/a".
+        let unpriced = report(
+            Some(balance),
+            &[
+                ("Today", "1 in · cost unknown"),
+                ("Lifetime", "2 in · cost unknown"),
+            ],
+        );
+        assert_eq!(
+            usage_summary(&unpriced).0.as_deref(),
+            Some("45001.54 credits left")
+        );
+        // An unknown balance is not a figure, and no data is no line.
+        let unknown = Credits {
+            known: false,
+            summary: "unknown".into(),
+            used_fraction: None,
+        };
+        assert_eq!(usage_summary(&report(Some(unknown), &[])).0, None);
+        assert_eq!(
+            usage_summary(&report(None, &[("Today", "No recorded usage")]))
+                .0
+                .as_deref(),
+            Some("today $0.00 (est.)")
+        );
     }
 
     #[test]
@@ -1219,95 +1340,46 @@ mod tests {
             .banked_reset = None;
         let rows = build_rows(&providers, None, false, &|_| false, &data);
         assert!(rows[0].banked.is_none());
-        // Nothing known about resets: no chip at all, not "unavailable" noise.
-        assert_eq!(rows[0].reset_status, None);
-        data.accounts
-            .as_mut()
-            .unwrap()
-            .iter_mut()
-            .find(|account| account.id == "claude")
-            .unwrap()
-            .usage_reports[0]
-            .extra_info
-            .push(("Session resets".into(), "Not eligible".into()));
-        let rows = build_rows(&providers, None, false, &|_| false, &data);
-        assert!(rows[0].banked.is_none());
-        assert_eq!(rows[0].reset_status.as_deref(), Some("Resets not eligible"));
     }
 
     #[test]
-    fn banked_reset_labels() {
-        let reset = |provider, count, next: Option<&str>| BankedReset {
+    fn the_reset_chip_counts_what_can_be_used_right_now() {
+        let reset = |provider, count, usable, session| BankedReset {
             provider,
             account_label: None,
             available_count: count,
-            usable_count: None,
+            usable_count: usable,
             expires_at: None,
             cached_source: None,
-            session_reset_available: None,
+            session_reset_available: session,
             limit_reached: false,
-            next_available_at: next.map(str::to_owned),
+            next_available_at: None,
         };
-        let partial = BankedReset {
-            usable_count: Some(1),
-            expires_at: Some("2099-01-01T00:00:00Z".into()),
-            ..reset(ResetProvider::Claude, 2, None)
-        };
-        let label = banked_reset_label(&partial);
-        assert!(
-            label.contains("2 saved · 1 reported usable") && label.contains("expires"),
-            "{label}"
-        );
-        assert!(
-            reset_pill_label(&partial).starts_with("Session reset availability unknown · 2 saved")
-        );
-        let imported = BankedReset {
-            available_count: 1,
-            cached_source: Some("imported".into()),
-            session_reset_available: Some(false),
-            ..partial.clone()
-        };
-        assert!(
-            reset_pill_label(&imported)
-                .starts_with("Session reset unavailable · 1 saved · 1 reported usable")
-        );
-        let live = BankedReset {
-            session_reset_available: Some(true),
-            limit_reached: true,
-            ..imported
-        };
-        assert!(reset_pill_label(&live).starts_with("Reset session · 1 saved"));
-        let session = BankedReset {
-            session_reset_available: Some(true),
-            ..reset(ResetProvider::Claude, 1, None)
-        };
-        assert_eq!(banked_reset_label(&session), "1 session reset available");
+        // Real shape: one of two grants spent, the other reported usable, and
+        // no session reset on offer. The count is what the click will spend.
+        let saved = reset(ResetProvider::Claude, 1, Some(1), Some(false));
+        assert_eq!(reset_pill_label(&saved), "Use saved reset (1)");
+        // Saved but none usable now (paused, cooling down): nothing to click.
         assert_eq!(
-            banked_reset_label(&reset(ResetProvider::OpenAi, 1, None)),
-            "1 reset banked"
+            reset(ResetProvider::Claude, 3, Some(0), Some(false)).usable(),
+            0
         );
         assert_eq!(
-            banked_reset_label(&reset(ResetProvider::OpenAi, 3, None)),
-            "3 resets banked"
+            reset(ResetProvider::Claude, 0, Some(0), Some(false)).usable(),
+            0
+        );
+        // The weekly session reset counts as one when it is on offer.
+        assert_eq!(
+            reset(ResetProvider::Claude, 1, Some(0), Some(true)).usable(),
+            1
         );
         assert_eq!(
-            banked_reset_label(&reset(ResetProvider::Claude, 2, None)),
-            "2 resets banked"
+            reset(ResetProvider::Claude, 1, None, Some(true)).usable(),
+            1
         );
-        assert!(
-            banked_reset_label(&reset(
-                ResetProvider::Claude,
-                0,
-                Some("2099-01-01T00:00:00Z")
-            ))
-            .starts_with("0 banked resets · next in ")
-        );
-        for provider in [ResetProvider::OpenAi, ResetProvider::Claude] {
-            assert_eq!(
-                banked_reset_label(&reset(provider, 0, None)),
-                "0 banked resets"
-            );
-        }
+        assert_eq!(reset(ResetProvider::Claude, 2, None, None).usable(), 0);
+        assert_eq!(reset(ResetProvider::OpenAi, 2, None, None).usable(), 2);
+        assert_eq!(reset(ResetProvider::OpenAi, 0, None, None).usable(), 0);
     }
 
     #[test]

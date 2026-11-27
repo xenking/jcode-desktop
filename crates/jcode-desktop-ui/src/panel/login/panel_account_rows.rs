@@ -121,49 +121,34 @@ struct AccountRowView<'a> {
 }
 
 impl AccountRowView<'_> {
-    /// Banked resets on a login. Clicking only opens the workspace review,
-    /// which prepares against the provider and needs an explicit confirm.
-    /// In the provider picker the row is the only click target, so a pill that
-    /// offers nothing must not leave a dead zone in the middle of it.
+    /// The saved resets a login can use right now. Clicking only opens the
+    /// workspace review, which prepares against the provider and needs an
+    /// explicit confirm. A login with none gets no chip.
     fn render_banked_reset<T: 'static>(
         key: &str,
         reset: &BankedReset,
-        selecting: bool,
         handle: RowHandler<T>,
         cx: &mut Context<T>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
         let id = format!("login-reset-{key}");
         let selector = id.clone();
-        let label = reset_pill_label(reset);
-        let offerable = reset.offerable();
-        let color = if offerable {
-            theme.ACCENT
-        } else {
-            theme.TEXT_DIM
-        };
-        let mut pill = chip_base(color)
+        let color = theme.ACCENT;
+        let reset = reset.clone();
+        chip_base(color)
             .id(SharedString::from(id))
             .debug_selector(move || selector.clone())
             .child(icon_reset(color))
-            .child(label);
-        if offerable || !selecting {
-            // Informational pills must not fall through to the row's sign-in.
-            pill = pill.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
-        }
-        if offerable {
-            let reset = reset.clone();
-            pill = pill
-                .cursor_pointer()
-                .hover(move |el| el.bg(color.opacity(0.24)))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    handle(this, RowAction::Redeem(&reset), window, cx);
-                }));
-        } else if !selecting {
-            pill = pill.on_click(|_, _, cx| cx.stop_propagation());
-        }
-        pill.into_any_element()
+            .child(reset_pill_label(&reset))
+            // A reset chip must not fall through to the row's sign-in.
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .cursor_pointer()
+            .hover(move |el| el.bg(color.opacity(0.24)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                handle(this, RowAction::Redeem(&reset), window, cx);
+            }))
+            .into_any_element()
     }
 }
 
@@ -290,22 +275,8 @@ impl AccountRowView<'_> {
         if let Some(plan) = &row.plan {
             name_line = name_line.child(chip(plan.clone(), theme.TEXT_DIM));
         }
-        if let Some(reset) = &row.banked {
-            name_line = name_line.child(Self::render_banked_reset(
-                &row.key, reset, selecting, handle, cx,
-            ));
-        } else if let Some(status) = &row.reset_status {
-            let selector = format!("login-reset-status-{}", row.key);
-            let chip = chip(status.clone(), theme.TEXT_DIM)
-                .id(SharedString::from(selector.clone()))
-                .debug_selector(move || selector.clone());
-            name_line = name_line.child(if selecting {
-                chip.into_any_element()
-            } else {
-                chip.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .into_any_element()
-            });
+        if let Some(reset) = row.banked.as_ref().filter(|reset| reset.usable() > 0) {
+            name_line = name_line.child(Self::render_banked_reset(&row.key, reset, handle, cx));
         }
         let detail: Vec<String> = [row.subtitle(), row.usage.clone()]
             .into_iter()

@@ -13,6 +13,9 @@ mod accounts;
 use jcode_desktop_accounts_ui::catalog;
 #[path = "panel_account_rows.rs"]
 mod account_rows;
+#[cfg(test)]
+#[path = "panel_account_rows_tests.rs"]
+mod account_rows_tests;
 #[path = "panel_provider_picker.rs"]
 mod provider_picker;
 #[cfg(test)]

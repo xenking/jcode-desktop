@@ -215,6 +215,18 @@ impl BankedReset {
         available && self.limit_reached
     }
 
+    /// Resets the provider reports redeemable right now. A saved reset can be
+    /// spent before any limit binds, because the review asks for confirmation.
+    pub fn usable(&self) -> u64 {
+        match self.provider {
+            ResetProvider::OpenAi => self.available_count,
+            ResetProvider::Claude => match (self.usable_count, self.session_reset_available) {
+                (None | Some(0), Some(true)) => 1,
+                (usable, _) => usable.unwrap_or(0),
+            },
+        }
+    }
+
     /// Why the pill cannot start a fresh provider review.
     pub fn inactive_reason(&self) -> Option<&'static str> {
         if self.offerable() {

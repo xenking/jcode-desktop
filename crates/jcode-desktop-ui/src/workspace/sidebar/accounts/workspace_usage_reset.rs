@@ -5,9 +5,11 @@
 //! provider, an explicit review, then one confirmed redemption. Preparation
 //! pins the login, so switching accounts meanwhile cannot spend another one.
 use super::*;
-use gpui::DismissEvent;
 use crate::accounts::{BankedReset, ResetProvider};
-use jcode_base::usage::{PendingAnthropicLimitReset, PendingOpenAiUsageReset};
+use gpui::DismissEvent;
+use jcode_base::usage::{
+    PendingAnthropicLimitReset, PendingOpenAiUsageReset, PendingSavedClaudeReset,
+};
 
 /// A prepared redemption. Holds credentials, so it never leaves this module.
 #[derive(Clone)]
@@ -15,6 +17,7 @@ use jcode_base::usage::{PendingAnthropicLimitReset, PendingOpenAiUsageReset};
 pub(super) enum Pending {
     OpenAi(PendingOpenAiUsageReset),
     Claude(PendingAnthropicLimitReset),
+    SavedClaude(PendingSavedClaudeReset),
 }
 
 impl Pending {
@@ -22,6 +25,7 @@ impl Pending {
         match self {
             Self::OpenAi(pending) => pending.account_display(),
             Self::Claude(pending) => pending.account_display(),
+            Self::SavedClaude(pending) => pending.account_display(),
         }
     }
 
@@ -29,6 +33,7 @@ impl Pending {
         match self {
             Self::OpenAi(pending) => pending.confirmation_details(),
             Self::Claude(pending) => pending.confirmation_details(),
+            Self::SavedClaude(pending) => pending.confirmation_details(),
         }
     }
 }
@@ -67,7 +72,13 @@ enum PrepareResult {
     Nothing(String),
 }
 
-async fn prepare(provider: ResetProvider, label: Option<String>) -> Result<PrepareResult, String> {
+/// `saved` says the row advertised a saved reset, so that one is looked up
+/// first; the weekly session reset is the other thing Claude can offer.
+async fn prepare(
+    provider: ResetProvider,
+    label: Option<String>,
+    saved: bool,
+) -> Result<PrepareResult, String> {
     jcode_desktop_harness::network::run(async move {
         match provider {
             ResetProvider::OpenAi => {
@@ -80,16 +91,34 @@ async fn prepare(provider: ResetProvider, label: Option<String>) -> Result<Prepa
                 }
             }
             ResetProvider::Claude => {
-                match jcode_base::usage::prepare_anthropic_limit_reset(label).await {
-                    Ok(Ok(pending)) => Ok(PrepareResult::Ready(Pending::Claude(pending))),
-                    Ok(Err(unavailable)) => Ok(PrepareResult::Nothing(unavailable.message())),
-                    Err(error) => Err(first_line(&error.to_string())),
+                let first = prepare_claude(label.clone(), saved).await?;
+                match first {
+                    PrepareResult::Ready(_) => Ok(first),
+                    PrepareResult::Nothing(_) => match prepare_claude(label, !saved).await? {
+                        ready @ PrepareResult::Ready(_) => Ok(ready),
+                        PrepareResult::Nothing(_) => Ok(first),
+                    },
                 }
             }
         }
     })
     .await
     .map_err(|_| "Could not start the reset check. Please try again.".to_string())?
+}
+
+async fn prepare_claude(label: Option<String>, saved: bool) -> Result<PrepareResult, String> {
+    if saved {
+        return match jcode_base::usage::prepare_saved_claude_reset(label).await {
+            Ok(Ok(pending)) => Ok(PrepareResult::Ready(Pending::SavedClaude(pending))),
+            Ok(Err(unavailable)) => Ok(PrepareResult::Nothing(unavailable.message().into())),
+            Err(error) => Err(first_line(&error.to_string())),
+        };
+    }
+    match jcode_base::usage::prepare_anthropic_limit_reset(label).await {
+        Ok(Ok(pending)) => Ok(PrepareResult::Ready(Pending::Claude(pending))),
+        Ok(Err(unavailable)) => Ok(PrepareResult::Nothing(unavailable.message())),
+        Err(error) => Err(first_line(&error.to_string())),
+    }
 }
 
 /// Provider errors carry a retry hint on later lines written for the TUI.
@@ -119,6 +148,21 @@ async fn redeem(pending: &Pending) -> RedeemResult {
             Pending::Claude(pending) => jcode_base::usage::consume_anthropic_limit_reset(pending)
                 .await
                 .map(|outcome| (outcome.message(), outcome.limits_cleared())),
+            Pending::SavedClaude(pending) => {
+                jcode_base::usage::consume_saved_claude_reset(pending)
+                    .await
+                    .map(|applied| {
+                        if applied {
+                            ("Saved Claude reset used.".to_owned(), true)
+                        } else {
+                            (
+                                "Claude did not apply the reset. Check Claude Settings > Usage before trying again."
+                                    .to_owned(),
+                                false,
+                            )
+                        }
+                    })
+            }
         }
     })
     .await
@@ -194,19 +238,25 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let (provider, label) = (reset.provider, reset.account_label.clone());
-        let dialog = cx.new(|cx| UsageReset::new(provider, label, cx));
+        let saved = reset.usable_count.unwrap_or(0) > 0;
+        let dialog = cx.new(|cx| UsageReset::new(provider, label, saved, cx));
         self.modal_layer
             .update(cx, |layer, cx| layer.show(dialog, window, cx));
     }
 }
 
 impl UsageReset {
-    fn new(provider: ResetProvider, label: Option<String>, cx: &mut Context<Self>) -> Self {
+    fn new(
+        provider: ResetProvider,
+        label: Option<String>,
+        saved: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let task = live().then(|| {
             let check = {
                 let label = label.clone();
                 cx.background_executor()
-                    .spawn(async move { prepare(provider, label).await })
+                    .spawn(async move { prepare(provider, label, saved).await })
             };
             cx.spawn(async move |this, cx| {
                 let result = check.await;
@@ -288,9 +338,19 @@ impl Render for UsageReset {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::global();
         let dialog = &*self;
-        let title = match dialog.provider {
-            ResetProvider::OpenAi => "Reset OpenAI usage limits",
-            ResetProvider::Claude => "Reset Claude session limit",
+        let saved_claude = matches!(
+            &dialog.stage,
+            Stage::Review(Pending::SavedClaude(_))
+                | Stage::Redeeming(Pending::SavedClaude(_))
+                | Stage::Uncertain {
+                    pending: Pending::SavedClaude(_),
+                    ..
+                }
+        );
+        let title = match (dialog.provider, saved_claude) {
+            (ResetProvider::OpenAi, _) => "Reset OpenAI usage limits",
+            (ResetProvider::Claude, true) => "Use a saved Claude reset",
+            (ResetProvider::Claude, false) => "Reset Claude session limit",
         };
         let login = match &dialog.stage {
             Stage::Review(pending)
@@ -541,7 +601,9 @@ mod tests {
         vcx.simulate_click(cancel.center(), gpui::Modifiers::none());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("usage-reset-dialog").is_none());
-        workspace.read_with(vcx, |w, cx| assert!(w.active_modal::<UsageReset>(cx).is_none()));
+        workspace.read_with(vcx, |w, cx| {
+            assert!(w.active_modal::<UsageReset>(cx).is_none())
+        });
     }
 
     #[gpui::test]
@@ -570,7 +632,9 @@ mod tests {
         });
         vcx.run_until_parked();
         vcx.update(|window, cx| {
-            workspace.update(cx, |w, cx| w.open_usage_reset(&session_reset(true), window, cx))
+            workspace.update(cx, |w, cx| {
+                w.open_usage_reset(&session_reset(true), window, cx)
+            })
         });
         let dialog = workspace.read_with(vcx, |w, cx| w.active_modal::<UsageReset>(cx).unwrap());
         dialog.update(vcx, |dialog, cx| {
@@ -585,7 +649,9 @@ mod tests {
         assert!(vcx.debug_bounds("usage-reset-confirm").is_none());
         dialog.update(vcx, |dialog, cx| dialog.close(cx));
         vcx.run_until_parked();
-        workspace.read_with(vcx, |w, cx| assert!(w.active_modal::<UsageReset>(cx).is_none()));
+        workspace.read_with(vcx, |w, cx| {
+            assert!(w.active_modal::<UsageReset>(cx).is_none())
+        });
     }
 
     #[test]
