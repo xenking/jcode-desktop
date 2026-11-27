@@ -381,9 +381,14 @@ mod hover_scroll_tests;
 mod focus_follow_tests;
 #[path = "workspace/remotes/workspace_pull.rs"]
 mod workspace_pull;
-#[path = "workspace/remotes/workspace_spaces.rs"]
+#[path = "workspace/remotes/spaces/workspace_machine_sync.rs"]
+mod workspace_machine_sync;
+#[cfg(test)]
+#[path = "workspace/remotes/spaces/workspace_machine_sync_tests.rs"]
+mod workspace_machine_sync_tests;
+#[path = "workspace/remotes/spaces/workspace_spaces.rs"]
 mod workspace_spaces;
-#[path = "workspace/remotes/workspace_spaces_view.rs"]
+#[path = "workspace/remotes/spaces/workspace_spaces_view.rs"]
 mod workspace_spaces_view;
 #[cfg(test)]
 #[path = "workspace/layout/gestures/workspace_scroll_tests.rs"]
@@ -766,6 +771,8 @@ pub struct Workspace {
     /// Sessions their machine reported gone. Their panels leave on the next
     /// render, which has the Window a panel's removal needs.
     gone_sessions: Vec<String>,
+    /// Each machine's Desktop state, kept in that machine's daemon.
+    machine_sync: workspace_machine_sync::MachineSyncState,
     /// Active panel when highlight and keyboard focus were last reconciled.
     focus_synced_active: Option<gpui::EntityId>,
     /// When the last touchpad pan delta arrived. Drives the gesture reticle
@@ -796,6 +803,7 @@ pub struct Workspace {
     _stream_fixture: Option<gpui::Task<()>>,
     /// Offline screenshot fixture: keeps undelivered queued rows on screen.
     queued_fixture: Option<gpui::Task<()>>,
+    _machine_sync_task: gpui::Task<()>,
     _performance_task: gpui::Task<()>,
     _live_profile_task: gpui::Task<()>,
 }

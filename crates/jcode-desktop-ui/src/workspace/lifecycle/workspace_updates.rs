@@ -138,6 +138,18 @@ impl Workspace {
         }
 
         match update {
+            Update::MachineLink { host, status } => {
+                self.apply_machine_link(host, status, cx);
+                return true;
+            }
+            Update::MachineState { host, event } => {
+                self.apply_machine_state(host, event, cx);
+                return true;
+            }
+            Update::MachineStatePut { host, token, result } => {
+                self.apply_machine_put(host, token, result, cx);
+                return true;
+            }
             Update::DraftModels { current, routes } => {
                 Panel::publish_draft_models(current, routes, cx);
                 for slot in &self.slots {

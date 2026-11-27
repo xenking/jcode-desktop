@@ -6,6 +6,15 @@
 //! panel must redraw for notify, so a caller cannot forget to.
 use super::*;
 
+/// How a panel is named in a machine's shared Desktop state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SharedIdentity {
+    /// A conversation on `host` (`None`: this machine), by the machine's own id.
+    Session { host: Option<String>, session: String },
+    /// A new session's composer, by its draft id.
+    Compose(String),
+}
+
 impl Panel {
     pub(crate) fn is_preview(&self) -> bool {
         self.preview_state.is_some()
@@ -15,6 +24,43 @@ impl Panel {
     /// built-in panel.
     pub(crate) fn is_persisted_session(&self) -> bool {
         self.session_id.starts_with("session_")
+    }
+
+    /// What this panel is to the machine's shared Desktop state, or `None`
+    /// when it stays on this Desktop (terminals, reviews, accounts, a draft
+    /// still waiting for its remote session).
+    pub(crate) fn shared_identity(&self) -> Option<SharedIdentity> {
+        if self.session_id.starts_with("startup://draft/") {
+            let local = !self.is_remote_draft()
+                && !self.is_help_draft()
+                && !crate::publish::is_publish_draft(&self.session_id);
+            return local.then(|| SharedIdentity::Compose(self.session_id.clone()));
+        }
+        let (host, session) = crate::harness::session_address(&self.session_id)?;
+        session
+            .starts_with("session_")
+            .then_some(SharedIdentity::Session { host, session })
+    }
+
+    pub(crate) fn shared_draft(&self, cx: &App) -> (String, usize, Vec<crate::input::AttachmentSnapshot>) {
+        self.input.read(cx).shared_draft()
+    }
+
+    pub(crate) fn apply_shared_draft(
+        &mut self,
+        text: String,
+        cursor: usize,
+        attachments: Vec<crate::input::AttachmentSnapshot>,
+        cx: &mut Context<Self>,
+    ) {
+        self.input.update(cx, |input, cx| {
+            input.apply_shared_draft(text, cursor, attachments, cx);
+        });
+    }
+
+    /// A composer that has not created its session yet.
+    pub(crate) fn defer_until_first_prompt(&mut self, cx: &mut Context<Self>) {
+        self.defer_session(cx);
     }
 
     pub(crate) fn is_remote_draft(&self) -> bool {

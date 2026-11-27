@@ -168,6 +168,29 @@ impl Workspace {
             }
         });
 
+        // Machines keep the Desktop state of every Desktop attached to them.
+        // Offline fixtures have no daemon to keep it in.
+        let sync_machines = !cfg!(test)
+            && (!harness::screenshot_mode() || harness::controlled_runtime_socket().is_some());
+        let machine_sync_task = cx.spawn(async move |this, cx| {
+            if !sync_machines {
+                return;
+            }
+            loop {
+                cx.background_executor()
+                    .timer(workspace_machine_sync::SYNC_INTERVAL)
+                    .await;
+                let outcome = window_handle.update(cx, |_, window, app| {
+                    this.update(app, |workspace: &mut Workspace, cx| {
+                        workspace.machine_sync_tick(window, cx)
+                    })
+                });
+                if !matches!(outcome, Ok(Ok(()))) {
+                    break;
+                }
+            }
+        });
+
         let performance_task = cx.spawn(async move |this, cx| {
             if !performance_enabled {
                 return;
@@ -338,6 +361,7 @@ impl Workspace {
             sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
             gone_sessions: Vec::new(),
+            machine_sync: Default::default(),
             focus_synced_active: None,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -356,6 +380,7 @@ impl Workspace {
             _housekeeping_task: housekeeping_task,
             _stream_fixture: None,
             queued_fixture: None,
+            _machine_sync_task: machine_sync_task,
             _performance_task: performance_task,
             _live_profile_task: crate::live_profile::spawn(window, cx),
         };
@@ -956,6 +981,7 @@ impl Workspace {
             sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
             gone_sessions: Vec::new(),
+            machine_sync: Default::default(),
             focus_synced_active: None,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -974,6 +1000,7 @@ impl Workspace {
             _housekeeping_task: cx.spawn(async move |_, _| {}),
             _stream_fixture: None,
             queued_fixture: None,
+            _machine_sync_task: cx.spawn(async move |_, _| {}),
             _performance_task: cx.spawn(async move |_, _| {}),
             _live_profile_task: cx.spawn(async move |_, _| {}),
         }

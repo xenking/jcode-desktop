@@ -145,6 +145,8 @@ pub(super) struct Machines {
     pub(super) reachable: std::collections::HashSet<String>,
     /// The last known link state per paired machine host.
     pub(super) machine_status: std::collections::HashMap<String, MachineStatus>,
+    /// The link to this machine's own daemon.
+    pub(super) local_link: Option<MachineStatus>,
     /// The machine the current `status` line is about.
     pub(super) status_host: Option<String>,
 }

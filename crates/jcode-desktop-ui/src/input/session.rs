@@ -55,6 +55,41 @@ impl PromptInput {
         }
     }
 
+    /// The draft as another Desktop of the same machine may show it: its text,
+    /// the caret, and the attachments that mean the same elsewhere (images and
+    /// pasted text; a file reference names a path on this Desktop only).
+    pub(crate) fn shared_draft(&self) -> (String, usize, Vec<AttachmentSnapshot>) {
+        let (content, selection) = self.draft_without_live_dictation();
+        let attachments = self
+            .attachments
+            .iter()
+            .map(Attachment::snapshot)
+            .filter(|attachment| {
+                attachment.media_type.starts_with("image/")
+                    || attachment.media_type == SNIPPET_MEDIA_TYPE
+            })
+            .collect();
+        (content.to_string(), selection.end, attachments)
+    }
+
+    /// Show a draft another Desktop wrote, keeping this prompt's history.
+    pub(crate) fn apply_shared_draft(
+        &mut self,
+        text: String,
+        cursor: usize,
+        attachments: Vec<AttachmentSnapshot>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut snapshot = self.snapshot();
+        let cursor = text.floor_char_boundary(cursor.min(text.len()));
+        snapshot.content = text;
+        snapshot.selection_start = cursor;
+        snapshot.selection_end = cursor;
+        snapshot.selection_reversed = false;
+        snapshot.attachments = attachments;
+        self.restore(snapshot, cx);
+    }
+
     pub fn restore(&mut self, snapshot: PromptInputSnapshot, cx: &mut Context<Self>) {
         self.live_dictation = None;
         self.model_menu_draft = None;

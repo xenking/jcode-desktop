@@ -14,7 +14,7 @@ impl Workspace {
 
     /// Machines get a name in the session list only once one is paired.
     pub(super) fn machines_shown(&self) -> bool {
-        !self.space_hosts.is_empty()
+        !self.space_hosts.is_empty() || self.remotes.local_link == Some(machines::MachineStatus::NeedsUpdate)
     }
 
     /// A machine's heading in the session list: its name and link status, and
@@ -25,15 +25,20 @@ impl Workspace {
         let first = space * ROWS_PER_SPACE;
         let host = self.row_host(first);
         let name = host.map_or_else(|| "Local".to_owned(), machines::machine_label);
-        let status = host
-            .and_then(|host| self.remotes.machine_status.get(host).copied())
-            .map(|status| status.label(&name));
-        let offline = host.is_some_and(|host| {
-            matches!(
-                self.remotes.machine_status.get(host),
+        // This machine says nothing about its link unless Jcode must be updated.
+        let link = match host {
+            Some(host) => self.remotes.machine_status.get(host).copied(),
+            None => self
+                .remotes
+                .local_link
+                .filter(|link| *link == machines::MachineStatus::NeedsUpdate),
+        };
+        let status = link.map(|status| status.label(host.map_or("this machine", |_| name.as_str())));
+        let offline = host.is_some()
+            && matches!(
+                link,
                 Some(machines::MachineStatus::Lost | machines::MachineStatus::NeedsUpdate)
-            )
-        });
+            );
         let pills = (0..ROWS_PER_SPACE).map(|offset| {
             let row = first + offset;
             let active = row == self.active_row;

@@ -52,6 +52,7 @@ use turn::{AutoRetry, StopNotice};
 pub(crate) mod meter;
 #[path = "panel/activity/session/panel_facade.rs"]
 mod facade;
+pub(crate) use facade::SharedIdentity;
 #[path = "panel/transcript/render/state/panel_fixtures.rs"]
 mod fixtures;
 use fixtures::{demo_items, demo_tool_times, screenshot_fixture_for};

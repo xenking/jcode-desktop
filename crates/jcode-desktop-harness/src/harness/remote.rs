@@ -24,6 +24,12 @@ pub fn remote_host(session_id: &str) -> Option<String> {
     SessionAddress::parse(session_id).ok()?.host
 }
 
+/// The id a panel carries for session `session_id` of machine `host`: the
+/// machine's own id wrapped in the namespace that keeps it on that machine.
+pub fn remote_session_id(host: &str, session_id: &str) -> String {
+    namespace(host, session_id)
+}
+
 pub fn session_address(session_id: &str) -> Option<(Option<String>, String)> {
     let address = SessionAddress::parse(session_id).ok()?;
     Some((address.host, address.session_id))
