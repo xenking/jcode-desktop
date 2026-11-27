@@ -1684,6 +1684,8 @@ fn setting_rows_the_user_caused_are_dropped_when_an_older_daemon_still_sends_the
                 "Provider: a → b (you chose it)",
                 "Reasoning effort: low → high (you chose it)",
                 "Mode: off → review (you changed the mode)",
+                "Model: a → b (you chose it while the agent was busy; applied when it finished)",
+                "Reasoning effort: low → high (chosen during the previous turn, applied at the next request)",
                 "Model: a → b (automatic failover after: limit)",
             ]),
             vec![],
@@ -1879,5 +1881,7 @@ fn settle_tool_details(panel: &Entity<Panel>, cx: &mut gpui::VisualTestContext) 
     cx.run_until_parked();
 }
 
+#[path = "panel_todo_chrome_tests.rs"]
+mod panel_todo_chrome_tests;
 #[path = "panel_more_tests.rs"]
 mod more;

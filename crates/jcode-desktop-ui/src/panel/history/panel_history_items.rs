@@ -3,13 +3,24 @@
 //! fixtures all build rows the same way.
 use super::*;
 
-/// Settings the user changed himself: the footer shows them. A daemon that
-/// predates dropping them at the writer still stores and sends them.
+/// Causes older daemons wrote for settings the user changed himself, deferred
+/// forms included ("you chose it while the agent was busy; …"). A current
+/// daemon never stores or sends such rows; a prefix keeps older sessions quiet.
+const LEGACY_USER_SETTING_CAUSES: [&str; 3] = [
+    "you chose it",
+    "you changed the mode",
+    "chosen during the previous turn, applied at the next request",
+];
+
 fn is_user_setting_row(content: &str) -> bool {
     content
         .strip_suffix(')')
         .and_then(|row| row.rsplit_once(" ("))
-        .is_some_and(|(_, cause)| matches!(cause, "you chose it" | "you changed the mode"))
+        .is_some_and(|(_, cause)| {
+            LEGACY_USER_SETTING_CAUSES
+                .iter()
+                .any(|user| cause.starts_with(user))
+        })
 }
 
 /// Whether the notice rows ending the transcript already say `message`.
@@ -72,8 +83,7 @@ pub(super) fn build(
                 assistant_before_tool = None;
                 let prompt = agent_message::history_user_item(
                     message.content,
-                    !message.attachments.is_empty()
-                        || images_by_prompt.contains_key(&user_ordinal),
+                    !message.attachments.is_empty() || images_by_prompt.contains_key(&user_ordinal),
                     message.timestamp_ms,
                 );
                 if let Some(at) = message.timestamp_ms

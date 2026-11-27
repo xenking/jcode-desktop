@@ -288,6 +288,8 @@ pub(super) struct TodoCardPlan {
 
 #[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
 pub(super) struct TodoCardItem {
+    /// The todo tool prints the title as `name`; saved snapshots store `content`.
+    #[serde(alias = "name")]
     pub(super) content: String,
     pub(super) status: String,
     #[serde(default, alias = "lane")]
