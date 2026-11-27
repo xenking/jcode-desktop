@@ -22,28 +22,24 @@ pub enum Scope {
 pub enum ChoiceKey {
     Prev,
     Next,
-    First,
-    Last,
     /// A number key: the zero-based option it names.
     Pick(usize),
     /// Space: flip the highlighted option of a multi-select.
     Toggle,
     Confirm,
-    /// Escape: leave a text field for the list, or dismiss the list.
+    /// Escape: leave a text field for the list, close a picker, or hand a
+    /// card's keys to the composer.
     Dismiss,
-    /// Tab from the list to its free-text field, Shift+Tab from the field back.
-    /// The other direction of each is left to focus traversal, so the card's
-    /// buttons stay reachable from the keyboard.
-    SwitchField,
     /// Tab in a search field: take the highlighted row without confirming it.
     Complete,
-    /// Left and Right: the previous or next question of a multi-question card.
+    /// Left and Shift+Tab, Right and Tab: the previous or next question of a
+    /// multi-question card. In a text field only Tab goes on; Shift+Tab is [`Self::Dismiss`].
     PrevGroup,
     NextGroup,
 }
 
 /// Digits 1 to 9 name options 1 to 9. A list longer than that numbers only its
-/// first nine rows; the rest are reached with the arrows, Home and End.
+/// first nine rows; the rest are reached with the arrows.
 pub const MAX_NUMBERED: usize = 9;
 
 /// One keystroke: its key name and whether Shift or any other modifier is down.
@@ -61,12 +57,12 @@ pub fn classify(chord: Chord<'_>, scope: Scope, options: usize) -> Option<Choice
         return None;
     }
     if chord.key == "tab" {
-        return match (scope, chord.shift) {
-            (Scope::Search, _) => Some(ChoiceKey::Complete),
-            // Tab walks on to the card's buttons, Shift+Tab walks back from them.
-            (Scope::List, false) | (Scope::Text, true) => Some(ChoiceKey::SwitchField),
-            (Scope::List, true) | (Scope::Text, false) => None,
-        };
+        return Some(match (scope, chord.shift) {
+            (Scope::Search, _) => ChoiceKey::Complete,
+            (Scope::List | Scope::Text, false) => ChoiceKey::NextGroup,
+            (Scope::List, true) => ChoiceKey::PrevGroup,
+            (Scope::Text, true) => ChoiceKey::Dismiss,
+        });
     }
     if chord.shift {
         return None;
@@ -86,10 +82,8 @@ pub fn classify(chord: Chord<'_>, scope: Scope, options: usize) -> Option<Choice
             _ => None,
         },
         Scope::List => match key {
-            "up" | "k" => Some(ChoiceKey::Prev),
-            "down" | "j" => Some(ChoiceKey::Next),
-            "home" => Some(ChoiceKey::First),
-            "end" => Some(ChoiceKey::Last),
+            "up" => Some(ChoiceKey::Prev),
+            "down" => Some(ChoiceKey::Next),
             "left" => Some(ChoiceKey::PrevGroup),
             "right" => Some(ChoiceKey::NextGroup),
             "space" => Some(ChoiceKey::Toggle),
@@ -119,39 +113,19 @@ pub fn search_keystroke(key: ChoiceKey) -> &'static str {
     }
 }
 
-/// The row `delta` rows from `current` in a list of `len` rows. A card's list
-/// wraps at its ends. A picker's list stops there: Up on the first row keeps it
-/// highlighted, so a stray arrow never jumps a typed query to the far end.
-pub fn step(scope: Scope, current: usize, delta: isize, len: usize) -> usize {
+/// The row `delta` rows from `current` in a list of `len` rows. The list stops
+/// at its ends: Up on the first row keeps it highlighted, so a stray arrow never
+/// jumps a typed query to the far end.
+pub fn step(current: usize, delta: isize, len: usize) -> usize {
     if len == 0 {
         return 0;
     }
-    match scope {
-        Scope::Search => current.saturating_add_signed(delta).min(len - 1),
-        Scope::List | Scope::Text => (current as isize + delta).rem_euclid(len as isize) as usize,
-    }
-}
-
-/// The one-line key hint under a card's options.
-pub fn hint(scope: Scope, multi_select: bool) -> &'static str {
-    match (scope, multi_select) {
-        (Scope::List, false) => {
-            "↑↓ move · 1-9 pick · Enter confirm · Tab type your own · Esc dismiss"
-        }
-        (Scope::List, true) => {
-            "↑↓ move · 1-9 or Space toggle · Enter confirm · Tab type your own · Esc dismiss"
-        }
-        (Scope::Text, _) => "Enter confirm · Shift+Tab or Esc back to the options",
-        (Scope::Search, _) => "↑↓ move · Enter confirm · Tab complete · Esc close",
-    }
+    current.saturating_add_signed(delta).min(len - 1)
 }
 
 // Option rows: the pure parts of how a card shows its options.
 use gpui::{Pixels, px};
 
-/// Descriptions longer than this are offered an expand toggle: at the card's
-/// usual width one line holds about this much next to a label.
-const INLINE_DESCRIPTION_CHARS: usize = 48;
 const RECOMMENDED: &str = "(Recommended)";
 
 /// The option the agent recommends, by the `(Recommended)` label suffix every
@@ -169,20 +143,6 @@ pub fn shown_label(label: &str) -> (&str, bool) {
         Some(label) => (label.trim_end(), true),
         None => (label, false),
     }
-}
-
-/// Whether an option's description needs an expand toggle to be read whole.
-pub fn expandable(description: &str) -> bool {
-    description.trim().contains('\n') || description.chars().count() > INLINE_DESCRIPTION_CHARS
-}
-
-/// The first line of a description, for the collapsed row.
-pub fn first_line(description: &str) -> &str {
-    description
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default()
 }
 
 /// The scroll offset that brings a row into a viewport, moving only as far as needed.
@@ -216,14 +176,6 @@ mod row_tests {
         assert_eq!(recommended_option(["Plain", "Other"]), None);
         assert_eq!(shown_label("Keep it (Recommended)"), ("Keep it", true));
         assert_eq!(shown_label("Plain"), ("Plain", false));
-    }
-
-    #[test]
-    fn only_long_or_multi_line_descriptions_expand() {
-        assert!(!expandable("Fits on a line"));
-        assert!(expandable("Two steps\n\n- first\n- second"));
-        assert!(expandable(&"x".repeat(49)));
-        assert_eq!(first_line("\n  Lead line\nmore"), "Lead line");
     }
 
     #[test]
@@ -278,25 +230,39 @@ mod tests {
     }
 
     #[test]
-    fn tab_goes_to_the_text_field_and_shift_tab_comes_back() {
+    fn tab_walks_the_questions_and_shift_tab_leaves_a_text_field() {
         let shift = Chord {
             shift: true,
             ..chord("tab")
         };
         assert_eq!(
             classify(chord("tab"), Scope::List, 4),
-            Some(ChoiceKey::SwitchField)
+            Some(ChoiceKey::NextGroup)
         );
+        assert_eq!(classify(shift, Scope::List, 4), Some(ChoiceKey::PrevGroup));
         assert_eq!(
-            classify(shift, Scope::Text, 4),
-            Some(ChoiceKey::SwitchField)
+            classify(chord("tab"), Scope::Text, 4),
+            Some(ChoiceKey::NextGroup)
         );
-        // The other directions walk on to the card's buttons.
-        assert_eq!(classify(shift, Scope::List, 4), None);
-        assert_eq!(classify(chord("tab"), Scope::Text, 4), None);
+        assert_eq!(classify(shift, Scope::Text, 4), Some(ChoiceKey::Dismiss));
         assert_eq!(
             classify(chord("tab"), Scope::Search, 4),
             Some(ChoiceKey::Complete)
+        );
+    }
+
+    #[test]
+    fn only_the_keys_of_the_reference_move_a_card() {
+        for key in ["j", "k", "home", "end"] {
+            assert_eq!(classify(chord(key), Scope::List, 4), None, "{key}");
+        }
+        assert_eq!(
+            classify(chord("left"), Scope::List, 4),
+            Some(ChoiceKey::PrevGroup)
+        );
+        assert_eq!(
+            classify(chord("right"), Scope::List, 4),
+            Some(ChoiceKey::NextGroup)
         );
     }
 
@@ -329,19 +295,12 @@ mod tests {
     }
 
     #[test]
-    fn a_card_wraps_at_its_ends_and_a_picker_stops() {
-        assert_eq!(step(Scope::List, 0, -1, 4), 3);
-        assert_eq!(step(Scope::List, 3, 1, 4), 0);
-        assert_eq!(step(Scope::List, 1, 1, 4), 2);
-        assert_eq!(step(Scope::Search, 0, -1, 4), 0);
-        assert_eq!(step(Scope::Search, 3, 1, 4), 3);
-        assert_eq!(step(Scope::Search, 1, 1, 4), 2);
-        assert_eq!(
-            step(Scope::Search, 9, 1, 4),
-            3,
-            "a stale highlight is clamped"
-        );
-        assert_eq!(step(Scope::List, 0, 1, 0), 0);
+    fn a_list_stops_at_its_ends() {
+        assert_eq!(step(0, -1, 4), 0);
+        assert_eq!(step(3, 1, 4), 3);
+        assert_eq!(step(1, 1, 4), 2);
+        assert_eq!(step(9, 1, 4), 3, "a stale highlight is clamped");
+        assert_eq!(step(0, 1, 0), 0);
     }
 
     #[test]

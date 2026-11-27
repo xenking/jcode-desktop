@@ -855,7 +855,9 @@ fn styled_inline_layout(
     (element, layout)
 }
 
-pub(crate) const PINNED_PROMPT_FONT_SIZE: f32 = 13.5;
+/// The size of the chat's body text: the transcript, and every card that reads like it.
+pub(crate) const CHAT_TEXT_SIZE: f32 = 13.5;
+pub(crate) const PINNED_PROMPT_FONT_SIZE: f32 = CHAT_TEXT_SIZE;
 const PINNED_PROMPT_LINES: usize = 3;
 
 pub(crate) struct PinnedPromptPreview(String);

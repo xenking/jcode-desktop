@@ -3,9 +3,7 @@
 // Each question owns its free-answer editor and each selected option its comment.
 use super::chrome::{CardActionTooltip, embedded_reply_frame};
 use super::*;
-use crate::choice_keys::{
-    self, ChoiceKey, Chord, MAX_NUMBERED, Scope, expandable, first_line, shown_label,
-};
+use crate::choice_keys::{self, ChoiceKey, Chord, MAX_NUMBERED, Scope, shown_label};
 use gpui::{FontWeight, StyledText};
 use jcode_sdk::{AskAnswer, AskQuestion, AskResponse};
 use jcode_session_types::{AskKind, AskRecord};
@@ -62,13 +60,13 @@ pub(crate) struct AskCard {
     pub(super) focus_scope: Option<gpui::FocusHandle>,
     tab_focus: Vec<gpui::FocusHandle>,
     option_focus: Vec<Vec<gpui::FocusHandle>>,
-    confirming_decline: bool,
+    /// Esc handed the keys to the composer; the card stays pending and keeps them off the
+    /// composer's way until it is clicked again.
+    pub(super) keys_released: bool,
     pub voice_target: Option<(usize, Option<usize>)>,
     attempt_id: Option<u64>,
     pub submit_error: Option<String>,
     scroll: gpui::ScrollHandle,
-    /// Options whose full description is open, as (question, option).
-    expanded: HashSet<(usize, usize)>,
     /// Where the open question's options last painted, to keep the cursor row in view.
     option_bounds: std::rc::Rc<std::cell::RefCell<HashMap<usize, gpui::Bounds<gpui::Pixels>>>>,
     /// What each option label last painted, so tests can compare the wrapped
@@ -125,30 +123,61 @@ impl AskCard {
             option_focus: Vec::new(),
             cursor_question: 0,
             cursor_option: 0,
-            confirming_decline: false,
+            keys_released: false,
             voice_target: (n > 0).then_some((0, None)),
             attempt_id: None,
             submit_error: None,
             scroll: gpui::ScrollHandle::new(),
-            expanded: HashSet::new(),
             option_bounds: Default::default(),
             #[cfg(test)]
             label_layouts: Default::default(),
         };
-        card.cursor_option = card.recommended_cursor(0);
+        card.cursor_option = card.landing_cursor(0);
         card
     }
 
-    /// Where the cursor starts on question `q`: the recommended option, else the first.
-    fn recommended_cursor(&self, q: usize) -> usize {
+    /// Where the cursor starts on tab `q`: a question's recommended option, else its first;
+    /// the review's submit stop.
+    fn landing_cursor(&self, q: usize) -> usize {
+        match self.questions.get(q) {
+            Some(question) => crate::choice_keys::recommended_option(
+                question.options.iter().map(|option| option.label.as_str()),
+            )
+            .unwrap_or(0),
+            None => self.questions.len(),
+        }
+    }
+
+    /// The rows the cursor walks on tab `q`: a question's options and its own-answer
+    /// row, or the review's questions and its submit stop.
+    fn row_count(&self, q: usize) -> usize {
         self.questions
             .get(q)
-            .and_then(|question| {
-                crate::choice_keys::recommended_option(
-                    question.options.iter().map(|option| option.label.as_str()),
-                )
-            })
-            .unwrap_or(0)
+            .map_or(self.questions.len(), |question| question.options.len())
+            + 1
+    }
+
+    /// Whether the cursor is on the own-answer row of its question.
+    fn on_own_answer(&self) -> bool {
+        self.questions
+            .get(self.cursor_question)
+            .is_some_and(|question| self.cursor_option == question.options.len())
+    }
+
+    /// Move the cursor one row. It stops at the first and last row of the card and
+    /// crosses into the neighbouring tab from a tab's last or first row.
+    fn step_cursor(&mut self, delta: isize) {
+        let q = self.cursor_question;
+        let target = self.cursor_option as isize + delta;
+        if (0..self.row_count(q) as isize).contains(&target) {
+            self.move_cursor(target as usize);
+        } else if delta < 0 && q > 0 {
+            self.switch_tab(q - 1);
+            self.cursor_option = self.row_count(q - 1) - 1;
+        } else if delta > 0 && q + 1 < self.tab_count() {
+            self.switch_tab(q + 1);
+            self.cursor_option = 0;
+        }
     }
 
     pub fn draft(&self, cx: &App) -> AskDraft {
@@ -258,21 +287,6 @@ impl AskCard {
         }
     }
 
-    fn toggle_expanded(&mut self, q: usize, option: usize) {
-        if !self.expanded.remove(&(q, option)) {
-            self.expanded.insert((q, option));
-        }
-    }
-
-    /// Whether `option`'s description has more to show than its collapsed line.
-    fn can_expand(&self, q: usize, option: usize) -> bool {
-        self.questions
-            .get(q)
-            .and_then(|question| question.options.get(option))
-            .and_then(|option| option.description.as_deref())
-            .is_some_and(crate::choice_keys::expandable)
-    }
-
     /// Move the cursor row and scroll it into the card's view.
     fn move_cursor(&mut self, option: usize) {
         self.cursor_option = option;
@@ -322,10 +336,9 @@ impl AskCard {
         let q = q.min(self.tab_count().saturating_sub(1));
         if self.cursor_question != q {
             self.cursor_question = q;
-            self.cursor_option = self.recommended_cursor(q);
+            self.cursor_option = self.landing_cursor(q);
             self.scroll.set_offset(gpui::point(px(0.), px(0.)));
         }
-        self.confirming_decline = false;
     }
 
     pub fn set_other(&mut self, q: usize, text: &str) {
@@ -872,9 +885,14 @@ impl Panel {
             .map_or(0, |question| question.options.len());
         if editing {
             return match choice_keys::classify(chord, Scope::Text, count) {
-                Some(ChoiceKey::Dismiss | ChoiceKey::SwitchField) => {
+                Some(ChoiceKey::Dismiss) => {
                     window.focus(&self.focus_handle, cx);
                     cx.notify();
+                    true
+                }
+                Some(ChoiceKey::NextGroup) => {
+                    window.focus(&self.focus_handle, cx);
+                    self.next_ask_tab(true, window, cx);
                     true
                 }
                 Some(ChoiceKey::Confirm) => self.handle_ask_editor_submit(window, cx),
@@ -895,35 +913,26 @@ impl Panel {
         let Some(card) = self.ask_card.as_mut() else {
             return false;
         };
-        if card.confirming_decline
-            && key != "tab"
-            && !matches!(action, Some(ChoiceKey::Dismiss | ChoiceKey::Confirm))
-        {
-            return true;
-        }
-        let at = card.cursor_option.min(count.saturating_sub(1));
+        let at = card.cursor_option;
         match action {
-            Some(ChoiceKey::Dismiss) => card.confirming_decline = !card.confirming_decline,
-            Some(ChoiceKey::Confirm) if card.confirming_decline => {
-                self.answer_ask(AskResponse::default(), cx);
+            Some(ChoiceKey::Dismiss) => {
+                card.keys_released = true;
+                self.focus_input(window, cx);
             }
             Some(ChoiceKey::Confirm) => {
-                self.advance_ask(window, cx);
+                self.confirm_ask_row(window, cx);
                 return true;
             }
-            Some(ChoiceKey::PrevGroup) => {
-                card.switch_tab((q + card.tab_count() - 1) % card.tab_count());
+            Some(ChoiceKey::PrevGroup) => card.switch_tab(q.saturating_sub(1)),
+            Some(ChoiceKey::NextGroup) => {
+                self.next_ask_tab(key == "tab", window, cx);
+                return true;
             }
-            Some(ChoiceKey::NextGroup) => card.switch_tab((q + 1) % card.tab_count()),
-            Some(ChoiceKey::Prev) if count > 0 => {
-                card.move_cursor(choice_keys::step(Scope::List, at, -1, count))
+            Some(ChoiceKey::Prev) => card.step_cursor(-1),
+            Some(ChoiceKey::Next) => card.step_cursor(1),
+            Some(ChoiceKey::Toggle) if card.questions[q].multi_select && at < count => {
+                card.toggle(q, at)
             }
-            Some(ChoiceKey::Next) if count > 0 => {
-                card.move_cursor(choice_keys::step(Scope::List, at, 1, count))
-            }
-            Some(ChoiceKey::First) if count > 0 => card.move_cursor(0),
-            Some(ChoiceKey::Last) if count > 0 => card.move_cursor(count - 1),
-            Some(ChoiceKey::Toggle) if count > 0 => card.toggle(q, at),
             Some(ChoiceKey::Pick(option)) => {
                 card.move_cursor(option);
                 if card.questions[q].multi_select {
@@ -932,26 +941,63 @@ impl Panel {
                     card.select(q, option);
                 }
             }
-            Some(ChoiceKey::SwitchField) => {
-                let Some(input) = card.other_inputs.get(q) else {
-                    return false;
-                };
-                window.focus(&input.read(cx).editor_focus(), cx);
-            }
-            None if key == "n" && count > 0 => {
+            None if key == "n" && at < count => {
                 card.open_comment(q, at);
                 if let Some(input) = card.comment_inputs.get(q).and_then(|inputs| inputs.get(at)) {
                     let focus = input.read(cx).editor_focus();
                     window.focus(&focus, cx);
                 }
             }
-            None if key == "e" && !chord.shift && card.can_expand(q, at) => {
-                card.toggle_expanded(q, at)
-            }
             _ => return false,
         }
         cx.notify();
         true
+    }
+
+    /// Tab and Right: the next question. Past the last tab Right stays and Tab hands
+    /// the keys to the composer.
+    fn next_ask_tab(&mut self, release: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(card) = self.ask_card.as_mut() else {
+            return;
+        };
+        if card.cursor_question + 1 < card.tab_count() {
+            card.switch_tab(card.cursor_question + 1);
+        } else if release {
+            card.keys_released = true;
+            self.focus_input(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Enter on the highlighted row. An option is picked (a multi-select that has nothing
+    /// yet takes it, one that has keeps what it has) and the card moves on; the own-answer
+    /// row opens its field; on the review a question row reopens that question and the
+    /// submit stop sends the answers.
+    fn confirm_ask_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(card) = self.ask_card.as_mut() else {
+            return;
+        };
+        let (q, at) = (card.cursor_question, card.cursor_option);
+        if card.on_own_answer() {
+            if let Some(input) = card.other_inputs.get(q) {
+                window.focus(&input.read(cx).editor_focus(), cx);
+            }
+        } else if q >= card.questions.len() {
+            if at < card.questions.len() {
+                card.switch_tab(at);
+            } else {
+                self.advance_ask(window, cx);
+                return;
+            }
+        } else {
+            let unanswered = card.chosen[q].is_empty() && card.other[q].is_none();
+            if !card.questions[q].multi_select || unanswered {
+                card.select(q, at);
+            }
+            self.advance_ask(window, cx);
+            return;
+        }
+        cx.notify();
     }
 }
 
@@ -1057,24 +1103,19 @@ impl Panel {
 // The card's view: a compact, resizable card with rich questions. Questions and
 // option descriptions go through the chat's markdown renderer and an applet
 // mounted on the ask call renders with the applet surface; long content scrolls
-// inside the card, and the tab strip, key hint and answer row never wrap.
+// inside the card, and the tab strip and answer row never wrap. The card is as
+// tall as its content, up to a cap.
 const COMMENT_ICON: &[u8] = include_bytes!("../../../../../assets/icons/comment.svg");
-const EXPAND_ICON: &[u8] = include_bytes!("../../../../../assets/icons/arrow-down.svg");
-const COLLAPSE_ICON: &[u8] = include_bytes!("../../../../../assets/icons/arrow-up.svg");
 
 /// A card taller than this share of the window would cover the conversation it
-/// is asking about, so it scrolls instead. Dragging the handle can take it up to
-/// `MAX_WINDOW_SHARE`.
+/// is asking about, so it scrolls instead. Dragging the handle can lower the cap
+/// or raise it up to `MAX_WINDOW_SHARE`; the card is never taller than its content.
 const DEFAULT_WINDOW_SHARE: f32 = 0.45;
 const MAX_WINDOW_SHARE: f32 = 0.8;
-/// The tab strip, one option, the key hint and the answer row.
-const MIN_HEIGHT: f32 = 150.;
+/// The lowest height a drag can set: the tab strip, one option and the answer row.
+const MIN_HEIGHT: f32 = 120.;
 /// Markdown row numbers for card text, clear of every transcript row.
 const MARKDOWN_ROW: usize = 1 << 40;
-
-/// Test-only: where a collapsed description's layout is recorded among the labels'.
-#[cfg(test)]
-pub(super) const DESCRIPTION_LAYOUT: usize = 1000;
 
 fn ask_action(
     id: &'static str,
@@ -1082,6 +1123,7 @@ fn ask_action(
     icon: &'static [u8],
     primary: bool,
     enabled: bool,
+    highlighted: bool,
 ) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::global();
     div()
@@ -1094,6 +1136,12 @@ fn ask_action(
         .items_center()
         .justify_center()
         .rounded_full()
+        .border_1()
+        .border_color(if highlighted {
+            theme.ACCENT
+        } else {
+            gpui::rgba(0x0000_0000)
+        })
         .bg(if primary {
             theme.ACCENT_DIM
         } else {
@@ -1145,22 +1193,20 @@ fn row_button(
 
 impl AskCard {
     /// What a hidden-window run can read of the card beyond its answers: where
-    /// the keyboard is, which descriptions are open, a pending decline.
+    /// the keyboard is.
     pub(in crate::panel) fn ux_state(
         &self,
         panel_focused: bool,
         window: &Window,
         cx: &App,
     ) -> serde_json::Value {
-        let mut expanded: Vec<_> = self.expanded.iter().copied().collect();
-        expanded.sort_unstable();
         let focus = match self.focused_editor(window, cx) {
             Some((_, None)) => "free-text",
             Some((_, Some(_))) => "comment",
             None if panel_focused => "options",
             None => "elsewhere",
         };
-        serde_json::json!({"focus": focus, "expanded": expanded, "confirming_decline": self.confirming_decline})
+        serde_json::json!({"focus": focus, "keys_released": self.keys_released})
     }
 }
 
@@ -1179,9 +1225,13 @@ impl Panel {
         )
     }
 
-    fn render_ask_nav(card: &AskCard, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_ask_nav(&self, card: &AskCard, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let last_tab = card.cursor_question + 1 >= card.tab_count();
         let enabled = !card.submitting();
+        // On the review the cursor's last stop is the button that sends the answers.
+        let submit_stop = card.cursor_question >= card.questions.len()
+            && card.cursor_option == card.questions.len()
+            && self.focus_handle.is_focused(window);
         let (id, label, icon): (_, _, &[u8]) = if last_tab {
             (
                 "ask-submit",
@@ -1207,6 +1257,7 @@ impl Panel {
                         include_bytes!("../../../../../assets/icons/arrow-left.svg"),
                         false,
                         enabled,
+                        false,
                     )
                     .when(enabled, |el| {
                         el.on_click(cx.listener(|this, _, window, cx| {
@@ -1220,7 +1271,7 @@ impl Panel {
                 )
             })
             .child(
-                ask_action(id, label, icon, true, enabled).when(enabled, |el| {
+                ask_action(id, label, icon, true, enabled, submit_stop).when(enabled, |el| {
                     el.on_click(cx.listener(|this, _, window, cx| this.advance_ask(window, cx)))
                 }),
             )
@@ -1304,7 +1355,6 @@ impl Panel {
                     .py(px(2.))
                     .rounded_full()
                     .cursor_pointer()
-                    .text_size(px(13.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .when(card.cursor_question == q, |el| {
                         el.bg(theme.ACCENT_DIM).text_color(theme.TEXT)
@@ -1399,8 +1449,6 @@ impl Panel {
             .description
             .as_deref()
             .filter(|d| !d.trim().is_empty());
-        let can_expand = description.is_some_and(expandable);
-        let expanded = can_expand && card.expanded.contains(&(q, o));
         let (label, recommended) = shown_label(&option.label);
         let row = div().id(("ask-option-row", q * 16 + o));
         let row = if let Some(focus) = card.option_focus.get(q).and_then(|rows| rows.get(o)) {
@@ -1433,7 +1481,7 @@ impl Panel {
             .when(!selected, |el| el.hover(|el| el.bg(theme.INPUT_BG)))
             .child(
                 // The label is a stretched block with the indicator and the
-                // buttons pinned in its margins. As a shrinking flex item the
+                // comment button pinned in its margins. As a shrinking flex item the
                 // installed app laid it out as one line yet painted it one
                 // letter per line.
                 div()
@@ -1441,7 +1489,7 @@ impl Panel {
                     .min_w_0()
                     .min_h(px(22.))
                     .pl(px(24.))
-                    .pr(px(if can_expand { 54. } else { 28. }))
+                    .pr(px(28.))
                     .flex()
                     .items_center()
                     .gap_2()
@@ -1478,40 +1526,8 @@ impl Panel {
                                 .px_1p5()
                                 .rounded_full()
                                 .bg(theme.ACCENT_DIM)
-                                .text_size(px(11.))
                                 .text_color(theme.ACCENT)
                                 .child("Recommended"),
-                        )
-                    })
-                    .when_some(description.filter(|_| !expanded), |el, desc| {
-                        let line = if can_expand { first_line(desc) } else { desc };
-                        // The text sits in an absolutely placed box, which always
-                        // gets a definite width to cut against; as a flex item's
-                        // own text the installed app clipped it without a mark.
-                        el.child(
-                            div()
-                                .relative()
-                                .flex_1()
-                                .min_w_0()
-                                .h(px(18.))
-                                .debug_selector(move || format!("ask-description-{q}-{o}"))
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .inset_0()
-                                        .truncate()
-                                        .text_size(px(12.))
-                                        .text_color(theme.TEXT_DIM)
-                                        .child({
-                                            let text = StyledText::new(line.to_owned());
-                                            #[cfg(test)]
-                                            card.label_layouts.0.borrow_mut().insert(
-                                                (q, DESCRIPTION_LAYOUT + o),
-                                                text.layout().clone(),
-                                            );
-                                            text
-                                        }),
-                                ),
                         )
                     })
                     .child(
@@ -1522,29 +1538,6 @@ impl Panel {
                             .right_0()
                             .flex()
                             .items_center()
-                            .gap_1()
-                            .when(can_expand, |el| {
-                                el.child(
-                                    row_button(
-                                        "ask-expand-button",
-                                        q * 16 + o,
-                                        if expanded { "Collapse" } else { "Expand" },
-                                        if expanded { COLLAPSE_ICON } else { EXPAND_ICON },
-                                        expanded,
-                                    )
-                                    .debug_selector(move || format!("ask-expand-button-{q}-{o}"))
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            if let Some(card) = this.ask_card.as_mut() {
-                                                card.cursor_option = o;
-                                                card.toggle_expanded(q, o);
-                                                cx.stop_propagation();
-                                                cx.notify();
-                                            }
-                                        },
-                                    )),
-                                )
-                            })
                             .child(
                                 row_button(
                                     "ask-comment-button",
@@ -1575,17 +1568,16 @@ impl Panel {
                             ),
                     ),
             )
-            .when_some(description.filter(|_| expanded), |el, desc| {
+            .when_some(description, |el, desc| {
                 el.child(
                     div()
                         .min_w_0()
                         .ml(px(24.))
-                        .mr(px(54.))
+                        .mr(px(28.))
                         .pb_1()
-                        .text_size(px(13.))
                         .debug_selector(move || format!("ask-description-{q}-{o}"))
                         .text_color(theme.TEXT_DIM)
-                        .child(self.ask_markdown(card, desc, format!("q{q}-o{o}"), window, cx)),
+                        .child(desc.to_owned()),
                 )
             })
             .on_click(cx.listener(move |this, event, window, cx| {
@@ -1647,15 +1639,16 @@ impl Panel {
             })
     }
 
-    fn render_ask_review(&self, card: &AskCard) -> (gpui::Div, Option<gpui::AnyElement>) {
+    /// The answers so far, one row per question for the cursor to walk.
+    fn render_ask_review(&self, card: &AskCard, window: &Window) -> gpui::Div {
         let theme = Theme::global();
-        let mut reply = None;
         let answers = card.response().answers.unwrap_or_default();
+        let focused = self.focus_handle.is_focused(window);
         let mut review = div()
             .debug_selector(|| "ask-review".into())
             .flex()
             .flex_col()
-            .gap_2();
+            .gap_1();
         for (q, (question, answer)) in card.questions.iter().zip(answers).enumerate() {
             let mut values = answer.selected;
             if let Some(other) = answer.other {
@@ -1686,28 +1679,26 @@ impl Panel {
                     );
                 }
             }
-            if q + 1 == card.questions.len() {
-                reply = details.pop().map(|detail| {
-                    div()
-                        .id("ask-review-tail")
-                        .flex_1()
-                        .min_w_0()
-                        .max_h(px(72.))
-                        .overflow_y_scroll()
-                        .child(detail)
-                        .into_any_element()
-                });
-            }
             review = review.child(
                 div()
+                    .debug_selector(move || format!("ask-review-row-{q}"))
                     .flex()
                     .flex_col()
                     .gap_1()
+                    .px_2()
+                    .py(px(3.))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(if focused && card.cursor_option == q {
+                        theme.ACCENT
+                    } else {
+                        gpui::rgba(0x0000_0000)
+                    })
                     .child(format!("{}. {}", q + 1, question.question))
                     .children(details),
             );
         }
-        (review, reply)
+        review
     }
 
     pub(in crate::panel) fn render_ask_card(
@@ -1718,16 +1709,16 @@ impl Panel {
         let card = self.ask_card.as_ref()?;
         let theme = Theme::global();
         let (bounds, automatic) = self.ask_height(window);
-        let resized = self.ask_resize.requested_height().is_some();
-        let height = if resized {
-            self.ask_resize.height(bounds.clone())
-        } else {
-            automatic
-        };
+        // A cap, never a height: the card is as tall as its content up to it, so a
+        // remembered drag taller than the content leaves no blank area.
+        let height = self
+            .ask_resize
+            .requested_height()
+            .map_or(automatic, |dragged| {
+                dragged.clamp(*bounds.start(), *bounds.end())
+            });
         let measured = Rc::new(Cell::new(height));
         let drag_height = measured.clone();
-        let editing = card.focused_editor(window, cx).is_some();
-        let on_question = card.questions.get(card.cursor_question);
         let mut body = div()
             .id("ask-card")
             .when_some(card.focus_scope.as_ref(), |el, scope| el.track_focus(scope))
@@ -1755,7 +1746,6 @@ impl Panel {
             .w_full()
             .min_w_0()
             .max_h(height)
-            .when(resized, |el| el.h(height))
             .overflow_hidden()
             .px_2()
             .pt(px(10.))
@@ -1764,7 +1754,7 @@ impl Panel {
             .border_1()
             .border_color(theme.INPUT_BORDER)
             .bg(theme.INPUT_BG)
-            .text_size(px(13.))
+            .text_size(px(crate::markdown::CHAT_TEXT_SIZE))
             .text_color(theme.TEXT)
             .child(
                 div()
@@ -1808,6 +1798,7 @@ impl Panel {
                         include_bytes!("../../../../../assets/icons/close.svg"),
                         false,
                         enabled,
+                        false,
                     )
                     .when(enabled, |el| {
                         el.on_click(cx.listener(|this, _, _, cx| {
@@ -1825,6 +1816,7 @@ impl Panel {
             .min_w_0()
             .min_h_0();
         let mut reply = None;
+        let focused = self.focus_handle.is_focused(window);
         for (q, question) in card
             .questions
             .iter()
@@ -1867,6 +1859,7 @@ impl Panel {
             }
             if let Some(input) = card.other_inputs.get(q) {
                 let own_selected = card.other[q].is_some();
+                let on_row = focused && card.on_own_answer();
                 reply = Some(
                     div()
                         .debug_selector(move || format!("ask-other-editor-{q}"))
@@ -1875,7 +1868,10 @@ impl Panel {
                         .flex()
                         .items_center()
                         .gap_1()
-                        .child(embedded_reply_frame(input, own_selected, window, cx))
+                        .child(
+                            embedded_reply_frame(input, own_selected, window, cx)
+                                .when(on_row, |el| el.border_color(theme.PANEL_BORDER_FOCUS)),
+                        )
                         .child(self.render_ask_microphone(q, None, cx))
                         .into_any_element(),
                 );
@@ -1883,19 +1879,7 @@ impl Panel {
             questions = questions.child(block);
         }
         if card.cursor_question == card.questions.len() {
-            let (review, tail) = self.render_ask_review(card);
-            reply = tail.or(reply);
-            questions = questions.child(review);
-        }
-        if card.confirming_decline {
-            body = body.child(
-                div()
-                    .debug_selector(|| "ask-confirm-decline".into())
-                    .text_color(theme.TEXT_DIM)
-                    .child(
-                        "Decline this request? Press Enter to confirm or Esc to keep answering.",
-                    ),
-            );
+            questions = questions.child(self.render_ask_review(card, window));
         }
         body = body.child(
             div()
@@ -1903,7 +1887,6 @@ impl Panel {
                 .flex()
                 .flex_col()
                 .min_h_0()
-                .when(resized, |el| el.flex_1())
                 .child(crate::transcript_scroll::tracked_vertical(
                     questions,
                     &card.scroll,
@@ -1913,21 +1896,8 @@ impl Panel {
                     el.child(div().absolute().inset_0().occlude())
                 }),
         );
-        let scope = if editing { Scope::Text } else { Scope::List };
         Some(
             body.child(
-                div()
-                    .debug_selector(|| "ask-hint".into())
-                    .flex_none()
-                    .truncate()
-                    .text_size(px(11.))
-                    .text_color(theme.TEXT_FAINT)
-                    .child(choice_keys::hint(
-                        scope,
-                        on_question.is_some_and(|question| question.multi_select),
-                    )),
-            )
-            .child(
                 div()
                     .id("ask-reply-row")
                     .debug_selector(|| "ask-reply-row".into())
@@ -1938,7 +1908,7 @@ impl Panel {
                     .justify_end()
                     .gap_1()
                     .children(reply)
-                    .child(Self::render_ask_nav(card, cx))
+                    .child(self.render_ask_nav(card, window, cx))
                     .when(card.submitting(), |el| {
                         el.child(div().absolute().inset_0().occlude())
                     }),

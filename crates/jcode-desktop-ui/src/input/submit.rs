@@ -129,12 +129,8 @@ impl PromptInput {
     pub(super) fn history_prev(&mut self, _: &HistoryPrev, _: &mut Window, cx: &mut Context<Self>) {
         let suggestions = self.command_suggestions();
         if !suggestions.is_empty() {
-            self.command_selection = crate::choice_keys::step(
-                crate::choice_keys::Scope::Search,
-                self.command_selection,
-                -1,
-                suggestions.len(),
-            );
+            self.command_selection =
+                crate::choice_keys::step(self.command_selection, -1, suggestions.len());
             self.command_selection_explicit =
                 Some(suggestions[self.command_selection].value.clone());
             self.reveal_command(self.command_selection);
@@ -169,12 +165,8 @@ impl PromptInput {
     pub(super) fn history_next(&mut self, _: &HistoryNext, _: &mut Window, cx: &mut Context<Self>) {
         let suggestions = self.command_suggestions();
         if !suggestions.is_empty() {
-            self.command_selection = crate::choice_keys::step(
-                crate::choice_keys::Scope::Search,
-                self.command_selection,
-                1,
-                suggestions.len(),
-            );
+            self.command_selection =
+                crate::choice_keys::step(self.command_selection, 1, suggestions.len());
             self.command_selection_explicit =
                 Some(suggestions[self.command_selection].value.clone());
             self.reveal_command(self.command_selection);

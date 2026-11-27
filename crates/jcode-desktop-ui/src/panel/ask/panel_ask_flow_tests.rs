@@ -227,13 +227,7 @@ fn stale_cold_wake_releases_composer_without_another_response(cx: &mut gpui::Tes
         assert_eq!(panel.input.read(cx).snapshot().content, "draft to keep");
     });
     vcx.run_until_parked();
-    assert!(vcx.update(|window, cx| {
-        panel
-            .read(cx)
-            .input
-            .read(cx)
-            .is_focused(window)
-    }));
+    assert!(vcx.update(|window, cx| { panel.read(cx).input.read(cx).is_focused(window) }));
     let responses: Vec<_> = commands
         .try_iter()
         .filter(|command| matches!(command, Command::AskResponse { .. }))
@@ -357,13 +351,7 @@ fn acknowledged_ask_returns_keyboard_focus_to_composer(cx: &mut gpui::TestAppCon
         settle_test_ask(panel, &request, Ok(()), cx);
     });
     vcx.run_until_parked();
-    assert!(vcx.update(|window, cx| {
-        panel
-            .read(cx)
-            .input
-            .read(cx)
-            .is_focused(window)
-    }));
+    assert!(vcx.update(|window, cx| { panel.read(cx).input.read(cx).is_focused(window) }));
 }
 
 #[gpui::test]
@@ -519,7 +507,8 @@ fn real_ask_request_event_renders_card_and_submits(cx: &mut gpui::TestAppContext
             &serde_json::from_value(serde_json::json!({
                 "ev":"tool_start", "session_id": panel.session_id,
                 "call_id":tool_call_id, "name":"ask"
-            })).unwrap(),
+            }))
+            .unwrap(),
             cx,
         );
         panel.apply(&event, cx);
@@ -559,7 +548,7 @@ fn real_ask_request_event_renders_card_and_submits(cx: &mut gpui::TestAppContext
         assert!(vcx.debug_bounds(selector).is_some(), "{selector} paints");
     }
     assert!(vcx.debug_bounds("ask-decline").is_some());
-    vcx.simulate_keystrokes("down space");
+    vcx.simulate_keystrokes("2");
     vcx.run_until_parked();
     panel.read_with(vcx, |panel, cx| {
         assert_eq!(panel.ask_card.as_ref().unwrap().chosen[0], vec![1]);
@@ -576,7 +565,7 @@ fn real_ask_request_event_renders_card_and_submits(cx: &mut gpui::TestAppContext
         assert_eq!(answers[0].selected, vec!["Postgres"]);
     });
 
-    vcx.simulate_keystrokes("down space");
+    vcx.simulate_keystrokes("2");
     vcx.run_until_parked();
     panel.read_with(vcx, |panel, _| {
         assert_eq!(panel.ask_card.as_ref().unwrap().chosen[0], vec![1])
@@ -641,7 +630,8 @@ fn real_ask_request_event_renders_card_and_submits(cx: &mut gpui::TestAppContext
     panel.update(vcx, |panel, cx| {
         let next_tool = serde_json::from_value(serde_json::json!({
             "ev":"tool_start", "session_id":"session-a", "call_id":"next-tool", "name":"bash"
-        })).unwrap();
+        }))
+        .unwrap();
         panel.apply(&next_tool, cx);
     });
     vcx.run_until_parked();
@@ -652,7 +642,13 @@ fn real_ask_request_event_renders_card_and_submits(cx: &mut gpui::TestAppContext
 #[gpui::test]
 fn cancelled_turn_leaves_no_ask_even_if_the_request_replays(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| {
-        Panel::new("session-a".into(), None, None, crate::harness::spawn_inert(), cx)
+        Panel::new(
+            "session-a".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
     });
     let ask = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
     panel.update(vcx, |panel, cx| panel.apply(&ask, cx));
@@ -660,12 +656,15 @@ fn cancelled_turn_leaves_no_ask_even_if_the_request_replays(cx: &mut gpui::TestA
     assert!(vcx.debug_bounds("session-status-ask").is_some());
 
     panel.update(vcx, |panel, cx| {
-        panel.apply(&ApiEvent::TurnStopped {
-            session_id: "session-a".into(),
-            reason: jcode_sdk::api::TurnStopReason::Interrupted,
-            message: "Cancelled".into(),
-            provider_stop_reason: None,
-        }, cx);
+        panel.apply(
+            &ApiEvent::TurnStopped {
+                session_id: "session-a".into(),
+                reason: jcode_sdk::api::TurnStopReason::Interrupted,
+                message: "Cancelled".into(),
+                provider_stop_reason: None,
+            },
+            cx,
+        );
         panel.apply(&ask, cx);
     });
     vcx.run_until_parked();

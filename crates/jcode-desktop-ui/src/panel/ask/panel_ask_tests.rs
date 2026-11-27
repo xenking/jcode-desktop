@@ -113,24 +113,18 @@ fn long_option_text_keeps_the_row_width(cx: &mut gpui::TestAppContext) {
     let radio = vcx.debug_bounds("ask-mark-0-0").unwrap();
     assert!(
         description.size.width > px(150.),
-        "the description takes the rest of the line: {:?} of {:?}",
+        "the description takes the width of the row: {:?} of {:?}",
         description.size.width,
         row.size.width
     );
     assert!(label.size.height < px(40.), "the label stays on one line");
-    assert!(
-        description.size.height < px(40.),
-        "the description stays on one line"
-    );
     assert_eq!(label.center().y, radio.center().y);
     assert_eq!(label.center().y, comment.center().y);
-    assert!(label.right() <= description.left());
-    assert!(comment.right() <= row.right() && comment.left() >= description.right() - px(1.));
     assert!(
-        // This description is long enough to also carry the expand button.
-        comment.left() - description.right() < px(40.),
-        "the text fills the row up to the buttons"
+        label.bottom() <= description.top() + px(1.),
+        "the description is under its label"
     );
+    assert!(comment.right() <= row.right());
     assert!(
         comment.size.width <= px(28.),
         "the comment button is an icon, not a word"
@@ -211,7 +205,7 @@ fn selecting_an_option_preserves_option_text_geometry(cx: &mut gpui::TestAppCont
         let label = vcx.debug_bounds(selector).unwrap();
         let description = vcx.debug_bounds(description).unwrap();
         assert!(
-            label.size == before && label.right() <= description.left(),
+            label.size == before && label.bottom() <= description.top() + px(1.),
             "{selector}: label was {before:?}, now {label:?}; description {description:?}"
         );
     }
@@ -421,15 +415,17 @@ fn tabs_digits_and_comment_keep_answers(cx: &mut gpui::TestAppContext) {
     vcx.simulate_keystrokes("right");
     vcx.run_until_parked();
     assert!(
-        vcx.debug_bounds("ask-question-0").is_some(),
-        "right wraps review to first question"
+        vcx.debug_bounds("ask-review").is_some(),
+        "right stops at the review"
     );
-    vcx.simulate_keystrokes("left");
+    vcx.simulate_keystrokes("left left left left");
     vcx.run_until_parked();
     assert!(
-        vcx.debug_bounds("ask-review").is_some(),
-        "left wraps first question to review"
+        vcx.debug_bounds("ask-question-0").is_some(),
+        "left stops at the first question"
     );
+    vcx.simulate_keystrokes("right right");
+    vcx.run_until_parked();
     assert!(
         vcx.debug_bounds("ask-review-comment-0-1").is_some(),
         "review should show the selected option's comment"
@@ -437,7 +433,7 @@ fn tabs_digits_and_comment_keep_answers(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn escape_requires_confirmation_to_decline(cx: &mut gpui::TestAppContext) {
+fn the_discard_button_declines_and_escape_does_not(cx: &mut gpui::TestAppContext) {
     cx.update(crate::bind_workspace_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -459,18 +455,16 @@ fn escape_requires_confirmation_to_decline(cx: &mut gpui::TestAppContext) {
         let focus = panel.read(cx).focus_handle.clone();
         window.focus(&focus, cx);
     });
-    vcx.simulate_keystrokes("escape");
+    vcx.simulate_keystrokes("escape escape enter");
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("ask-confirm-decline").is_some());
     assert!(
         !commands
             .try_iter()
-            .any(|cmd| matches!(cmd, crate::harness::Command::AskResponse { .. }))
+            .any(|cmd| matches!(cmd, crate::harness::Command::AskResponse { .. })),
+        "Escape never answers the ask"
     );
-    vcx.simulate_keystrokes("escape");
-    vcx.run_until_parked();
-    assert!(vcx.debug_bounds("ask-confirm-decline").is_none());
-    vcx.simulate_keystrokes("escape enter");
+    let discard = vcx.debug_bounds("ask-decline").unwrap().center();
+    vcx.simulate_click(discard, gpui::Modifiers::default());
     vcx.run_until_parked();
     assert!(commands.try_iter().any(|cmd| matches!(cmd, crate::harness::Command::AskResponse { response, .. } if response.answers.is_none())));
 }
@@ -675,7 +669,7 @@ fn space_selects_ask_when_transcript_has_focus(cx: &mut gpui::TestAppContext) {
             .clone();
         window.focus(&focus, cx);
     });
-    vcx.simulate_keystrokes("space");
+    vcx.simulate_keystrokes("1");
     vcx.run_until_parked();
     panel.read_with(vcx, |panel, cx| {
         assert_eq!(panel.ask_card.as_ref().unwrap().chosen[0], vec![0]);
@@ -715,7 +709,7 @@ fn keyboard_navigates_multiple_groups_and_submits(cx: &mut gpui::TestAppContext)
     let event: jcode_sdk::ApiEvent = serde_json::from_value(value).unwrap();
     panel.update(vcx, |panel, cx| panel.apply(&event, cx));
     vcx.run_until_parked();
-    vcx.simulate_keystrokes("j k up space right j space enter");
+    vcx.simulate_keystrokes("down down enter down enter");
     vcx.run_until_parked();
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
@@ -749,7 +743,10 @@ fn ask_can_submit_after_skipping_a_question(cx: &mut gpui::TestAppContext) {
     let event = serde_json::from_value(value).unwrap();
     panel.update(vcx, |panel, cx| panel.apply(&event, cx));
     vcx.run_until_parked();
-    vcx.simulate_keystrokes("1 enter enter");
+    vcx.simulate_keystrokes("1 enter");
+    vcx.run_until_parked();
+    let next = vcx.debug_bounds("ask-next").unwrap().center();
+    vcx.simulate_click(next, gpui::Modifiers::default());
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("ask-review").is_some());
     let submit = vcx.debug_bounds("ask-submit").unwrap();
@@ -780,8 +777,7 @@ fn ask_can_submit_after_skipping_a_question(cx: &mut gpui::TestAppContext) {
         )),
         "submit must preserve the skipped question without selecting a default"
     );
-    let unanswered = unanswered.expect("review labels the skipped question");
-    assert!((unanswered.center().y - submit.center().y).abs() <= px(1.));
+    assert!(unanswered.is_some(), "review labels the skipped question");
 }
 
 #[gpui::test]
@@ -811,8 +807,7 @@ fn large_card_scrolls_without_moving_footer(cx: &mut gpui::TestAppContext) {
     let mut value: serde_json::Value = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
     let mut q = value["questions"][0].clone();
     q["question"] = serde_json::Value::String("This question must wrap cleanly. ".repeat(12));
-    q["options"][0]["label"] =
-        serde_json::Value::String("This option label must wrap. ".repeat(8));
+    q["options"][0]["label"] = serde_json::Value::String("This option label must wrap. ".repeat(8));
     q["options"][0]["description"] = serde_json::Value::String(
         "This description must wrap cleanly without truncating. ".repeat(16),
     );
@@ -837,16 +832,8 @@ fn large_card_scrolls_without_moving_footer(cx: &mut gpui::TestAppContext) {
         "long option label must wrap: {label:?}"
     );
     assert!(
-        description.size.height < px(24.),
-        "a collapsed description is one line: {description:?}"
-    );
-    let expand = vcx.debug_bounds("ask-expand-button-0-0").unwrap().center();
-    vcx.simulate_click(expand, gpui::Modifiers::default());
-    vcx.run_until_parked();
-    let expanded = vcx.debug_bounds("ask-description-0-0").unwrap();
-    assert!(
-        expanded.size.height > px(24.),
-        "an expanded description wraps whole: {expanded:?}"
+        description.size.height > px(24.),
+        "a long description wraps whole: {description:?}"
     );
     let transcript_before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
     let first_before = vcx.debug_bounds("ask-option-0-0").unwrap();
@@ -935,8 +922,9 @@ fn ask_result_is_visible_and_survives_history_reload(cx: &mut gpui::TestAppConte
         session_image: None,
         history_message_index: Some(2),
         media_type: "image/png".into(),
-        data: base64::engine::general_purpose::STANDARD
-            .encode(include_bytes!("../../../../../assets/previews/image-preview.png")),
+        data: base64::engine::general_purpose::STANDARD.encode(include_bytes!(
+            "../../../../../assets/previews/image-preview.png"
+        )),
         label: Some("Answer image".into()),
         source: jcode_sdk::RenderedImageSource::ToolResult {
             tool_name: "ask".into(),

@@ -221,7 +221,7 @@ impl Render for Panel {
                 });
             })
             .size_full()
-            .text_size(px(13.5))
+            .text_size(px(crate::markdown::CHAT_TEXT_SIZE))
             .overflow_hidden()
             // Clear and collect only this frame's painted leaf geometry before
             // the virtual list paints. Logical text is maintained independently.

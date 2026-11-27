@@ -494,8 +494,9 @@ impl Panel {
     /// of a new session does not use the docked composer.
     fn hand_keyboard_to_ask_card(&self, window: &mut Window, cx: &mut Context<Self>) {
         let should_focus_ask = self.ask_card.as_ref().is_some_and(|card| {
-            self.input.read(cx).is_focused(window)
-                || (card.submitting() && self.ask_editor_focused(window, cx))
+            !card.keys_released
+                && (self.input.read(cx).is_focused(window)
+                    || (card.submitting() && self.ask_editor_focused(window, cx)))
         });
         if should_focus_ask {
             let panel = cx.entity().downgrade();
@@ -507,8 +508,10 @@ impl Panel {
                             .ask_card
                             .as_ref()
                             .is_some_and(|card| {
-                                panel.input.read(cx).is_focused(window)
-                                    || (card.submitting() && panel.ask_editor_focused(window, cx))
+                                !card.keys_released
+                                    && (panel.input.read(cx).is_focused(window)
+                                        || (card.submitting()
+                                            && panel.ask_editor_focused(window, cx)))
                             })
                             .then(|| panel.focus_handle.clone())
                     };

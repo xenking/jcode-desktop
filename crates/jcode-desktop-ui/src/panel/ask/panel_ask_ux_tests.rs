@@ -147,36 +147,204 @@ fn a_number_key_toggles_in_a_multi_select_and_always_picks_in_a_single_select(
     );
 }
 
+fn cursor(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext) -> (usize, usize) {
+    card(panel, vcx, |card| {
+        (card.cursor_question, card.cursor_option)
+    })
+}
+
+fn composer_focused(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext) -> bool {
+    vcx.update(|window, cx| panel.read(cx).input.read(cx).is_focused(window))
+}
+
+const AB: [(&str, &str); 3] = [("A", ""), ("B (Recommended)", ""), ("C", "")];
+
 #[gpui::test]
-fn arrows_wrap_and_start_on_the_recommended_option(cx: &mut gpui::TestAppContext) {
-    let labels = [("A", ""), ("B (Recommended)", ""), ("C", ""), ("D", "")];
-    let (panel, vcx) = open(cx, None, vec![question(false, &labels)]);
-    let cursor = |vcx: &mut gpui::VisualTestContext| card(&panel, vcx, |card| card.cursor_option);
-    assert_eq!(cursor(vcx), 1, "the recommended option starts highlighted");
+fn arrows_walk_the_options_and_the_own_answer_row_and_stop_at_the_ends(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = open(cx, None, vec![question(false, &AB)]);
+    assert_eq!(
+        cursor(&panel, vcx),
+        (0, 1),
+        "the recommended option starts highlighted"
+    );
     for (keys, expected) in [
         ("up", 0),
-        ("up", 3),
-        ("down", 0),
-        ("end", 3),
-        ("home", 0),
-        ("j", 1),
-        ("k", 0),
+        ("up", 0),
+        ("down", 1),
+        ("down", 2),
+        ("down", 3),
+        ("down", 3),
     ] {
         vcx.simulate_keystrokes(keys);
-        assert_eq!(cursor(vcx), expected, "after {keys}");
+        assert_eq!(cursor(&panel, vcx).1, expected, "after {keys}");
     }
+    assert!(
+        card(&panel, vcx, |card| card.on_own_answer()),
+        "the row after the last option is the own-answer row"
+    );
     assert!(
         card(&panel, vcx, |card| card.chosen[0].is_empty()),
         "moving the highlight picks nothing"
     );
+    // Keys the reference does not have do nothing.
+    for keys in ["j", "k", "home", "end"] {
+        vcx.simulate_keystrokes(keys);
+        assert_eq!(cursor(&panel, vcx), (0, 3), "{keys} moves nothing");
+    }
 }
 
 #[gpui::test]
-fn tab_reaches_the_free_text_field_and_shift_tab_or_escape_return(cx: &mut gpui::TestAppContext) {
-    let (panel, vcx) = open(cx, None, vec![question(false, &[("A", ""), ("B", "")])]);
-    assert!(!editing(&panel, vcx));
+fn arrows_cross_from_one_question_to_the_next_and_on_to_the_review_rows(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = open(
+        cx,
+        None,
+        vec![
+            question(false, &AB),
+            question(false, &[("X", ""), ("Y", "")]),
+        ],
+    );
+    vcx.simulate_keystrokes("down down");
+    assert_eq!(cursor(&panel, vcx), (0, 3));
+    vcx.simulate_keystrokes("down");
+    assert_eq!(
+        cursor(&panel, vcx),
+        (1, 0),
+        "down off the last row opens the next question"
+    );
+    vcx.simulate_keystrokes("up");
+    assert_eq!(
+        cursor(&panel, vcx),
+        (0, 3),
+        "up off the first row returns to the last row"
+    );
+    vcx.simulate_keystrokes("down down down");
+    assert_eq!(
+        cursor(&panel, vcx),
+        (1, 2),
+        "the second question's own-answer row"
+    );
+    vcx.simulate_keystrokes("down");
+    assert_eq!(
+        cursor(&panel, vcx),
+        (2, 0),
+        "the review's first row, one row per question"
+    );
+    vcx.simulate_keystrokes("down down down");
+    assert_eq!(
+        cursor(&panel, vcx),
+        (2, 2),
+        "then its submit stop, where the card ends"
+    );
+    vcx.simulate_keystrokes("up up");
+    assert_eq!(cursor(&panel, vcx), (2, 0));
+    vcx.simulate_keystrokes("up");
+    assert_eq!(
+        cursor(&panel, vcx),
+        (1, 2),
+        "up off the first review row returns to the questions"
+    );
+}
+
+#[gpui::test]
+fn left_right_and_tab_walk_the_tabs_without_wrapping_and_the_last_tab_hands_the_keys_on(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = open(cx, None, vec![question(false, &AB), question(false, &AB)]);
+    let tab = |vcx: &mut gpui::VisualTestContext| cursor(&panel, vcx).0;
+    for (keys, expected) in [
+        ("left", 0),
+        ("right", 1),
+        ("tab", 2),
+        ("shift-tab", 1),
+        ("shift-tab", 0),
+        ("shift-tab", 0),
+        ("right right", 2),
+        ("left", 1),
+    ] {
+        vcx.simulate_keystrokes(keys);
+        assert_eq!(tab(vcx), expected, "after {keys}");
+    }
+    assert!(!composer_focused(&panel, vcx));
+    vcx.simulate_keystrokes("right");
+    assert_eq!(tab(vcx), 2, "right on the review has nowhere to go");
+    assert!(
+        !composer_focused(&panel, vcx),
+        "right never leaves the card"
+    );
     vcx.simulate_keystrokes("tab");
-    assert!(editing(&panel, vcx), "Tab moves to the free-text field");
+    assert!(
+        composer_focused(&panel, vcx),
+        "tab on the last tab hands the keys to the composer"
+    );
+    assert!(
+        panel.read_with(vcx, |panel, _| panel.ask_card.is_some()),
+        "the card stays pending"
+    );
+}
+
+#[gpui::test]
+fn enter_picks_the_highlighted_row_and_moves_on(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = open(
+        cx,
+        None,
+        vec![
+            question(false, &AB),
+            question(true, &AB),
+            question(true, &AB),
+        ],
+    );
+    assert!(card(&panel, vcx, |card| card.chosen[0].is_empty()));
+    vcx.simulate_keystrokes("enter");
+    assert_eq!(
+        card(&panel, vcx, |card| card.chosen[0].clone()),
+        [1],
+        "nothing chosen: Enter takes the highlighted row, it does not skip"
+    );
+    assert_eq!(
+        cursor(&panel, vcx).0,
+        1,
+        "and the card moves to the next question"
+    );
+    vcx.simulate_keystrokes("down enter");
+    assert_eq!(
+        card(&panel, vcx, |card| card.chosen[1].clone()),
+        [2],
+        "a multi-select with nothing chosen takes the highlighted row"
+    );
+    vcx.simulate_keystrokes("1 enter");
+    assert_eq!(
+        card(&panel, vcx, |card| card.chosen[2].clone()),
+        [0],
+        "a multi-select that has an answer keeps it: Enter only moves on"
+    );
+    assert_eq!(
+        cursor(&panel, vcx).0,
+        3,
+        "past the last question is the review"
+    );
+    // Going back and pressing Enter on another row of a single-select replaces its answer.
+    vcx.simulate_keystrokes("left left left down enter");
+    assert_eq!(
+        card(&panel, vcx, |card| card.chosen[0].clone()),
+        [2],
+        "Enter on another row of a single-select picks that row"
+    );
+}
+
+#[gpui::test]
+fn enter_on_the_own_answer_row_opens_its_field_and_escape_comes_back(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = open(cx, None, vec![question(false, &AB)]);
+    vcx.simulate_keystrokes("down down enter");
+    assert!(
+        editing(&panel, vcx),
+        "Enter on the own-answer row opens the field"
+    );
     // Digits are typing there, not picks.
     vcx.simulate_input("2");
     assert_eq!(
@@ -184,51 +352,101 @@ fn tab_reaches_the_free_text_field_and_shift_tab_or_escape_return(cx: &mut gpui:
         Some("2")
     );
     assert!(card(&panel, vcx, |card| card.chosen[0].is_empty()));
-    vcx.simulate_keystrokes("shift-tab");
-    assert!(!editing(&panel, vcx), "Shift+Tab returns to the options");
-    assert!(panel.read_with(vcx, |panel, _| panel.ask_card.is_some()));
-    vcx.simulate_keystrokes("tab escape");
+    vcx.simulate_keystrokes("escape");
     assert!(
         !editing(&panel, vcx),
         "Escape in the field returns to the options"
     );
     assert!(
-        !card(&panel, vcx, |card| card.confirming_decline),
-        "Escape in the field is not a dismissal"
+        !composer_focused(&panel, vcx),
+        "and does not leave the card"
     );
-    vcx.simulate_keystrokes("2");
+    vcx.simulate_keystrokes("enter");
+    vcx.simulate_keystrokes("shift-tab");
+    assert!(
+        !editing(&panel, vcx),
+        "Shift+Tab returns to the options too"
+    );
+    vcx.simulate_keystrokes("1");
     assert_eq!(
         card(&panel, vcx, |card| card.chosen[0].clone()),
-        [1],
+        [0],
         "the options take number keys again"
     );
 }
 
 #[gpui::test]
-fn the_expand_key_opens_only_descriptions_that_need_it(cx: &mut gpui::TestAppContext) {
-    let labels = [
-        ("Short", "Fits on a line"),
-        ("Long", "Two steps\n\n- first\n- second"),
-    ];
-    let (panel, vcx) = open(cx, None, vec![question(false, &labels)]);
-    let open_descriptions = |vcx: &mut gpui::VisualTestContext| {
-        card(&panel, vcx, |card| {
-            let mut open: Vec<_> = card.expanded.iter().copied().collect();
-            open.sort_unstable();
-            open
-        })
-    };
-    vcx.simulate_keystrokes("e");
+fn tab_in_the_own_answer_field_goes_on_to_the_next_question(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = open(cx, None, vec![question(false, &AB), question(false, &AB)]);
+    vcx.simulate_keystrokes("down down enter");
+    assert!(editing(&panel, vcx));
+    vcx.simulate_keystrokes("tab");
+    assert!(!editing(&panel, vcx));
+    assert_eq!(cursor(&panel, vcx).0, 1);
+}
+
+#[gpui::test]
+fn escape_hands_the_keys_to_the_composer_and_the_card_stays_pending(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = open(cx, None, vec![question(false, &AB)]);
+    vcx.simulate_keystrokes("escape");
+    assert!(composer_focused(&panel, vcx), "the composer has the keys");
+    vcx.run_until_parked();
     assert!(
-        open_descriptions(vcx).is_empty(),
-        "a one-line description has nothing to expand"
+        composer_focused(&panel, vcx),
+        "the card does not take them straight back"
     );
-    vcx.simulate_keystrokes("down e");
-    assert_eq!(open_descriptions(vcx), [(0, 1)]);
-    let expanded = vcx.debug_bounds("ask-description-0-1").unwrap().size.height;
-    vcx.simulate_keystrokes("e");
-    assert!(open_descriptions(vcx).is_empty());
-    assert!(vcx.debug_bounds("ask-description-0-1").unwrap().size.height < expanded);
+    assert!(
+        panel.read_with(vcx, |panel, _| panel
+            .ask_card
+            .as_ref()
+            .is_some_and(|card| !card.submitting())),
+        "Escape answers nothing: the card is still waiting"
+    );
+    assert!(
+        vcx.debug_bounds("ask-confirm-decline").is_none(),
+        "and asks nothing"
+    );
+    // Clicking the card gives it the keys again.
+    let row = vcx.debug_bounds("ask-option-0-2").unwrap().center();
+    vcx.simulate_click(row, Default::default());
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("up");
+    assert_eq!(cursor(&panel, vcx), (0, 1));
+}
+
+#[gpui::test]
+fn the_review_rows_take_enter_to_reopen_a_question_or_send_the_answers(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = open(
+        cx,
+        Some(bridge),
+        vec![question(false, &AB), question(false, &AB)],
+    );
+    vcx.simulate_keystrokes("1 right 3 right");
+    assert_eq!(
+        cursor(&panel, vcx),
+        (2, 2),
+        "the review opens on its submit stop"
+    );
+    vcx.simulate_keystrokes("up up enter");
+    assert_eq!(
+        cursor(&panel, vcx).0,
+        0,
+        "Enter on a review row reopens that question"
+    );
+    vcx.simulate_keystrokes("right right down down enter");
+    vcx.run_until_parked();
+    let sent = commands.try_iter().find_map(|command| match command {
+        crate::harness::Command::AskResponse { response, .. } => Some(response),
+        _ => None,
+    });
+    let answers = sent
+        .and_then(|response| response.answers)
+        .expect("Enter on the submit stop sent the answers");
+    assert_eq!(answers[0].selected, ["A"]);
+    assert_eq!(answers[1].selected, ["C"]);
 }
 
 fn drag_handle(vcx: &mut gpui::VisualTestContext, delta_y: f32) {
@@ -248,43 +466,87 @@ fn settle(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext, id: &str) {
     vcx.run_until_parked();
 }
 
+/// The room between the last thing in the card's body and the answer row under it.
+fn gap_above_reply_row(vcx: &mut gpui::VisualTestContext, last: &'static str) -> gpui::Pixels {
+    vcx.debug_bounds("ask-reply-row").unwrap().top() - vcx.debug_bounds(last).unwrap().bottom()
+}
+
+const A_FEW_PIXELS: gpui::Pixels = px(16.);
+
 #[gpui::test]
-fn a_dragged_height_holds_for_the_next_question_and_double_click_resets_it(
+fn the_card_is_as_tall_as_its_content_with_one_question_two_and_the_review(
     cx: &mut gpui::TestAppContext,
 ) {
-    let one = question(false, &[("A", ""), ("B", "")]);
-    let (panel, vcx) = open(cx, None, vec![one.clone()]);
-    show(&panel, vcx, "ask-2", vec![one]);
-    let automatic = card_height(vcx);
-    drag_handle(vcx, -80.);
-    let dragged = card_height(vcx);
+    let (panel, vcx) = open(cx, None, vec![question(false, &AB)]);
+    let window = vcx.update(|window, _| window.viewport_size().height);
+    assert!(card_height(vcx) < window * 0.4, "short content, short card");
     assert!(
-        dragged > automatic + px(60.),
-        "dragging up grows the card: {automatic:?} -> {dragged:?}"
+        gap_above_reply_row(vcx, "ask-option-0-2") < A_FEW_PIXELS,
+        "nothing blank between the options and the answer row"
     );
-    focus_card(&panel, vcx);
+    show(
+        &panel,
+        vcx,
+        "ask-2",
+        vec![question(false, &AB), question(false, &AB[..2])],
+    );
     vcx.simulate_keystrokes("1 enter");
     settle(&panel, vcx, "ask-1");
-    assert_eq!(
-        card(&panel, vcx, |card| card.request_id.clone()),
-        "ask-2",
-        "the queued question took the card"
+    let two = card_height(vcx);
+    vcx.simulate_keystrokes("right right");
+    let review = card_height(vcx);
+    assert!(
+        gap_above_reply_row(vcx, "ask-review-row-1") < A_FEW_PIXELS,
+        "nothing blank under the review rows"
     );
     assert!(
-        (card_height(vcx) - dragged).abs() <= px(1.),
-        "the next question keeps the size the user chose"
+        review < two + px(80.),
+        "the review does not keep the questions' room: {two:?} then {review:?}"
     );
-    let handle = vcx.debug_bounds("ask-resize").unwrap().center();
-    vcx.simulate_event(gpui::MouseDownEvent {
-        button: gpui::MouseButton::Left,
-        position: handle,
-        click_count: 2,
-        ..Default::default()
-    });
-    vcx.run_until_parked();
+}
+
+#[gpui::test]
+fn a_height_the_user_dragged_taller_than_the_content_adds_no_blank_area(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (_panel, vcx) = open(cx, None, vec![question(false, &AB)]);
+    let content = card_height(vcx);
+    drag_handle(vcx, -300.);
     assert!(
-        (card_height(vcx) - automatic).abs() <= px(1.),
-        "double click returns to automatic height"
+        (card_height(vcx) - content).abs() <= px(1.),
+        "dragging past the content does not stretch the card"
+    );
+    assert!(gap_above_reply_row(vcx, "ask-option-0-2") < A_FEW_PIXELS);
+}
+
+#[gpui::test]
+fn a_remembered_height_never_exceeds_what_the_next_card_needs(cx: &mut gpui::TestAppContext) {
+    let mut tall = question(false, &REGIONS);
+    tall["question"] = "Paragraph of rich context.\n\n".repeat(12).into();
+    let (panel, vcx) = open(cx, None, vec![tall]);
+    drag_handle(vcx, -200.);
+    let dragged = card_height(vcx);
+    show(&panel, vcx, "ask-2", vec![question(false, &AB[..2])]);
+    vcx.simulate_keystrokes("1 enter");
+    settle(&panel, vcx, "ask-1");
+    assert!(
+        card_height(vcx) < dragged - px(100.),
+        "the short question takes only its own height, not the {dragged:?} remembered"
+    );
+    assert!(gap_above_reply_row(vcx, "ask-option-0-1") < A_FEW_PIXELS);
+}
+
+#[gpui::test]
+fn a_drag_below_the_content_height_caps_the_card_and_the_content_scrolls(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (_panel, vcx) = open(cx, None, vec![question(false, &REGIONS)]);
+    let full = card_height(vcx);
+    drag_handle(vcx, 120.);
+    let capped = card_height(vcx);
+    assert!(
+        capped < full - px(60.),
+        "dragging down shortens the card: {full:?} -> {capped:?}"
     );
 }
 
@@ -318,6 +580,51 @@ fn the_card_never_covers_the_transcript_by_default_and_a_drag_stays_inside_the_w
         "dragging back down returns to automatic"
     );
     assert!(panel.read_with(vcx, |panel, _| panel.ask_card.is_some()));
+}
+
+#[gpui::test]
+fn a_long_description_shows_in_full_under_its_label_with_no_expand_control(
+    cx: &mut gpui::TestAppContext,
+) {
+    let long = "A description far too long to share a line with its label in a narrow card, \
+                so the row has to wrap it onto more lines instead of cutting it short";
+    let (panel, vcx) = open(cx, None, vec![question(false, &[("Option", long)])]);
+    vcx.simulate_resize(gpui::size(px(360.), px(700.)));
+    vcx.run_until_parked();
+    let line = card(&panel, vcx, |card| {
+        card.label_layouts.0.borrow()[&(0, 0)].line_height()
+    });
+    assert!(
+        vcx.debug_bounds("ask-description-0-0").unwrap().size.height > line * 2.,
+        "the whole description is there, wrapped"
+    );
+    assert!(
+        vcx.debug_bounds("ask-expand-button-0-0").is_none(),
+        "there is nothing to expand"
+    );
+    vcx.simulate_keystrokes("e");
+    assert_eq!(
+        cursor(&panel, vcx),
+        (0, 0),
+        "the `e` key is not a key of the card"
+    );
+}
+
+#[gpui::test]
+fn the_card_reads_at_the_chat_text_size_and_has_no_key_hint_line(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = open(
+        cx,
+        None,
+        vec![question(false, &[("Option", "A description")])],
+    );
+    let size = card(&panel, vcx, |card| {
+        let layouts = card.label_layouts.0.borrow();
+        layouts[&(0, 0)].line_layouts()[0]
+            .unwrapped_layout
+            .font_size
+    });
+    assert_eq!(size, px(crate::markdown::CHAT_TEXT_SIZE));
+    assert!(vcx.debug_bounds("ask-hint").is_none());
 }
 
 #[gpui::test]
@@ -358,20 +665,6 @@ fn an_mcp_approval_card_answers_with_the_same_keys(cx: &mut gpui::TestAppContext
         .and_then(|response| response.answers)
         .expect("an answer was sent");
     assert_eq!(answers[0].selected, ["Allow once"]);
-}
-
-#[gpui::test]
-fn a_collapsed_description_that_does_not_fit_ends_in_an_ellipsis(cx: &mut gpui::TestAppContext) {
-    let long = "A description far too long to share a line with its label in a narrow card, \
-                so the row has to cut it short";
-    let (panel, vcx) = open(cx, None, vec![question(false, &[("Option", long)])]);
-    vcx.simulate_resize(gpui::size(px(360.), px(700.)));
-    vcx.run_until_parked();
-    let shown = card(&panel, vcx, |card| {
-        card.label_layouts.0.borrow()[&(0, DESCRIPTION_LAYOUT)].wrapped_text()
-    });
-    assert!(shown.ends_with('…'), "cut without a mark: {shown:?}");
-    assert!(!shown.contains('\n'), "one line: {shown:?}");
 }
 
 #[gpui::test]
