@@ -1610,12 +1610,86 @@ fn setting_changes_reload_from_history_as_notice_rows(cx: &mut gpui::TestAppCont
     });
     panel.update(vcx, |panel, cx| {
         let history: jcode_sdk::HistoryMessage = serde_json::from_value(serde_json::json!({
-            "role": "setting_change", "content": "Model: a → b (you chose it)", "timestamp_ms": 10
+            "role": "setting_change", "content": "Model: a → b (automatic failover after: limit)", "timestamp_ms": 10
         }))
         .unwrap();
         panel.load_history(vec![history], vec![], cx);
         assert!(panel.items.iter().any(|item| matches!(item, Item::SwarmWorkerNotice(text)
-            if text == "Model: a → b (you chose it)")));
+            if text == "Model: a → b (automatic failover after: limit)")));
+    });
+}
+
+fn setting_history(rows: &[&str]) -> Vec<jcode_sdk::HistoryMessage> {
+    rows.iter()
+        .enumerate()
+        .map(|(at, content)| {
+            serde_json::from_value(serde_json::json!({
+                "role": "setting_change", "content": content, "timestamp_ms": at
+            }))
+            .unwrap()
+        })
+        .collect()
+}
+
+fn notices(panel: &Panel) -> Vec<String> {
+    panel
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::SwarmWorkerNotice(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[gpui::test]
+fn a_setting_row_is_shown_once_whichever_of_its_history_and_live_notice_arrives_first(
+    cx: &mut gpui::TestAppContext,
+) {
+    let failover = "Model: a → b (automatic failover after: limit)";
+    let live = ApiEvent::SwarmWorkerNotice {
+        session_id: "s".into(),
+        message: failover.into(),
+    };
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("setting-once".into(), None, None, crate::harness::spawn_inert(), cx)
+    });
+    panel.update(vcx, |panel, cx| {
+        // History first (attach), then the notice that was still in flight.
+        panel.load_history(setting_history(&[failover]), vec![], cx);
+        panel.apply(&live, cx);
+        assert_eq!(notices(panel), [failover]);
+    });
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("setting-once-b".into(), None, None, crate::harness::spawn_inert(), cx)
+    });
+    panel.update(vcx, |panel, cx| {
+        // The notice first, then the first history reply that already holds it.
+        panel.apply(&live, cx);
+        panel.load_history(setting_history(&[failover]), vec![], cx);
+        assert_eq!(notices(panel), [failover]);
+    });
+}
+
+#[gpui::test]
+fn setting_rows_the_user_caused_are_dropped_when_an_older_daemon_still_sends_them(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("setting-old-daemon".into(), None, None, crate::harness::spawn_inert(), cx)
+    });
+    panel.update(vcx, |panel, cx| {
+        panel.load_history(
+            setting_history(&[
+                "Provider: a → b (you chose it)",
+                "Reasoning effort: low → high (you chose it)",
+                "Mode: off → review (you changed the mode)",
+                "Model: a → b (automatic failover after: limit)",
+            ]),
+            vec![],
+            cx,
+        );
+        assert_eq!(notices(panel), ["Model: a → b (automatic failover after: limit)"]);
     });
 }
 

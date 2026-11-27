@@ -207,6 +207,10 @@ impl Panel {
         let mut existing = std::mem::take(&mut self.items);
         existing.retain(|item| match item {
             Item::User(text) => !matches!(items.last(), Some(Item::User(last)) if last == text),
+            // A notice that arrived before the reply is already a row of it.
+            Item::SwarmWorkerNotice(text) => !items
+                .iter()
+                .any(|row| matches!(row, Item::SwarmWorkerNotice(held) if held == text)),
             _ => true,
         });
         let history_len = items.len();

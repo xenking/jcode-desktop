@@ -3,6 +3,24 @@
 //! fixtures all build rows the same way.
 use super::*;
 
+/// Settings the user changed himself: the footer shows them. A daemon that
+/// predates dropping them at the writer still stores and sends them.
+fn is_user_setting_row(content: &str) -> bool {
+    content
+        .strip_suffix(')')
+        .and_then(|row| row.rsplit_once(" ("))
+        .is_some_and(|(_, cause)| matches!(cause, "you chose it" | "you changed the mode"))
+}
+
+/// Whether the notice rows ending the transcript already say `message`.
+pub(super) fn notice_in_trailing_run(items: &[Item], message: &str) -> bool {
+    items
+        .iter()
+        .rev()
+        .take_while(|item| matches!(item, Item::SwarmWorkerNotice(_)))
+        .any(|item| matches!(item, Item::SwarmWorkerNotice(held) if held == message))
+}
+
 /// Convert protocol history into transcript items. Shared by the
 /// authoritative reply and the provisional on-disk prefix so both paint
 /// identically.
@@ -134,6 +152,7 @@ pub(super) fn build(
                 }
             }
             // Setting changes share the compact notice row.
+            "setting_change" if is_user_setting_row(&message.content) => {}
             "swarm_worker_notice" | "setting_change" if !message.content.trim().is_empty() => {
                 items.push(Item::SwarmWorkerNotice(message.content));
             }

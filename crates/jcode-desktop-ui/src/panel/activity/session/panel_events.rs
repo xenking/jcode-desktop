@@ -240,7 +240,10 @@ impl Panel {
             ApiEvent::SwarmWorkerNotice { message, .. } => {
                 self.flush_reasoning();
                 self.flush_streaming();
-                self.items.push(Item::SwarmWorkerNotice(message.clone()));
+                // The history reply can already hold a row whose live notice is still in flight.
+                if !crate::panel::history_items::notice_in_trailing_run(&self.items, message) {
+                    self.items.push(Item::SwarmWorkerNotice(message.clone()));
+                }
             }
             ApiEvent::MessageAccepted { .. } => {
                 acknowledge_next(
