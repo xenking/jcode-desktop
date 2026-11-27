@@ -568,14 +568,32 @@ fn persist_draft_model_defaults_at(
     standalone: bool,
     defaults: &DraftModelDefaults,
 ) -> std::io::Result<()> {
-    let value = toml::Value::try_from(defaults).expect("draft defaults serialize");
-    persist_value_at(
-        path,
-        standalone,
-        "models",
-        "draft_defaults",
-        &value.to_string(),
-    )
+    let models = if standalone {
+        "models"
+    } else {
+        "desktop.models"
+    };
+    let subtable = format!("[{models}.draft_defaults]");
+    edit_config_at(path, standalone, |lines| {
+        if section_start(lines, &subtable).is_some() {
+            // The shared Jcode config serializer emits defaults as a regular table.
+            for (key, value) in [("model", &defaults.model), ("effort", &defaults.effort)] {
+                let value = value
+                    .as_ref()
+                    .map(|value| toml::Value::String(value.clone()).to_string());
+                edit_section_value(lines, &subtable, key, value.as_deref())?;
+            }
+            Ok(())
+        } else {
+            let value = toml::Value::try_from(defaults).expect("draft defaults serialize");
+            edit_section_value(
+                lines,
+                &format!("[{models}]"),
+                "draft_defaults",
+                Some(&value.to_string()),
+            )
+        }
+    })
 }
 
 /// Sorted, deduplicated, non-empty hidden route specs.
@@ -801,6 +819,16 @@ fn persist_value_with_header(
     key: &str,
     value: &str,
 ) -> std::io::Result<()> {
+    edit_config_at(path, standalone, |lines| {
+        edit_section_value(lines, section, key, Some(value))
+    })
+}
+
+fn edit_config_at(
+    path: &std::path::Path,
+    standalone: bool,
+    edit: impl FnOnce(&mut Vec<String>) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -815,7 +843,7 @@ fn persist_value_with_header(
     }
     let lock = options.open(path.with_extension("toml.lock"))?;
     lock.lock()?;
-    let mut text = match fs::read_to_string(path) {
+    let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error),
@@ -833,43 +861,8 @@ fn persist_value_with_header(
         }
     };
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    let section_index = lines.iter().position(|line| {
-        line.split('#')
-            .next()
-            .is_some_and(|value| value.trim() == section)
-    });
-    if let Some(start) = section_index {
-        let end = lines[start + 1..]
-            .iter()
-            .position(|line| line.trim_start().starts_with('['))
-            .map_or(lines.len(), |offset| start + 1 + offset);
-        if let Some(index) = (start + 1..end).find(|&index| {
-            lines[index]
-                .split_once('=')
-                .is_some_and(|(candidate, _)| candidate.trim() == key)
-        }) {
-            // Replace only the parsed value span. This also handles hand-edited
-            // multiline arrays without losing the key's trailing comment or
-            // rewriting neighboring settings.
-            let mut tail = lines[index..end].join("\n");
-            let values: BTreeMap<String, toml::Spanned<toml::Value>> = toml::from_str(&tail)
-                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-            let span = values[key].span();
-            tail.replace_range(span, value);
-            // `split`, not `lines`: a trailing blank line before the next
-            // table must survive the round trip.
-            lines.splice(index..end, tail.split('\n').map(str::to_owned));
-        } else {
-            lines.insert(start + 1, format!("{key} = {value}"));
-        }
-    } else {
-        if !text.is_empty() && !text.ends_with('\n') {
-            lines.push(String::new());
-        }
-        lines.push(section.into());
-        lines.push(format!("{key} = {value}"));
-    }
-    text = lines.join("\n");
+    edit(&mut lines)?;
+    let mut text = lines.join("\n");
     text.push('\n');
     match parse(&text, standalone) {
         Ok(_) => {}
@@ -890,6 +883,60 @@ fn persist_value_with_header(
     }
     std::io::Write::write_all(&mut temporary, text.as_bytes())?;
     temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+fn section_start(lines: &[String], section: &str) -> Option<usize> {
+    lines.iter().position(|line| {
+        line.split('#')
+            .next()
+            .is_some_and(|value| value.trim() == section)
+    })
+}
+
+fn edit_section_value(
+    lines: &mut Vec<String>,
+    section: &str,
+    key: &str,
+    value: Option<&str>,
+) -> std::io::Result<()> {
+    if let Some(start) = section_start(lines, section) {
+        let end = lines[start + 1..]
+            .iter()
+            .position(|line| line.trim_start().starts_with('['))
+            .map_or(lines.len(), |offset| start + 1 + offset);
+        if let Some(index) = (start + 1..end).find(|&index| {
+            lines[index]
+                .split_once('=')
+                .is_some_and(|(candidate, _)| candidate.trim() == key)
+        }) {
+            // Replace only the parsed value span. This also handles hand-edited
+            // multiline arrays without losing the key's trailing comment or
+            // rewriting neighboring settings.
+            let mut tail = lines[index..end].join("\n");
+            let values: BTreeMap<String, toml::Spanned<toml::Value>> = toml::from_str(&tail)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            let span = values[key].span();
+            if let Some(value) = value {
+                tail.replace_range(span, value);
+                // `split`, not `lines`: retain blank lines before the next table.
+                lines.splice(index..end, tail.split('\n').map(str::to_owned));
+            } else {
+                let mut following = tail[span.end..].split('\n');
+                let comment = following.next().unwrap_or_default().trim_start();
+                let comment = (!comment.is_empty()).then_some(comment);
+                lines.splice(
+                    index..end,
+                    comment.into_iter().chain(following).map(str::to_owned),
+                );
+            }
+        } else if let Some(value) = value {
+            lines.insert(start + 1, format!("{key} = {value}"));
+        }
+    } else if let Some(value) = value {
+        lines.push(section.into());
+        lines.push(format!("{key} = {value}"));
+    }
     Ok(())
 }
 
@@ -1362,20 +1409,39 @@ mod tests {
         for standalone in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("config.toml");
-            let section = if standalone { "models" } else { "desktop.models" };
-            fs::write(&path, format!("[{section}]\nhidden = [\"example\"] # keep\n")).unwrap();
-            let mut defaults = DraftModelDefaults {
-                model: Some("claude-oauth:claude-fable-5-2".into()),
-                effort: Some("low".into()),
+            let section = if standalone {
+                "models"
+            } else {
+                "desktop.models"
             };
-            for effort in [Some("low".into()), None] {
-                defaults.effort = effort;
-                persist_draft_model_defaults_at(&path, standalone, &defaults).unwrap();
-                let text = fs::read_to_string(&path).unwrap();
-                let config = parse(&text, standalone).unwrap();
-                assert_eq!(config.models.draft_defaults, defaults);
-                assert_eq!(config.models.hidden, ["example"]);
-                assert!(text.contains("# keep"));
+            for initial in [
+                String::new(),
+                format!(
+                    "\n[{section}.draft_defaults] # keep the table\neffort = 'high'\nmodel = 'old' # keep the model comment\n"
+                ),
+            ] {
+                fs::write(
+                    &path,
+                    format!("[{section}]\nhidden = [\"example\"] # keep{initial}\n"),
+                )
+                .unwrap();
+                let mut defaults = DraftModelDefaults {
+                    model: Some("claude-oauth:claude-fable-5-2".into()),
+                    effort: Some("low".into()),
+                };
+                for effort in [Some("low".into()), None] {
+                    defaults.effort = effort;
+                    persist_draft_model_defaults_at(&path, standalone, &defaults).unwrap();
+                    let text = fs::read_to_string(&path).unwrap();
+                    let config = parse(&text, standalone).unwrap();
+                    assert_eq!(config.models.draft_defaults, defaults);
+                    assert_eq!(config.models.hidden, ["example"]);
+                    assert!(text.contains("hidden = [\"example\"] # keep"));
+                    if !initial.is_empty() {
+                        assert!(text.contains("# keep the table"));
+                        assert!(text.contains("# keep the model comment"));
+                    }
+                }
             }
         }
     }
