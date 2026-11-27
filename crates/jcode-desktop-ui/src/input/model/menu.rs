@@ -24,15 +24,11 @@ pub(super) struct ModelDetails {
 
 impl ModelDetails {
     /// The icon that leads the route's account group: the daemon's resolved
-    /// one, else the stable default for the account. `None` for routes that
-    /// name no account.
+    /// one, which it sends only where the provider has several accounts (or the
+    /// user set one). `None` for routes that name no account.
     pub(super) fn account_icon(&self) -> Option<String> {
-        let account = self.account.as_deref()?;
-        Some(
-            self.icon
-                .clone()
-                .unwrap_or_else(|| jcode_session_types::account_icon::account_icon(account, None)),
-        )
+        self.account.as_ref()?;
+        self.icon.clone()
     }
 
     /// The fields model search matches words against.

@@ -296,7 +296,7 @@ impl Workspace {
                             .map(|identity| (None, identity.display_name.clone()))
                     } else {
                         reset.account_label.as_deref().filter(|_| many).map(|label| {
-                            (Some(self.account_icon(&account.id, label)), label.to_owned())
+                            (self.account_icon(&account.id, label), label.to_owned())
                         })
                     };
                     let label = match owner {
@@ -368,7 +368,7 @@ impl Workspace {
                     let icon = report
                         .account_label
                         .as_deref()
-                        .map(|label| self.account_icon(&account.id, label));
+                        .and_then(|label| self.account_icon(&account.id, label));
                     let tooltip = crate::panel::meter::RowsTooltip {
                         title: format!(
                             "{}{} · API estimate, not a bill",

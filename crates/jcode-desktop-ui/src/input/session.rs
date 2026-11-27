@@ -358,6 +358,33 @@ impl PromptInput {
             .and_then(|route| route.icon.clone())
     }
 
+    /// The icon of the OAuth login `label`, from the route that names that
+    /// login. `provider` only breaks a tie when two providers use the label.
+    pub fn login_icon(&self, provider: Option<&str>, label: &str) -> Option<String> {
+        let (_, routes) = self.applied_model_routes.as_ref()?;
+        let named: Vec<_> = routes
+            .iter()
+            .filter(|route| {
+                route
+                    .account
+                    .as_deref()
+                    .is_some_and(|account| account.rsplit(':').next() == Some(label))
+            })
+            .collect();
+        let accounts: std::collections::BTreeSet<_> = named
+            .iter()
+            .filter_map(|route| route.account.as_deref())
+            .collect();
+        let route = if accounts.len() > 1 {
+            named
+                .iter()
+                .find(|route| provider.is_some_and(|provider| route.provider == provider))?
+        } else {
+            named.first()?
+        };
+        route.icon.clone()
+    }
+
     pub fn set_model_routes(
         &mut self,
         mut models: Vec<String>,

@@ -238,19 +238,11 @@ fn the_chip_names_the_account_with_a_warning_marker_and_a_pending_move(
         let chip = panel.routing_chip.as_ref().unwrap();
         assert_eq!(
             chip.account_text(),
-            format!(
-                "{} claude:team",
-                jcode_session_types::account_icon::account_icon("claude:team", None)
-            )
+            "claude:team",
+            "no route names a second account, so no icon"
         );
         assert_eq!(chip.warning_marker().as_deref(), Some("⚠"));
-        assert_eq!(
-            chip.pending_text(),
-            Some(format!(
-                "{} claude:spare",
-                jcode_session_types::account_icon::account_icon("claude:spare", None)
-            ))
-        );
+        assert_eq!(chip.pending_text().as_deref(), Some("claude:spare"));
         assert!(
             !panel
                 .items
@@ -287,14 +279,9 @@ fn moving_to_another_account_is_announced_once(cx: &mut gpui::TestAppContext) {
         let Some(Item::SwarmWorkerNotice(notice)) = panel.items.last() else {
             panic!("the move is one notice row");
         };
-        let icon = |account| jcode_session_types::account_icon::account_icon(account, None);
         assert_eq!(
-            notice,
-            &format!(
-                "Account: {} claude:team → {} claude:spare (priority 1)",
-                icon("claude:team"),
-                icon("claude:spare")
-            )
+            notice, "Account: claude:team → claude:spare (priority 1)",
+            "with one account per provider the move names no icons"
         );
     });
 }
@@ -467,13 +454,21 @@ fn an_opening_gate_takes_the_keyboard_so_keys_answer_without_a_click(
 }
 
 /// Hover the chip and read back the tooltip rows it paints.
-fn hover_rows(vcx: &mut gpui::VisualTestContext, chip: gpui::Bounds<gpui::Pixels>) -> Vec<gpui::Bounds<gpui::Pixels>> {
+fn hover_rows(
+    vcx: &mut gpui::VisualTestContext,
+    chip: gpui::Bounds<gpui::Pixels>,
+) -> Vec<gpui::Bounds<gpui::Pixels>> {
     vcx.simulate_mouse_move(chip.center(), None, Default::default());
     vcx.run_until_parked();
-    vcx.executor().advance_clock(std::time::Duration::from_secs(1));
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
     vcx.run_until_parked();
     (0..12)
-        .map_while(|index| vcx.debug_bounds(Box::leak(format!("rows-tooltip-row-{index}").into_boxed_str())))
+        .map_while(|index| {
+            vcx.debug_bounds(Box::leak(
+                format!("rows-tooltip-row-{index}").into_boxed_str(),
+            ))
+        })
         .collect()
 }
 
@@ -496,7 +491,10 @@ fn a_long_why_wraps_inside_the_chips_tooltip_and_never_paints_over_the_next_row(
     vcx.run_until_parked();
     let chip = vcx.debug_bounds("composer-routing-chip").expect("chip");
     let rows = hover_rows(vcx, chip);
-    assert!(rows.len() >= 2, "the tooltip lists the decision rows: {rows:?}");
+    assert!(
+        rows.len() >= 2,
+        "the tooltip lists the decision rows: {rows:?}"
+    );
     assert!(
         rows.iter().any(|row| row.size.height > px(16.5)),
         "the Why row wraps to several lines: {rows:?}"
@@ -508,5 +506,8 @@ fn a_long_why_wraps_inside_the_chips_tooltip_and_never_paints_over_the_next_row(
         );
     }
     let tooltip = vcx.debug_bounds("rows-tooltip").expect("tooltip");
-    assert!(rows.iter().all(|row| row.right() <= tooltip.right()), "a row spills out of the tooltip");
+    assert!(
+        rows.iter().all(|row| row.right() <= tooltip.right()),
+        "a row spills out of the tooltip"
+    );
 }

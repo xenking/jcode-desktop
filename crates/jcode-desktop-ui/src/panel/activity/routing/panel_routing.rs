@@ -55,7 +55,22 @@ impl Panel {
         }
     }
 
-    /// The chip with the routes' configured icons in place of the defaults.
+    /// The icon of the account the session runs on, for the composer's model
+    /// chip: the routing chip's account, else the OAuth login the runtime
+    /// reports. `None` unless the provider has several accounts (or the user
+    /// set an icon), since the daemon resolves icons only then.
+    pub(crate) fn serving_account_icon(&self, cx: &App) -> Option<String> {
+        if let Some(chip) = self.routing_chip.clone() {
+            return self.with_account_icons(chip, cx).icon;
+        }
+        let label = self.account_label.as_deref()?;
+        self.input
+            .read(cx)
+            .login_icon(self.provider.as_deref(), label)
+    }
+
+    /// The chip with the icons the routes carry, which the daemon resolves only
+    /// where an account has to be told from its siblings.
     fn with_account_icons(&self, chip: RoutingChip, cx: &App) -> RoutingChip {
         let input = self.input.read(cx);
         chip.with_icons(|account| input.route_icon(account))

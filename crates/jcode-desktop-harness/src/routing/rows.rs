@@ -39,7 +39,7 @@ pub struct BarRow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyRow {
     /// The key's account icon, shown before the title.
-    pub icon: String,
+    pub icon: Option<String>,
     /// `provider` for the unlabelled key, `provider · label` otherwise.
     pub title: String,
     pub active: bool,

@@ -408,9 +408,7 @@ fn sidebar_session_history_moves_when_the_user_scrolls(cx: &mut gpui::TestAppCon
 }
 
 #[gpui::test]
-fn sidebar_gutter_scrolls_sessions_and_files_without_moving_tabs(
-    cx: &mut gpui::TestAppContext,
-) {
+fn sidebar_gutter_scrolls_sessions_and_files_without_moving_tabs(cx: &mut gpui::TestAppContext) {
     let project = tempfile::tempdir().unwrap();
     for index in 0..80 {
         std::fs::write(project.path().join(format!("file-{index}.rs")), "").unwrap();
@@ -461,11 +459,16 @@ fn sidebar_gutter_scrolls_sessions_and_files_without_moving_tabs(
             assert!(gutter.top() >= machines.bottom());
             assert!(vcx.debug_bounds("sidebar-workflow-switch").is_none());
             if view == SidebarView::Sessions {
-                let catalog = vcx.debug_bounds("sidebar-session-catalog-controls").unwrap();
+                let catalog = vcx
+                    .debug_bounds("sidebar-session-catalog-controls")
+                    .unwrap();
                 assert_eq!(catalog.top(), machines.bottom());
                 assert_eq!(gutter.top(), catalog.bottom());
             } else {
-                assert!(vcx.debug_bounds("sidebar-session-catalog-controls").is_none());
+                assert!(
+                    vcx.debug_bounds("sidebar-session-catalog-controls")
+                        .is_none()
+                );
                 assert_eq!(gutter.top(), machines.bottom());
             }
             assert_eq!(gutter.top(), body.top());
@@ -485,12 +488,9 @@ fn sidebar_gutter_scrolls_sessions_and_files_without_moving_tabs(
                 assert!(scrollbar.left() >= tab.right());
                 assert!(scrollbar.right() <= canvas.left());
             }
-            let tabs_before =
-                workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.offset());
+            let tabs_before = workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.offset());
             let offset = |w: &Workspace| match view {
-                SidebarView::Sessions => {
-                    w.sidebar_sessions_list.scroll_px_offset_for_scrollbar().y
-                }
+                SidebarView::Sessions => w.sidebar_sessions_list.scroll_px_offset_for_scrollbar().y,
                 _ => w.sidebar_scroll.offset().y,
             };
             for (delta, expected) in [(-37.0, -37.0), (12.0, -25.0), (10000.0, 0.0)] {
@@ -821,9 +821,7 @@ fn clicking_an_unfinished_work_card_opens_its_chat_session(cx: &mut gpui::TestAp
 }
 
 #[gpui::test]
-fn clicking_an_unfinished_work_card_reuses_its_open_chat_session(
-    cx: &mut gpui::TestAppContext,
-) {
+fn clicking_an_unfinished_work_card_reuses_its_open_chat_session(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) =
         cx.add_window_view(|_, cx| Workspace::for_test(crate::learning::Coach::new(), cx));
     workspace.update(vcx, |workspace, cx| {
@@ -1097,9 +1095,7 @@ fn sidebar_top_folder_tabs_join_their_content_when_clicked(cx: &mut gpui::TestAp
 }
 
 #[gpui::test]
-fn sidebar_accounts_tab_replaces_sessions_and_has_an_empty_state(
-    cx: &mut gpui::TestAppContext,
-) {
+fn sidebar_accounts_tab_replaces_sessions_and_has_an_empty_state(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) =
         cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
     vcx.run_until_parked();
@@ -1256,6 +1252,18 @@ fn accounts_oauth_history_renders_named_periods_and_unavailable_state(
     workspace.update(vcx, |w, cx| {
         w.sidebar_view = SidebarView::Accounts;
         w.accounts = accounts::parse(r#"{"providers":[{"id":"openai","display_name":"OpenAI","status":"available","auth_kind":"OAuth"}]}"#).unwrap();
+        // Two OpenAI logins: the daemon resolves an icon for each.
+        let mut view = crate::routing::feed::fixture();
+        let template = view.accounts[0].clone();
+        view.accounts = ["personal", "work"]
+            .into_iter()
+            .map(|label| jcode_session_types::routing::RoutingAccountView {
+                id: format!("openai:{label}"),
+                icon: Some(jcode_session_types::account_icon::account_icon(label, None)),
+                ..template.clone()
+            })
+            .collect();
+        w.set_test_routing_view(view);
         cx.notify();
     });
     vcx.run_until_parked();

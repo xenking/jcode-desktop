@@ -2,8 +2,8 @@
 //!
 //! It names the signed-in Jcode account (not an AI provider login) with its
 //! plan. Clicking it opens the in-app account menu, or sign-in when signed out.
-use super::jcode_account::{JcodeAccount, set_show_email, show_email};
 use super::account_sign_in::account_button;
+use super::jcode_account::{JcodeAccount, set_show_email, show_email};
 use super::*;
 
 impl Workspace {
@@ -150,8 +150,20 @@ impl Workspace {
                     // The avatar plus one icon and figure per provider. The
                     // account and its plan live in the hover, so the block is
                     // usage at a glance instead of repeated identity.
-                    .children(self.render_sidebar_quota(cx))
-                    .child(div().flex_1())
+                    // The figures share what the avatar leaves and clip there:
+                    // a long label or a narrow sidebar never stretches the pill.
+                    .child(
+                        div()
+                            .debug_selector(|| "sidebar-quota-strip".into())
+                            .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .items_center()
+                            .gap_1()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .children(self.render_sidebar_quota(cx)),
+                    )
                     .tooltip(move |_, cx| {
                         cx.new(|_| crate::panel::meter::MeterTooltip(account_tooltip.clone()))
                             .into()
@@ -193,7 +205,7 @@ impl Workspace {
                     let icon = chip
                         .account
                         .as_deref()
-                        .map(|label| self.account_icon(&account.id, label));
+                        .and_then(|label| self.account_icon(&account.id, label));
                     tooltip.icon.clone_from(&icon);
                     let color = match chip.percent {
                         Some(percent) if percent >= 70. => {
@@ -201,18 +213,32 @@ impl Workspace {
                         }
                         _ => theme.TEXT_DIM,
                     };
-                    let logo = crate::accounts::logo(chip.logo).map(|bytes| {
-                        gpui::svg()
+                    // A provider without a vendored mark gets its lettermark, as in
+                    // every other list, never a blank or a box.
+                    let logo = match crate::accounts::logo(chip.logo) {
+                        Some(bytes) => gpui::svg()
                             .data(bytes)
                             .size(px(12.))
                             .flex_none()
                             .text_color(color)
-                    });
+                            .into_any_element(),
+                        None => div()
+                            .flex_none()
+                            .text_size(px(10.0))
+                            .child(crate::accounts::lettermark(&account.display_name))
+                            .into_any_element(),
+                    };
                     div()
                         .id(gpui::SharedString::from(id))
                         .debug_selector(move || selector.clone())
                         .flex()
-                        .flex_none()
+                        // A percentage is short and always shown whole; only a
+                        // long money figure gives way (with an ellipsis), and
+                        // the strip clips what still does not fit.
+                        .when(chip.percent.is_some(), |el| el.flex_none())
+                        .when(chip.percent.is_none(), |el| {
+                            el.flex_shrink_1().min_w_0().overflow_hidden()
+                        })
                         .items_center()
                         .gap_1()
                         .h(px(22.))
@@ -250,8 +276,8 @@ impl Workspace {
                                 .text_size(px(10.0))
                                 .child(icon)
                         }))
-                        .children(logo)
-                        .child(chip.label())
+                        .child(logo)
+                        .child(div().min_w_0().truncate().child(chip.label()))
                         .into_any_element()
                 })
                 .collect()
@@ -408,7 +434,156 @@ mod tests {
         );
     }
 
-    /// A quota figure belongs to one login. When the provider names it, the
+    const OTTER_USAGE: &str = r#"{"providers":[{"provider_name":"Anthropic (Claude)","limits":[{"name":"7-day window","usage_percent":41.0,"reset_in":"1d 11h"}],"extra_info":[["Account label","claude-otter"]],"error":null}]}"#;
+
+    fn claude_view(logins: &[&str]) -> jcode_session_types::routing::RoutingView {
+        let mut view = crate::routing::feed::fixture();
+        let template = view.accounts[0].clone();
+        view.accounts = logins
+            .iter()
+            .map(|label| {
+                let id = format!("claude:{label}");
+                jcode_session_types::routing::RoutingAccountView {
+                    icon: (logins.len() > 1)
+                        .then(|| jcode_session_types::account_icon::account_icon(&id, None)),
+                    id,
+                    ..template.clone()
+                }
+            })
+            .collect();
+        view
+    }
+
+    /// The icon names a login among its siblings. A provider with one login has
+    /// nothing to tell apart, so neither the chip nor the hover card shows one.
+    #[gpui::test]
+    fn a_lone_login_shows_no_icon_on_its_chip_or_its_card(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut accounts =
+                crate::accounts::parse(r#"{"providers":[{"id":"claude","status":"available"}]}"#)
+                    .unwrap();
+            crate::accounts::merge_usage_for_tests(&mut accounts, OTTER_USAGE);
+            cx.set_global(crate::account_status::StatusAccounts(accounts));
+        });
+        let (_workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            w.set_test_routing_view(claude_view(&["claude-otter"]));
+            w
+        });
+        vcx.run_until_parked();
+        let chip = vcx.debug_bounds("sidebar-quota-claude").expect("chip");
+        assert!(vcx.debug_bounds("sidebar-quota-claude-icon").is_none());
+        vcx.update(|window, cx| window.simulate_mouse_move(chip.center(), cx));
+        vcx.run_until_parked();
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("panel-limits-tooltip").is_some());
+        assert!(vcx.debug_bounds("panel-limits-tooltip-icon").is_none());
+    }
+
+    /// A chip is a glyph and a number. What the number means (left or used) is
+    /// the hover card's to say.
+    #[test]
+    fn a_chip_shows_the_figure_alone_and_the_card_words_it() {
+        let mut accounts = crate::accounts::parse(
+            r#"{"providers":[{"id":"claude","status":"available"},{"id":"openrouter","status":"available"}]}"#,
+        )
+        .unwrap();
+        crate::accounts::merge_usage_for_tests(
+            &mut accounts,
+            r#"{"providers":[{"provider_name":"Anthropic (Claude)","limits":[{"name":"7-day window","usage_percent":26.0}],"error":null},{"provider_name":"OpenRouter","limits":[],"extra_info":[["Balance","$12.34 / $20.00"]],"error":null}]}"#,
+        );
+        let chips = crate::panel::usage::quota_chips(&accounts);
+        let labels: Vec<_> = chips
+            .iter()
+            .map(crate::panel::usage::QuotaChip::label)
+            .collect();
+        assert_eq!(labels, ["74%", "$12.34"]);
+        assert!(chips[0].detail[0].contains("left"), "{:?}", chips[0].detail);
+    }
+
+    /// The strip shares what the avatar leaves: a narrow sidebar or a long
+    /// figure clips inside the pill instead of stretching it.
+    #[gpui::test]
+    fn the_strip_never_outgrows_its_pill(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut accounts = crate::accounts::parse(
+                r#"{"providers":[{"id":"claude","status":"available"},{"id":"openai","status":"available"},{"id":"openrouter","status":"available"},{"id":"opencode-go","display_name":"OpenCode Go","status":"available"}]}"#,
+            )
+            .unwrap();
+            crate::accounts::merge_usage_for_tests(
+                &mut accounts,
+                r#"{"providers":[{"provider_name":"Anthropic (Claude)","limits":[{"name":"7-day window","usage_percent":26.0}],"error":null},{"provider_name":"OpenAI (ChatGPT)","limits":[{"name":"5-hour window","usage_percent":100.0}],"error":null},{"provider_name":"OpenRouter","limits":[],"extra_info":[["Balance","$123456789012.34 / $200000000000.00"]],"error":null},{"provider_name":"OpenCode Go","limits":[{"name":"5-hour window","usage_percent":100.0}],"error":null}]}"#,
+            );
+            cx.set_global(crate::account_status::StatusAccounts(accounts));
+        });
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            w.sidebar_custom_width = 180.0;
+            w
+        });
+        let _ = &workspace;
+        vcx.run_until_parked();
+        let sidebar = vcx.debug_bounds("sidebar").expect("sidebar");
+        let pill = vcx.debug_bounds("sidebar-account").expect("pill");
+        let strip = vcx.debug_bounds("sidebar-quota-strip").expect("strip");
+        assert!(pill.right() <= sidebar.right(), "{pill:?} in {sidebar:?}");
+        assert!(strip.right() <= pill.right(), "{strip:?} in {pill:?}");
+        assert!(
+            vcx.debug_bounds("sidebar-quota-claude").is_some(),
+            "the first figure still shows"
+        );
+        let mut last_right = strip.left();
+        for id in [
+            "sidebar-quota-claude",
+            "sidebar-quota-openai",
+            "sidebar-quota-opencode-go",
+            "sidebar-quota-openrouter",
+        ] {
+            if let Some(chip) = vcx.debug_bounds(id) {
+                assert!(
+                    chip.size.height <= gpui::px(22.5),
+                    "{id} does not wrap: {chip:?}"
+                );
+                assert!(
+                    chip.left() >= last_right - gpui::px(0.5),
+                    "chips keep their order"
+                );
+                last_right = chip.right();
+            }
+        }
+    }
+
+    /// A provider with no live login or no reading is not listed: a bare mark
+    /// beside nothing reads as a broken meter.
+    #[test]
+    fn a_provider_without_a_live_login_and_a_reading_is_not_listed() {
+        let usage = r#"{"providers":[{"provider_name":"OpenCode Go","limits":[{"name":"5-hour window","usage_percent":100.0}],"error":null}]}"#;
+        for status in ["not_configured", "expired"] {
+            let mut accounts = crate::accounts::parse(&format!(
+                r#"{{"providers":[{{"id":"opencode-go","display_name":"OpenCode Go","status":"{status}"}}]}}"#
+            ))
+            .unwrap();
+            crate::accounts::merge_usage_for_tests(&mut accounts, usage);
+            assert!(
+                crate::panel::usage::quota_chips(&accounts).is_empty(),
+                "{status}"
+            );
+        }
+        let mut accounts = crate::accounts::parse(
+            r#"{"providers":[{"id":"opencode-go","display_name":"OpenCode Go","status":"available"}]}"#,
+        )
+        .unwrap();
+        assert!(
+            crate::panel::usage::quota_chips(&accounts).is_empty(),
+            "a login with no reading"
+        );
+        crate::accounts::merge_usage_for_tests(&mut accounts, usage);
+        assert_eq!(crate::panel::usage::quota_chips(&accounts).len(), 1);
+    }
+
+    /// A quota figure belongs to one login. When its provider has several, the
     /// login's icon leads the chip and the hover card.
     #[gpui::test]
     fn a_named_logins_icon_leads_its_chip_and_its_card(cx: &mut gpui::TestAppContext) {
@@ -423,7 +598,9 @@ mod tests {
             cx.set_global(crate::account_status::StatusAccounts(accounts));
         });
         let (_workspace, vcx) = cx.add_window_view(|_, cx| {
-            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx)
+            let mut w = crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            w.set_test_routing_view(claude_view(&["claude-otter", "claude-fox"]));
+            w
         });
         vcx.run_until_parked();
         let chip = vcx.debug_bounds("sidebar-quota-claude").expect("chip");
@@ -432,10 +609,14 @@ mod tests {
             .expect("the login's icon on the chip");
         assert!(icon.left() >= chip.left() && icon.right() <= chip.right());
         let figure_start = chip.left() + (chip.size.width - icon.size.width) / 2.0;
-        assert!(icon.left() < figure_start, "the icon comes first: {icon:?} in {chip:?}");
+        assert!(
+            icon.left() < figure_start,
+            "the icon comes first: {icon:?} in {chip:?}"
+        );
         vcx.update(|window, cx| window.simulate_mouse_move(chip.center(), cx));
         vcx.run_until_parked();
-        vcx.executor().advance_clock(std::time::Duration::from_secs(1));
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
         vcx.run_until_parked();
         assert!(
             vcx.debug_bounds("panel-limits-tooltip-icon").is_some(),

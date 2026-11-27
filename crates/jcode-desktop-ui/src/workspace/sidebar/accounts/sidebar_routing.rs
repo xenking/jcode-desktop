@@ -77,13 +77,13 @@ fn key_block(index: usize, key: &KeyRow) -> gpui::Div {
                 .h(px(16.0))
                 .line_height(px(16.0))
                 .gap_2()
-                .child(
+                .children(key.icon.clone().map(|icon| {
                     div()
                         .debug_selector(move || format!("routing-key-{index}-icon"))
                         .flex_none()
                         .text_size(px(11.0))
-                        .child(key.icon.clone()),
-                )
+                        .child(icon)
+                }))
                 .child(
                     div()
                         .debug_selector(move || format!("routing-key-{index}-title"))
@@ -172,9 +172,9 @@ impl Workspace {
             .map(|view| SidebarRouting::from_view(view, now))
     }
 
-    /// The icon of the login `label` of `provider`: the daemon's resolved icon
-    /// when the routing view knows the account, else the stable default.
-    pub(crate) fn account_icon(&self, provider: &str, label: &str) -> String {
+    /// The icon of the login `label` of `provider`, where it tells logins apart
+    /// (see `routing::icon_for`).
+    pub(crate) fn account_icon(&self, provider: &str, label: &str) -> Option<String> {
         crate::routing::icon_for(self.routing_view.as_ref(), &format!("{provider}:{label}"))
     }
 

@@ -785,7 +785,10 @@ mod tests {
         assert!(listed[0].connected());
         assert_eq!(listed[0].provider.id, "opencode-go");
         assert_eq!(listed[0].limits.len(), 3);
-        assert!(crate::accounts::logo(listed[0].provider.id).is_some());
+        assert!(
+            crate::accounts::logo(listed[0].provider.id).is_none(),
+            "OpenCode takes the lettermark, not a bare frame"
+        );
         // The search field matches the provider by name, id and method.
         let providers = [providers[0]];
         for query in ["opencode", "OPENCODE-GO", "api key"] {

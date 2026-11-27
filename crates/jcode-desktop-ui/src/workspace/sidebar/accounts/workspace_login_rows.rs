@@ -169,7 +169,7 @@ pub(super) fn provider_credits(account: &Account) -> Option<gpui::Div> {
 /// it never floats below another login's.
 pub(super) fn login_blocks(
     account: &Account,
-    icon_for: &dyn Fn(&str) -> String,
+    icon_for: &dyn Fn(&str) -> Option<String>,
     reset_pill: &mut dyn FnMut(&crate::accounts::BankedReset) -> Option<gpui::AnyElement>,
 ) -> Option<gpui::Div> {
     if !lists_logins(account) {
@@ -187,7 +187,7 @@ pub(super) fn login_blocks(
         let icon = report
             .identity
             .as_ref()
-            .map(|identity| icon_for(&identity.label));
+            .and_then(|identity| icon_for(&identity.label));
         let mut block = div()
             .debug_selector({
                 let id = id.clone();
@@ -368,11 +368,20 @@ mod tests {
                 .debug_bounds(selector(format!("account-claude-login-{login}-name")))
                 .unwrap();
             assert!(icon.right() <= name.left(), "icon first: {icon:?} {name:?}");
-            assert!(icon.top() < name.bottom() && name.top() < icon.bottom(), "one line");
+            assert!(
+                icon.top() < name.bottom() && name.top() < icon.bottom(),
+                "one line"
+            );
         }
         workspace.read_with(vcx, |w, _| {
-            assert_eq!(w.account_icon("claude", "claude-fox"), "🚀", "a configured icon wins");
-            assert_eq!(w.account_icon("claude", "claude-otter"), "🦦");
+            assert_eq!(
+                w.account_icon("claude", "claude-fox").as_deref(),
+                Some("🚀")
+            );
+            assert_eq!(
+                w.account_icon("claude", "claude-otter").as_deref(),
+                Some("🦦")
+            );
         });
     }
 

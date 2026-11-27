@@ -15,11 +15,17 @@ fn icon(account: &str) -> String {
     jcode_session_types::account_icon::account_icon(account, None)
 }
 
+/// The icons the daemon resolves when `claude` has several accounts.
+fn with_default_icons(chip: RoutingChip) -> RoutingChip {
+    chip.with_icons(|account| Some(icon(account)))
+}
+
 #[test]
 fn chip_parts_lead_with_the_icon_then_add_the_warning_and_the_pending_move() {
     let team = icon("claude:team");
     let spare = icon("claude:spare");
     let parts = |chip: RoutingChip| {
+        let chip = with_default_icons(chip);
         (
             chip.account_text(),
             chip.warning_marker(),
@@ -42,13 +48,18 @@ fn chip_parts_lead_with_the_icon_then_add_the_warning_and_the_pending_move() {
 }
 
 #[test]
-fn a_configured_icon_replaces_the_default_in_the_account_and_the_pending_move() {
+fn a_lone_account_names_itself_without_an_icon() {
+    let chip = chip(&["a"], Some("claude:spare"));
+    assert_eq!(chip.account_text(), "claude:team");
+    assert_eq!(chip.pending_text().as_deref(), Some("claude:spare"));
+    assert_eq!(chip.tooltip()[0], "Running on claude:team");
+}
+
+#[test]
+fn only_the_accounts_the_lookup_names_get_an_icon() {
     let chip = chip(&[], Some("claude:spare"))
         .with_icons(|account| (account == "claude:spare").then(|| "🚀".to_owned()));
-    assert_eq!(
-        chip.account_text(),
-        format!("{} claude:team", icon("claude:team"))
-    );
+    assert_eq!(chip.account_text(), "claude:team");
     assert_eq!(chip.pending_text().as_deref(), Some("🚀 claude:spare"));
 }
 
@@ -73,7 +84,8 @@ fn chip_needs_an_account_and_strips_control_characters() {
 
 #[test]
 fn tooltip_explains_the_account_the_move_and_each_warning() {
-    let lines = chip(&["budget hf-month 45 of 50"], Some("claude:spare")).tooltip();
+    let lines =
+        with_default_icons(chip(&["budget hf-month 45 of 50"], Some("claude:spare"))).tooltip();
     assert_eq!(
         lines[0],
         format!("Running on {} claude:team", icon("claude:team"))
@@ -90,13 +102,34 @@ fn tooltip_explains_the_account_the_move_and_each_warning() {
 }
 
 #[test]
-fn a_configured_icon_wins_and_the_default_follows_the_label() {
+fn an_icon_exists_only_where_it_tells_accounts_of_a_provider_apart() {
     let mut view = fixture();
-    view.accounts[0].icon = Some("🚀".into());
-    assert_eq!(icon_for(Some(&view), "claude:team"), "🚀");
-    assert_eq!(icon_for(Some(&view), "claude:claude-fox"), "🦊");
+    let team = view.accounts[0].clone();
+    // One account of the provider: no icon, whatever the label.
+    view.accounts = vec![team.clone()];
+    assert_eq!(icon_for(Some(&view), "claude:team"), None);
     assert_eq!(
         icon_for(None, "claude:team"),
-        icon_for(Some(&fixture()), "claude:team")
+        None,
+        "nothing known, nothing shown"
     );
+
+    // A second Claude account: both are told apart by the daemon's icons.
+    let mut fox = team.clone();
+    fox.id = "claude:claude-fox".into();
+    fox.icon = Some(icon("claude:claude-fox"));
+    view.accounts[0].icon = Some("🚀".into());
+    view.accounts.push(fox);
+    assert_eq!(icon_for(Some(&view), "claude:team").as_deref(), Some("🚀"));
+    assert_eq!(
+        icon_for(Some(&view), "claude:claude-fox").as_deref(),
+        Some("🦊")
+    );
+    // An account the view does not route still gets the default beside siblings.
+    assert_eq!(
+        icon_for(Some(&view), "claude:other"),
+        Some(icon("claude:other"))
+    );
+    // Another provider's lone account stays bare.
+    assert_eq!(icon_for(Some(&view), "openai:work"), None);
 }

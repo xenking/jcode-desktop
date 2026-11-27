@@ -97,6 +97,8 @@ mod tests {
             None,
         )
         .unwrap()
+        // The account's provider has other accounts, so the daemon sent an icon.
+        .with_icons(|_| Some("🦊".into()))
     }
 
     #[test]

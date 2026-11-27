@@ -7,8 +7,11 @@
 //! lift of the pane surface: prompt paper is only a few steps away from the
 //! focused pane's background in several palettes, and a pill that vanishes on
 //! the pane you are typing in is not a pill.
+use super::chrome::{
+    BAR_ICON, EffortTooltip, OVERLAY_GAP, TAB_HEIGHT, composer_button, composer_pill,
+    pretty_model_label,
+};
 use super::*;
-use super::chrome::{BAR_ICON, EffortTooltip, OVERLAY_GAP, TAB_HEIGHT, composer_button, composer_pill, pretty_model_label};
 
 /// Gap between the input and the pill row below it.
 const PILL_GAP: f32 = 4.;
@@ -71,6 +74,7 @@ impl Panel {
         let theme = Theme::global();
         let screenshot_mode = crate::config::display().screenshot_mode
             && !crate::fixture_control_targets::draft_session();
+        let account_icon = self.serving_account_icon(cx);
         let (mut model_label, effort) = self.composer_identity();
         if self.session_deferred() && self.model.is_none() {
             model_label = "Models".into();
@@ -154,38 +158,60 @@ impl Panel {
                     .items_center()
                     .gap_1()
                     .overflow_hidden()
-                    .children((self.preview_state.is_none() || !self.mode_names().is_empty() || !self.skills.is_empty() || self.session_deferred()).then(|| {
-                        let names = self.mode_names();
-                        let hover = if names.is_empty() {
-                            "Add context".to_owned()
-                        } else {
-                            format!("Active modes: {}", names.join(", "))
-                        };
-                        let icons = names.iter().enumerate().map(|(index, name)| {
-                            let icon = crate::mode_catalog::icon(name, self.mode_catalog.get(name));
-                            div()
-                                .debug_selector(move || format!("panel-mode-icon-{}-{index}", icon.name()))
-                                .flex_none()
-                                .flex()
-                                .child(icon.render(BAR_ICON, theme.composer_secondary()))
-                        });
-                        crate::keyboard::popover_trigger(composer_pill("panel-mode"), &self.picker_triggers[PickerKind::Context as usize])
+                    .children(
+                        (self.preview_state.is_none()
+                            || !self.mode_names().is_empty()
+                            || !self.skills.is_empty()
+                            || self.session_deferred())
+                        .then(|| {
+                            let names = self.mode_names();
+                            let hover = if names.is_empty() {
+                                "Add context".to_owned()
+                            } else {
+                                format!("Active modes: {}", names.join(", "))
+                            };
+                            let icons = names.iter().enumerate().map(|(index, name)| {
+                                let icon =
+                                    crate::mode_catalog::icon(name, self.mode_catalog.get(name));
+                                div()
+                                    .debug_selector(move || {
+                                        format!("panel-mode-icon-{}-{index}", icon.name())
+                                    })
+                                    .flex_none()
+                                    .flex()
+                                    .child(icon.render(BAR_ICON, theme.composer_secondary()))
+                            });
+                            crate::keyboard::popover_trigger(
+                                composer_pill("panel-mode"),
+                                &self.picker_triggers[PickerKind::Context as usize],
+                            )
                             .relative()
-                            .children(crate::fixture_control_targets::marker(|| "panel-mode".into(), || Some(self.session_id.clone())))
+                            .children(crate::fixture_control_targets::marker(
+                                || "panel-mode".into(),
+                                || Some(self.session_id.clone()),
+                            ))
                             .flex_shrink(3.)
                             .min_w(px(TAB_HEIGHT))
                             .max_w(relative(0.4))
                             .overflow_hidden()
-                            .child(div().debug_selector(|| "composer-context-plus".into()).text_size(px(17.)).child("+"))
+                            .child(
+                                div()
+                                    .debug_selector(|| "composer-context-plus".into())
+                                    .text_size(px(17.))
+                                    .child("+"),
+                            )
                             .children(icons)
                             .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_context_picker(window, cx);
-                                this.remember_picker_trigger(PickerKind::Context);
-                                cx.stop_propagation();
-                            }))
-                    }))
-                    .child(self.render_model_control(model_label, effort, cx))
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.toggle_context_picker(window, cx);
+                                    this.remember_picker_trigger(PickerKind::Context);
+                                    cx.stop_propagation();
+                                },
+                            ))
+                        }),
+                    )
+                    .child(self.render_model_control(model_label, effort, account_icon, cx))
                     .children(self.render_pending_model_chip(cx))
                     .children(self.render_context_meter(cx)),
             )
@@ -228,7 +254,10 @@ impl Panel {
                         div()
                             .id("composer-location")
                             .relative()
-                            .children(crate::fixture_control_targets::marker(|| "composer-location".into(), || Some(self.session_id.clone())))
+                            .children(crate::fixture_control_targets::marker(
+                                || "composer-location".into(),
+                                || Some(self.session_id.clone()),
+                            ))
                             .debug_selector(|| "composer-location".into())
                             .flex_shrink_1()
                             .min_w_0()
@@ -289,8 +318,9 @@ impl Panel {
         }
         let picker_open = self.picker_search.is_some();
         let hide_voice = picker_open && !self.input.read(cx).has_user_draft();
-        self.input
-            .update(cx, |input, cx| input.set_external_picker_open(picker_open, cx));
+        self.input.update(cx, |input, cx| {
+            input.set_external_picker_open(picker_open, cx)
+        });
         div()
             .debug_selector(|| "composer".into())
             .relative()
@@ -304,30 +334,33 @@ impl Panel {
             .children(strips)
             .children(ask)
             .children(routing_gate)
-            .when(self.ask_card.is_none() && self.routing_gate.is_none(), |el| {
-                el.child(
-                    // The voice button floats inside the input's right edge. The
-                    // input reserves matching trailing space for it.
-                    div()
-                        .debug_selector(|| "composer-text-slot".into())
-                        .relative()
-                        .w_full()
-                        .min_w_0()
-                        .child(self.render_voice_input_slot(cx))
-                        .when(!hide_voice, |el| {
-                            el.child(
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .bottom_0()
-                                    .right(px(VOICE_INSET))
-                                    .flex()
-                                    .items_center()
-                                    .child(self.render_voice_tab(cx)),
-                            )
-                        }),
-                )
-            })
+            .when(
+                self.ask_card.is_none() && self.routing_gate.is_none(),
+                |el| {
+                    el.child(
+                        // The voice button floats inside the input's right edge. The
+                        // input reserves matching trailing space for it.
+                        div()
+                            .debug_selector(|| "composer-text-slot".into())
+                            .relative()
+                            .w_full()
+                            .min_w_0()
+                            .child(self.render_voice_input_slot(cx))
+                            .when(!hide_voice, |el| {
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .right(px(VOICE_INSET))
+                                        .flex()
+                                        .items_center()
+                                        .child(self.render_voice_tab(cx)),
+                                )
+                            }),
+                    )
+                },
+            )
             .child(pills)
             .into_any_element()
     }
@@ -336,6 +369,7 @@ impl Panel {
         &self,
         model_label: String,
         effort: Option<String>,
+        account_icon: Option<String>,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         const MODEL_MIN: f32 = 56.;
@@ -346,11 +380,28 @@ impl Panel {
         let speed = self.visible_speed();
         let accelerated = speed != jcode_provider_core::SpeedMode::Standard;
         let speed_width = if accelerated { 24. } else { 0. };
+        // The serving account's icon leads the model when the provider has
+        // several accounts; the name truncates, the icon never wraps.
         let name = div()
-            .debug_selector(|| "panel-model-name".into())
+            .flex()
+            .items_center()
+            .gap_1()
             .min_w_0()
-            .truncate()
-            .child(model_label);
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .children(account_icon.map(|icon| {
+                div()
+                    .debug_selector(|| "panel-model-account-icon".into())
+                    .flex_none()
+                    .child(icon)
+            }))
+            .child(
+                div()
+                    .debug_selector(|| "panel-model-name".into())
+                    .min_w_0()
+                    .truncate()
+                    .child(model_label),
+            );
         div()
             .debug_selector(|| "panel-model-control".into())
             .flex()
@@ -449,7 +500,8 @@ impl Panel {
                                 panel.read(cx).speed_picker().tooltip
                             )
                         });
-                        cx.new(|_| crate::components::Tooltip::header_text(tooltip)).into()
+                        cx.new(|_| crate::components::Tooltip::header_text(tooltip))
+                            .into()
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.choose_speed(jcode_provider_core::SpeedMode::Standard, cx);
@@ -697,7 +749,6 @@ impl Render for LocationTooltip {
     }
 }
 
-
 impl Panel {
     /// Chat panels on this computer can pick another folder from the pill.
     fn offers_directory_switch(&self) -> bool {
@@ -752,7 +803,6 @@ impl Panel {
     }
 }
 
-
 // The segment owns hover, click and focus. Its absolute fill follows the
 // content width without growing the layout or taking any event handlers.
 fn composer_hover_content(group: &'static str, pad: f32) -> gpui::Div {
@@ -770,7 +820,6 @@ fn composer_hover_content(group: &'static str, pad: f32) -> gpui::Div {
             .group_hover(group, |el| el.bg(Theme::global().chip_active_background())),
     )
 }
-
 
 /// Last path component. The full path is kept in the hover card.
 fn location_label(path: &str) -> String {
@@ -941,8 +990,8 @@ mod tests {
         cx.update(crate::input::bind_keys);
         cx.update(super::super::shortcuts::bind_keys);
         let (bridge, _) = crate::harness::spawn_recording();
-        let (panel, vcx) = cx
-            .add_window_view(|_, cx| Panel::new("model-search".into(), None, None, bridge, cx));
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new("model-search".into(), None, None, bridge, cx));
         vcx.update(|_, cx| Panel::connect_input(&panel, cx));
         panel.update(vcx, |panel, cx| {
             panel.model = Some("gpt-5.6-sol".into());
@@ -1097,11 +1146,7 @@ mod tests {
                 "only the pill gap follows mode"
             );
             assert_eq!(model.left(), control.left());
-            assert_eq!(
-                model.right(),
-                effort.left(),
-                "segments share one surface"
-            );
+            assert_eq!(model.right(), effort.left(), "segments share one surface");
             assert_eq!(effort.right(), control.right());
             assert!(name.right() <= model.right());
             assert!(control.right() <= context.left());
@@ -1168,5 +1213,100 @@ mod tests {
                 }
             }
         }
+    }
+    fn claude_routes(labels: &[&str], icons: bool) -> Vec<jcode_sdk::ModelRouteInfo> {
+        labels
+            .iter()
+            .map(|label| jcode_sdk::ModelRouteInfo {
+                account: Some(format!("claude:{label}")),
+                icon: icons.then(|| jcode_session_types::account_icon::account_icon(label, None)),
+                speed_options: Vec::new(),
+                reasoning_efforts: None,
+                model: "claude-opus-4-8".into(),
+                provider: "Anthropic".into(),
+                api_method: format!("claude-oauth@{label}"),
+                available: true,
+                detail: String::new(),
+                usage: None,
+            })
+            .collect()
+    }
+
+    /// With several accounts of the provider the chip names the serving one by
+    /// its icon, before the model; with one account it stays the bare model.
+    /// The chip never wraps: the name truncates, the icon stays on its line.
+    #[gpui::test]
+    fn the_model_chip_leads_with_the_serving_accounts_icon_only_among_several(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        for (labels, shows_icon) in [
+            (&["claude-fox"][..], false),
+            (&["claude-otter", "claude-fox"][..], true),
+        ] {
+            panel.update(vcx, |panel, cx| {
+                // The runtime names its provider differently from the catalog.
+                panel.provider = Some("Claude".into());
+                panel.model = Some("claude-opus-4-8".into());
+                panel.account_label = Some("claude-otter".into());
+                panel.input.update(cx, |input, cx| {
+                    input.set_model_routes(
+                        Vec::new(),
+                        &claude_routes(labels, labels.len() > 1),
+                        Some("claude-opus-4-8".into()),
+                        cx,
+                    )
+                });
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let pill = vcx.debug_bounds("panel-model").expect("model pill");
+            let name = vcx.debug_bounds("panel-model-name").expect("model name");
+            match vcx.debug_bounds("panel-model-account-icon") {
+                Some(icon) => {
+                    assert!(shows_icon, "one account shows no icon");
+                    assert!(icon.right() <= name.left(), "icon first: {icon:?} {name:?}");
+                    assert!(icon.left() >= pill.left() && icon.right() <= pill.right());
+                    assert!(
+                        icon.top() < name.bottom() && name.top() < icon.bottom(),
+                        "icon and model share one line"
+                    );
+                }
+                None => assert!(
+                    !shows_icon,
+                    "several accounts show the serving account's icon"
+                ),
+            }
+        }
+    }
+
+    /// The routing status names the serving account when the runtime does not.
+    #[gpui::test]
+    fn the_routing_chips_account_picks_the_icon_in_the_model_chip(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.provider = Some("Anthropic".into());
+            panel.model = Some("claude-opus-4-8".into());
+            panel.input.update(cx, |input, cx| {
+                input.set_model_routes(
+                    Vec::new(),
+                    &claude_routes(&["claude-otter", "claude-fox"], true),
+                    Some("claude-opus-4-8".into()),
+                    cx,
+                )
+            });
+            panel.routing_chip = crate::routing::RoutingChip::new(
+                "claude:claude-fox".into(),
+                "priority 1".into(),
+                Vec::new(),
+                None,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, cx| {
+            assert_eq!(panel.serving_account_icon(cx).as_deref(), Some("🦊"));
+        });
+        assert!(vcx.debug_bounds("panel-model-account-icon").is_some());
     }
 }

@@ -866,7 +866,8 @@ fn usage_provider_matches(account: &Account, provider_name: &str) -> bool {
 /// The provider's logo, tinted at paint time by the element's text color.
 /// Logos are vendored from lobehub's MIT-licensed icon set (see
 /// assets/icons/LICENSE); providers without a recognizable mark fall back to
-/// a lettermark drawn by the caller.
+/// a lettermark drawn by the caller. OpenCode's own mark is a bare frame that
+/// reads as a missing glyph at 12px, so it takes the lettermark too.
 pub fn logo(provider_id: &str) -> Option<&'static [u8]> {
     macro_rules! icon {
         ($name:literal) => {
@@ -882,7 +883,6 @@ pub fn logo(provider_id: &str) -> Option<&'static [u8]> {
         "google" => icon!("google"),
         "copilot" => icon!("githubcopilot"),
         "openrouter" => icon!("openrouter"),
-        "opencode" | "opencode-go" => icon!("opencode"),
         "bedrock" => icon!("bedrock"),
         "azure" => icon!("azure"),
         "cursor" => icon!("cursor"),
@@ -964,12 +964,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opencode_go_is_a_full_account_with_a_logo_and_quota_windows() {
+    fn opencode_go_is_a_full_account_with_a_lettermark_and_quota_windows() {
         assert!(
-            logo("opencode-go").is_some(),
-            "OpenCode Go has a brand mark"
+            logo("opencode-go").is_none() && logo("opencode").is_none(),
+            "OpenCode's bare frame reads as a missing glyph, so it takes the lettermark"
         );
-        assert!(logo("opencode").is_some(), "OpenCode Zen shares the mark");
         let mut accounts = parse(
             r#"{"providers":[{"id":"opencode-go","display_name":"OpenCode Go","status":"available",
                 "method":"API key (`OPENCODE_GO_API_KEY`)","auth_kind":"API key"}]}"#,

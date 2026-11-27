@@ -208,10 +208,8 @@ pub(crate) fn quota_card(account: &Account, chip: &QuotaChip) -> LimitsTooltip {
         notes.push("Cached usage".into());
     }
     LimitsTooltip {
-        icon: chip
-            .account
-            .as_deref()
-            .map(|label| jcode_session_types::account_icon::account_icon(label, None)),
+        // The caller names the login's icon where it tells logins apart.
+        icon: None,
         method,
         summary,
         notes,
@@ -219,8 +217,13 @@ pub(crate) fn quota_card(account: &Account, chip: &QuotaChip) -> LimitsTooltip {
 }
 
 impl QuotaChip {
+    /// The figure alone (`74%`): the chip is a glyph and a number. The word that
+    /// says whether it is what is left or what is used lives in the hover card.
     pub(crate) fn label(&self) -> String {
-        self.value.clone()
+        match self.value.split_once(' ') {
+            Some((figure, _)) => figure.to_owned(),
+            None => self.value.clone(),
+        }
     }
 }
 
@@ -785,7 +788,10 @@ mod tests {
         let chip = quota_chips(&accounts).remove(0);
         let card = quota_card(&accounts[0], &chip);
         assert_eq!(card.method, "Anthropic · OAuth · claude-otter");
-        assert_eq!(card.icon.as_deref(), Some("🦦"), "the login's icon leads the card");
+        assert_eq!(
+            card.icon, None,
+            "the caller names the icon where logins need telling apart"
+        );
         assert!(
             card.notes
                 .iter()
@@ -827,7 +833,7 @@ mod tests {
         let labels: Vec<_> = chips.iter().map(|c| (c.logo, c.label())).collect();
         assert_eq!(
             labels,
-            vec![("claude", "72% left".into()), ("openai", "1% left".into())]
+            vec![("claude", "72%".into()), ("openai", "1%".into())]
         );
         assert_eq!(quota_chips_with(&accounts, true)[0].value, "28% used");
         assert!(chips[0].detail.iter().all(|line| line.contains("% left")));
@@ -1449,7 +1455,7 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                ("opencode-go", "77% left".to_string()),
+                ("opencode-go", "77%".to_string()),
                 ("openrouter", "$12.34".to_string())
             ]
         );

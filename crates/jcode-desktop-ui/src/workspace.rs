@@ -1326,7 +1326,6 @@ impl Render for Workspace {
                         } else {
                             sidebar_chrome.into_any_element()
                         })
-                        .child(self.render_sidebar_resize_handle(cx))
                     })
                     .child(
                         div()
@@ -1378,6 +1377,11 @@ impl Render for Workspace {
                         body.child(div().h_full().flex_none().pt(px(if cfg!(target_os = "macos") {
                             STRIP_PADDING_TOP + FOLDER_CONTENT_INSET
                         } else { 0.0 })).child(files))
+                    })
+                    // Last, so it paints and hit-tests above the canvas, its
+                    // panels and the floating chrome, none of which may cover the edge.
+                    .when(self.show_sidebar && !compact, |body| {
+                        body.child(self.render_sidebar_resize_handle(cx))
                     }),
             )
             .children(window_tab_bar)
