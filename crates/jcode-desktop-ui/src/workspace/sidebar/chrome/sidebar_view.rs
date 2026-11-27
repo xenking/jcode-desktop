@@ -744,7 +744,7 @@ impl Workspace {
             list = list.child(empty);
         }
         for machine in machines_above {
-            list = list.child(self.render_machine_header(machine, cx));
+            list = list.child(self.render_machine_header(machine, true, cx));
         }
         if !self.sidebar_selection.is_empty() {
             list = list.child(
@@ -800,9 +800,10 @@ impl Workspace {
                                 .flex_col()
                                 .relative()
                                 .when(sidebar_index == 0, |el| el.pt_2())
-                                .when(sidebar_index + 1 == ordered_sessions.len(), |el| el.pb_2());
+                                .when(sidebar_index + 1 == ordered_sessions.len(), |el| el.pb_2())
+                                .when(this.machine_offline(this.session_machine(session)), |el| el.opacity(0.55));
                             if let Some(machine) = row.machine_header {
-                                list = list.child(this.render_machine_header(machine, cx));
+                                list = list.child(this.render_machine_header(machine, false, cx));
                             }
                             if row.header {
                                 let (project, _, count) = &groups[row.project];
@@ -1190,7 +1191,7 @@ impl Workspace {
             ));
         }
         for machine in machines_below {
-            list = list.child(self.render_machine_header(machine, cx));
+            list = list.child(self.render_machine_header(machine, true, cx));
         }
 
         if self.sidebar_session_layout.is_empty() {

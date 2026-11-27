@@ -20,7 +20,20 @@ impl Workspace {
     /// A machine's heading in the session list: its name and link status, and
     /// its four workspaces. A machine that is not connected shows dimmed. The
     /// sessions under it are the list's own rows, never repeated here.
-    pub(super) fn render_machine_header(&self, space: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+    /// Whether a machine's link is down or unusable, so its content shows dimmed.
+    pub(super) fn machine_offline(&self, space: usize) -> bool {
+        let Some(host) = self.row_host(space * ROWS_PER_SPACE) else {
+            return false;
+        };
+        matches!(
+            self.remotes.machine_status.get(host),
+            Some(machines::MachineStatus::Lost | machines::MachineStatus::NeedsUpdate)
+        )
+    }
+
+    /// `dim` is false where the caller dims the header together with the rows
+    /// that belong to it, so it is not dimmed twice.
+    pub(super) fn render_machine_header(&self, space: usize, dim: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
         let first = space * ROWS_PER_SPACE;
         let host = self.row_host(first);
@@ -34,11 +47,7 @@ impl Workspace {
                 .filter(|link| *link == machines::MachineStatus::NeedsUpdate),
         };
         let status = link.map(machines::MachineStatus::label);
-        let offline = host.is_some()
-            && matches!(
-                link,
-                Some(machines::MachineStatus::Lost | machines::MachineStatus::NeedsUpdate)
-            );
+        let offline = dim && self.machine_offline(space);
         let pills = (0..ROWS_PER_SPACE).map(|offset| {
             let row = first + offset;
             let active = row == self.active_row;

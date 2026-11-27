@@ -467,6 +467,28 @@ mod tests {
     }
 
     #[gpui::test]
+    fn only_a_lost_or_outdated_machines_content_is_dimmed(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = sectioned_workspace(cx, &["work"]);
+        let host = workspace.read_with(vcx, |w, _| w.remotes.paired[0].host());
+        let offline = |vcx: &mut gpui::VisualTestContext, space: usize| {
+            workspace.read_with(vcx, |w, _| w.machine_offline(space))
+        };
+        assert!(!offline(vcx, 1));
+        for (status, dimmed) in [
+            (machines::MachineStatus::Connecting, false),
+            (machines::MachineStatus::Connected, false),
+            (machines::MachineStatus::Lost, true),
+            (machines::MachineStatus::NeedsUpdate, true),
+        ] {
+            workspace.update(vcx, |w, _| {
+                w.remotes.machine_status.insert(host.clone(), status);
+            });
+            assert_eq!(offline(vcx, 1), dimmed, "{status:?}");
+        }
+        assert!(!offline(vcx, 0), "this machine is never dimmed");
+    }
+
+    #[gpui::test]
     fn link_results_set_the_machine_status_shown_in_its_header(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = sectioned_workspace(cx, &["work"]);
         let host = workspace.read_with(vcx, |w, _| w.remotes.paired[0].host());
