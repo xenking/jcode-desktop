@@ -255,6 +255,7 @@ mod image_preview;
 mod latest;
 #[path = "panel/login/panel_login.rs"]
 mod login;
+#[cfg(test)]
 pub(crate) use login::EmptyModels;
 #[path = "panel/transcript/render/state/panel_preview.rs"]
 mod preview;

@@ -59,7 +59,7 @@ impl Workspace {
                 self.remotes.path_inputs.insert(host, input);
             }
         }
-        publish_paired_labels(&self.remotes.paired);
+        paired::publish_labels(&self.remotes.paired);
     }
 
     /// Where new sessions start on a paired machine. Never a local path.

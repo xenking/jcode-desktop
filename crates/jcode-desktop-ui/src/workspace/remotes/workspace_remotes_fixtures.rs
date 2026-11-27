@@ -1,5 +1,4 @@
 //! Screenshot fixtures for the machines panel.
-use super::machines::publish_paired_labels;
 use super::*;
 use crate::managed_cloud::RegisteredMachine;
 use jcode_desktop_harness::paired;
@@ -39,7 +38,7 @@ impl Workspace {
             paired("dd", "personal", "personal.tailnet.example", "/Users/me/notes"),
         ];
         self.remotes.default_host = Some("cloud:ai-core".into());
-        publish_paired_labels(&self.remotes.paired);
+        paired::publish_labels(&self.remotes.paired);
         let failure = |kind: jcode_sdk::PairedFailure| {
             crate::connect_failure::ConnectFailure::from_error(&jcode_sdk::Error::new(
                 jcode_sdk::ErrorKind::Paired(kind),

@@ -13,6 +13,33 @@ pub struct Destination {
     pub working_dir: String,
 }
 
+// Labels of paired machines, so every surface names one by what the owner
+// called it and never by its internal `paired:<id>`. Per thread: the UI thread
+// publishes and reads them all, and a process-wide list let parallel tests
+// overwrite each other's machines.
+thread_local! {
+    static LABELS: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub fn publish_labels(paired: &[Destination]) {
+    LABELS.with_borrow_mut(|labels| {
+        *labels = paired.iter().map(|d| (d.host(), d.label.clone())).collect();
+    });
+}
+
+/// The owner's name for a paired destination; `None` for any other host. A
+/// machine unpaired since a session was saved still reads as a machine, never as its id.
+pub fn label(host: &str) -> Option<String> {
+    crate::remote_targets::paired_id(host)?;
+    Some(LABELS.with_borrow(|labels| {
+        labels
+            .iter()
+            .find(|(known, _)| known == host)
+            .map_or_else(|| "Paired machine".to_owned(), |(_, label)| label.clone())
+    }))
+}
+
 impl Destination {
     pub fn new(endpoint: &str, label: &str, working_dir: &str) -> Result<Self, String> {
         Self::with_id(

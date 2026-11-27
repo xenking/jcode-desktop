@@ -62,9 +62,9 @@ fn labels_published_by_another_thread_never_rename_this_threads_machine() {
         label: label.into(),
         working_dir: "/work/default".into(),
     };
-    machines::publish_paired_labels(&[destination("WORK")]);
+    jcode_desktop_harness::paired::publish_labels(&[destination("WORK")]);
     // A parallel test building its own workspace publishes its own machines.
-    std::thread::spawn(|| machines::publish_paired_labels(&[]))
+    std::thread::spawn(|| jcode_desktop_harness::paired::publish_labels(&[]))
         .join()
         .unwrap();
     assert_eq!(machines::machine_label(WORK_HOST), "WORK");

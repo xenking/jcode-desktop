@@ -55,13 +55,6 @@ impl Panel {
         (pretty_model_label(model), effort)
     }
 
-    /// The machine a remote session runs on, by the name its owner gave it.
-    /// Never the internal destination id.
-    pub(crate) fn remote_machine_label(&self) -> Option<String> {
-        crate::harness::remote_host(&self.session_id)
-            .map(|host| crate::workspace::machines::machine_label(&host))
-    }
-
     /// The one-line notice for a remote session whose connection dropped.
     pub(crate) fn remote_lost_notice(&self) -> Option<String> {
         let reason = self.status.strip_prefix("lost:")?.trim();

@@ -17,7 +17,7 @@ fn publish(label: Option<&str>) {
         })
         .into_iter()
         .collect();
-    machines::publish_paired_labels(&machines);
+    jcode_desktop_harness::paired::publish_labels(&machines);
 }
 
 #[test]

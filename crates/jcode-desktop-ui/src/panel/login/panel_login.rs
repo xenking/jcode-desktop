@@ -186,6 +186,15 @@ impl Panel {
         }
     }
 
+    /// The machine a remote session runs on, by the name its owner gave it.
+    /// Never the internal destination id.
+    pub(crate) fn remote_machine_label(&self) -> Option<String> {
+        let host = crate::harness::remote_host(&self.session_id)?;
+        Some(jcode_desktop_harness::paired::label(&host).unwrap_or_else(|| {
+            crate::managed_cloud::Destination::parse(&host).map_or(host.clone(), |cloud| cloud.label().to_owned())
+        }))
+    }
+
     pub(crate) fn empty_models_message(&self) -> String {
         let machine = self.remote_machine_label();
         let on = machine.as_deref().map(|name| format!(" on {name}")).unwrap_or_default();
