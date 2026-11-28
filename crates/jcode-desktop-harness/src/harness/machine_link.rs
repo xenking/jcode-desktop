@@ -22,6 +22,12 @@ use crate::harness::updates::UpdateSender;
 /// The one space every Desktop of a machine shares in that machine's daemon.
 const SPACE: &str = "desktop";
 
+/// How often a paired machine is asked which sessions it has.
+const DISCOVER_EVERY: Duration = Duration::from_secs(20);
+
+/// The newest sessions a paired machine lists, as the local catalog does.
+const DISCOVER_LIMIT: u32 = 100;
+
 /// How long a daemon without Desktop state waits before being asked again, in
 /// case its owner has updated Jcode there meanwhile.
 const RECHECK_UNSUPPORTED: Duration = Duration::from_secs(30);
@@ -46,6 +52,7 @@ pub(super) struct MachineLinks {
     device: String,
     options: SyncOptions,
     recheck: Duration,
+    discover_every: Duration,
 }
 
 impl MachineLinks {
@@ -67,7 +74,14 @@ impl MachineLinks {
             ),
             options,
             recheck,
+            discover_every: DISCOVER_EVERY,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn discovering_every(mut self, every: Duration) -> Self {
+        self.discover_every = every;
+        self
     }
 
     /// Start the link to `host` unless it is running. `connect` makes one new
@@ -90,6 +104,21 @@ impl MachineLinks {
             writer: Arc::clone(&link.writer),
             stop: Arc::clone(&link.stop),
         };
+        if let Some(paired) = host.clone() {
+            // The machine's own sessions, so its section lists what it has and
+            // not only what is open here. Failures are reported, not hidden.
+            let discover = Discover {
+                host: paired,
+                connect: Arc::clone(&run.connect),
+                updates: self.updates.clone(),
+                every: self.discover_every,
+                stop: Arc::clone(&link.stop),
+            };
+            std::thread::Builder::new()
+                .name("jcode-machine-sessions".into())
+                .spawn(move || discover.run())
+                .expect("spawn machine session discovery thread");
+        }
         std::thread::Builder::new()
             .name("jcode-machine-link".into())
             .spawn(move || run.supervise())
@@ -219,6 +248,47 @@ impl Run {
             };
             if !delivered {
                 return false;
+            }
+        }
+    }
+}
+
+/// Lists a paired machine's sessions now and then, each time on a new
+/// connection, and reports every outcome.
+struct Discover {
+    host: String,
+    connect: Connector,
+    updates: UpdateSender,
+    every: Duration,
+    stop: Arc<AtomicBool>,
+}
+
+impl Discover {
+    fn run(self) {
+        let address = crate::harness::remote::SessionAddress {
+            host: Some(self.host.clone()),
+            session_id: String::new(),
+        };
+        while !self.stop.load(Ordering::Acquire) {
+            let result = (self.connect)()
+                .and_then(|client| client.list_sessions_limited(DISCOVER_LIMIT))
+                .map(|sessions| {
+                    sessions
+                        .into_iter()
+                        .map(|session| address.session_info(session))
+                        .collect()
+                })
+                .map_err(|error| error.to_string());
+            let delivered = self.updates.send(Update::MachineSessions {
+                host: self.host.clone(),
+                result,
+            });
+            if delivered.is_err() {
+                return;
+            }
+            let until = Instant::now() + self.every;
+            while Instant::now() < until && !self.stop.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(100));
             }
         }
     }

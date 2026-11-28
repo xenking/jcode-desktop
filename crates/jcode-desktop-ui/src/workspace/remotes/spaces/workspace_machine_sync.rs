@@ -386,6 +386,45 @@ impl Workspace {
         cx.notify();
     }
 
+    /// A paired machine's own session list arrived, or could not be read.
+    /// The list shows in the sidebar next to the local one; a failure keeps
+    /// what was known and says so in the machine's header.
+    pub(super) fn apply_machine_sessions_listing(
+        &mut self,
+        host: String,
+        result: Result<Vec<jcode_sdk::SessionInfo>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(listed) => {
+                self.remotes.listing_failed.remove(&host);
+                self.remotes.machine_sessions.insert(host.clone(), listed);
+                // Replace the machine's rows, keeping sessions open as panels
+                // that the (bounded) listing did not name.
+                let open: std::collections::HashSet<String> = self
+                    .slots
+                    .iter()
+                    .filter_map(|slot| slot.panel.read_chat(cx).map(|panel| panel.session_id.clone()))
+                    .collect();
+                let listed = &self.remotes.machine_sessions[&host];
+                self.sessions.retain(|session| {
+                    crate::harness::remote_host(&session.session_id).as_deref() != Some(&host)
+                        || open.contains(&session.session_id)
+                });
+                for session in listed {
+                    match self.sessions.iter_mut().find(|known| known.session_id == session.session_id) {
+                        Some(known) => *known = session.clone(),
+                        None => self.sessions.push(session.clone()),
+                    }
+                }
+            }
+            Err(error) => {
+                self.remotes.listing_failed.insert(host, error);
+            }
+        }
+        cx.notify();
+    }
+
     pub(super) fn apply_machine_state(&mut self, host: Option<String>, event: MachineStateEvent, cx: &mut Context<Self>) {
         let agreed = self.agreed(host.as_deref());
         let machine = self.machine_sync.machines.entry(host.clone()).or_insert_with(|| MachineSync::new(agreed));

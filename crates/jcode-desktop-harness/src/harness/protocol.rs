@@ -61,6 +61,12 @@ pub enum Update {
         host: Option<String>,
         status: LinkStatus,
     },
+    /// The sessions a paired machine reports, addressed as that machine's own
+    /// (`paired://<id>/<session>`), or why they could not be listed.
+    MachineSessions {
+        host: String,
+        result: Result<Vec<SessionInfo>, String>,
+    },
     MachineState {
         host: Option<String>,
         event: MachineStateEvent,

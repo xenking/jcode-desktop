@@ -46,7 +46,10 @@ impl Workspace {
                 .local_link
                 .filter(|link| *link == machines::MachineStatus::NeedsUpdate),
         };
-        let status = link.map(machines::MachineStatus::label);
+        // A machine that answers but cannot list its sessions shows only what is
+        // open here, so say so instead of looking complete.
+        let listing_failed = host.is_some_and(|host| self.remotes.listing_failed.contains_key(host));
+        let status = link.map(|link| link.header_label(listing_failed));
         let offline = dim && self.machine_offline(space);
         let pills = (0..ROWS_PER_SPACE).map(|offset| {
             let row = first + offset;

@@ -415,6 +415,73 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_paired_machines_own_sessions_join_the_list_and_survive_a_local_refresh(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = sectioned_workspace(cx, &["work"]);
+        let host = workspace.read_with(vcx, |w, _| w.remotes.paired[0].host());
+        let ids: Vec<String> = ["one", "two", "three"]
+            .iter()
+            .map(|name| format!("paired://{}/{name}", "0a".repeat(16)))
+            .collect();
+        workspace.update(vcx, |w, cx| {
+            let listed = ids.iter().map(|id| crate::workspace::tests::session_info(id, Some(id))).collect();
+            w.apply(Update::MachineSessions { host: host.clone(), result: Ok(listed) }, cx);
+        });
+        workspace.read_with(vcx, |w, _| {
+            for id in &ids {
+                let session = w.sessions.iter().find(|s| &s.session_id == id).expect("listed");
+                assert_eq!(w.session_machine(session), 1, "under the machine's own heading");
+            }
+        });
+        // The local catalog refreshes every few seconds and knows nothing of them.
+        workspace.update(vcx, |w, cx| {
+            let local = vec![crate::workspace::tests::session_info("local session", Some("local"))];
+            w.apply(Update::Sessions { sessions: local }, cx);
+        });
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.sessions.len(), 4);
+            assert!(ids.iter().all(|id| w.sessions.iter().any(|s| &s.session_id == id)));
+        });
+        // A machine that stops listing a session stops showing it.
+        workspace.update(vcx, |w, cx| {
+            let listed = vec![crate::workspace::tests::session_info(&ids[0], Some("one"))];
+            w.apply(Update::MachineSessions { host: host.clone(), result: Ok(listed) }, cx);
+        });
+        workspace.read_with(vcx, |w, _| assert_eq!(w.sessions.len(), 2));
+    }
+
+    #[gpui::test]
+    fn a_failed_listing_keeps_what_was_known_and_names_the_failure_in_the_header(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = sectioned_workspace(cx, &["work"]);
+        let host = workspace.read_with(vcx, |w, _| w.remotes.paired[0].host());
+        let id = format!("paired://{}/one", "0a".repeat(16));
+        workspace.update(vcx, |w, cx| {
+            w.remotes.machine_status.insert(host.clone(), machines::MachineStatus::Connected);
+            let listed = vec![crate::workspace::tests::session_info(&id, Some("one"))];
+            w.apply(Update::MachineSessions { host: host.clone(), result: Ok(listed) }, cx);
+            w.apply(
+                Update::MachineSessions { host: host.clone(), result: Err("disconnected: harness API stream closed".into()) },
+                cx,
+            );
+        });
+        workspace.read_with(vcx, |w, _| {
+            assert!(w.sessions.iter().any(|s| s.session_id == id), "the known list stays");
+            assert!(w.remotes.listing_failed.contains_key(&host));
+        });
+        assert_eq!(machines::MachineStatus::Connected.header_label(true), "Can't list sessions");
+        assert_eq!(machines::MachineStatus::Connected.header_label(false), "Connected");
+        assert_eq!(machines::MachineStatus::Lost.header_label(true), "Lost connection");
+        // The next listing that works clears it.
+        workspace.update(vcx, |w, cx| {
+            w.apply(Update::MachineSessions { host: host.clone(), result: Ok(Vec::new()) }, cx);
+        });
+        workspace.read_with(vcx, |w, _| assert!(w.remotes.listing_failed.is_empty()));
+    }
+
+    #[gpui::test]
     fn a_machine_with_no_sessions_still_shows_its_workspaces(cx: &mut gpui::TestAppContext) {
         let (_, vcx) = sectioned_workspace(cx, &["work"]);
         assert!(vcx.debug_bounds("space-section-1").is_some());

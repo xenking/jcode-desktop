@@ -102,6 +102,15 @@ pub(super) enum MachineStatus {
 }
 
 impl MachineStatus {
+    /// What a machine's header says: its link, except that a connected machine
+    /// whose sessions cannot be listed must not look complete.
+    pub(super) fn header_label(self, listing_failed: bool) -> &'static str {
+        match self {
+            Self::Connected if listing_failed => "Can't list sessions",
+            other => other.label(),
+        }
+    }
+
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Connecting => "Connecting…",
@@ -146,6 +155,12 @@ pub(super) struct Machines {
     pub(super) reachable: std::collections::HashSet<String>,
     /// The last known link state per paired machine host.
     pub(super) machine_status: std::collections::HashMap<String, MachineStatus>,
+    /// What each paired machine last reported as its sessions, addressed as
+    /// that machine's own.
+    pub(super) machine_sessions: std::collections::HashMap<String, Vec<jcode_sdk::SessionInfo>>,
+    /// Paired machines whose last listing failed, with the cause. The sessions
+    /// shown for such a machine are what was known before.
+    pub(super) listing_failed: std::collections::HashMap<String, String>,
     /// The link to this machine's own daemon.
     pub(super) local_link: Option<MachineStatus>,
     /// The machine the current `status` line is about.

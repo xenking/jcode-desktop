@@ -34,6 +34,9 @@ pub(super) struct FakeDaemon {
     store: Arc<Mutex<Store>>,
     modern: Arc<AtomicBool>,
     refusing: Arc<AtomicBool>,
+    /// What `list_sessions` answers; `None` cuts the connection instead, as a
+    /// daemon whose list request dies does.
+    sessions: Arc<Mutex<Option<Vec<String>>>>,
 }
 
 struct Pipe(UnixStream);
@@ -66,7 +69,13 @@ impl FakeDaemon {
             store: Arc::default(),
             modern: Arc::new(AtomicBool::new(modern)),
             refusing: Arc::default(),
+            sessions: Arc::new(Mutex::new(Some(Vec::new()))),
         }
+    }
+
+    pub(super) fn set_sessions(&self, sessions: Option<Vec<&str>>) {
+        *self.sessions.lock().unwrap() =
+            sessions.map(|ids| ids.into_iter().map(str::to_owned).collect());
     }
 
     pub(super) fn set_modern(&self, modern: bool) {
@@ -202,6 +211,22 @@ impl FakeDaemon {
                         entries,
                     });
                 }
+                ApiRequest::ListSessions { .. } => match self.sessions.lock().unwrap().clone() {
+                    Some(ids) => reply(ApiEvent::Sessions {
+                        sessions: ids
+                            .into_iter()
+                            .map(|id| {
+                                serde_json::from_value(json!({"session_id": id, "status": "idle"}))
+                                    .expect("a minimal session")
+                            })
+                            .collect(),
+                        workers: Default::default(),
+                    }),
+                    None => {
+                        let _ = writer.lock().unwrap().shutdown(std::net::Shutdown::Both);
+                        return;
+                    }
+                },
                 _ => {}
             }
         }
@@ -413,8 +438,68 @@ fn only_the_attached_machine_connects() {
         } => Some(update),
         _ => None,
     });
-    // Attaching twice reuses the link.
+    // Attaching twice reuses the link (and its session discovery).
+    std::thread::sleep(Duration::from_millis(100));
+    let before = b.store.lock().unwrap().next_connection;
+    assert!(before >= 1);
     attach(&mut links, Some("paired:bb"), &b);
     std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(b.store.lock().unwrap().next_connection, 1);
+    assert_eq!(b.store.lock().unwrap().next_connection, before);
+}
+
+const PAIRED: &str = "paired:eae8d012243d4dc59adf08618e8439a6";
+
+#[test]
+fn a_paired_machine_lists_its_own_sessions_addressed_as_its_own() {
+    let daemon = FakeDaemon::new(true);
+    daemon.set_sessions(Some(vec!["session_a", "session_b"]));
+    let (mut links, updates) = links();
+    attach(&mut links, Some(PAIRED), &daemon);
+    let Update::MachineSessions { host, result } = next(&updates, "the listing", |update| {
+        matches!(update, Update::MachineSessions { .. }).then_some(update)
+    }) else {
+        unreachable!()
+    };
+    assert_eq!(host, PAIRED);
+    let ids: Vec<_> = result.unwrap().into_iter().map(|s| s.session_id).collect();
+    assert_eq!(
+        ids,
+        [
+            "paired://eae8d012243d4dc59adf08618e8439a6/session_a",
+            "paired://eae8d012243d4dc59adf08618e8439a6/session_b"
+        ]
+    );
+}
+
+#[test]
+fn a_listing_that_fails_says_so_and_is_tried_again() {
+    let daemon = FakeDaemon::new(true);
+    daemon.set_sessions(None);
+    let (links, updates) = links();
+    let mut links = links.discovering_every(Duration::from_millis(50));
+    attach(&mut links, Some(PAIRED), &daemon);
+    let Update::MachineSessions { result, .. } = next(&updates, "the failed listing", |update| {
+        matches!(update, Update::MachineSessions { .. }).then_some(update)
+    }) else {
+        unreachable!()
+    };
+    assert!(result.unwrap_err().contains("closed"), "the cause is kept");
+    daemon.set_sessions(Some(vec!["session_a"]));
+    next(&updates, "a later listing that works", |update| match update {
+        Update::MachineSessions { result: Ok(ref sessions), .. } if sessions.len() == 1 => Some(update),
+        _ => None,
+    });
+}
+
+#[test]
+fn this_machine_is_not_listed_through_a_link() {
+    // Its sessions come from the local catalog.
+    let daemon = FakeDaemon::new(true);
+    let (mut links, updates) = links();
+    attach(&mut links, None, &daemon);
+    status(&updates, LinkStatus::Connected);
+    std::thread::sleep(Duration::from_millis(300));
+    while let Ok(update) = updates.try_recv() {
+        assert!(!matches!(update, Update::MachineSessions { .. }));
+    }
 }

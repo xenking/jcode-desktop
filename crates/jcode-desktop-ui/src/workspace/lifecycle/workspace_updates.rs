@@ -122,6 +122,13 @@ impl Workspace {
             }
         }
         if let Update::Sessions { sessions } = &mut update {
+            // The local catalog never lists a paired machine's sessions: add
+            // what each machine last reported.
+            for listed in self.remotes.machine_sessions.values().flatten() {
+                if !sessions.iter().any(|s| s.session_id == listed.session_id) {
+                    sessions.push(listed.clone());
+                }
+            }
             self.live_swarm_status.merge_catalog(sessions);
             if same_session_catalog(&self.sessions, sessions) {
                 // Keep exact recency metadata for future changes without
@@ -140,6 +147,10 @@ impl Workspace {
         match update {
             Update::MachineLink { host, status } => {
                 self.apply_machine_link(host, status, cx);
+                return true;
+            }
+            Update::MachineSessions { host, result } => {
+                self.apply_machine_sessions_listing(host, result, cx);
                 return true;
             }
             Update::MachineState { host, event } => {
