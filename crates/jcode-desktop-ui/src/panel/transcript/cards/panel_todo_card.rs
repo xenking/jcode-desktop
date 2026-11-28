@@ -351,6 +351,9 @@ pub(super) enum TodoCardStyle {
 
 /// Rows the pinned summary shows before its body scrolls inside the card.
 const PINNED_TODO_BODY_MAX_HEIGHT: f32 = 100.0;
+/// The soft edge that ends the capped body: one row, so a cut row is never legible.
+const PINNED_TODO_FADE: f32 = 28.0;
+const PINNED_TODO_FADE_SOLID: f32 = 10.0;
 
 /// One group of the card: what its header says and which rows it draws.
 #[derive(Debug)]
@@ -470,6 +473,14 @@ pub(super) fn render_todo_card_with_style(
     };
 
     let sections = todo_sections(&payload.todos, compact);
+    // shortcut: row heights are estimated (the body scrolls, so its true height is
+    // not known here); upgrade to the scroll handle's max offset if this misjudges.
+    let overflows = compact
+        && sections
+            .iter()
+            .map(|s| 16.0 + if s.phase { 14.0 } else { 0.0 } + 20.0 * s.items.len() as f32)
+            .sum::<f32>()
+            > PINNED_TODO_BODY_MAX_HEIGHT;
     let mut body = div()
         .id("todo-card-body-scroll")
         .debug_selector(|| "todo-card-body".into())
@@ -620,6 +631,36 @@ pub(super) fn render_todo_card_with_style(
         body.into_any_element()
     } else {
         crate::transcript_scroll::vertical(body).into_any_element()
+    };
+    // The cap cuts the last row wherever it falls; fade it into the paper rather
+    // than show half a row.
+    let body = if overflows {
+        let paper = Theme::global().prompt_background(0);
+        div()
+            .relative()
+            .child(body)
+            .child(
+                div()
+                    .debug_selector(|| "pinned-todo-fade".into())
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().h(px(PINNED_TODO_FADE - PINNED_TODO_FADE_SOLID)).bg(
+                        gpui::linear_gradient(
+                            0.,
+                            gpui::linear_color_stop(paper, 0.),
+                            gpui::linear_color_stop(paper.opacity(0.), 1.),
+                        ),
+                    ))
+                    // Solid over the sliver of the next row the ramp alone leaves legible.
+                    .child(div().h(px(PINNED_TODO_FADE_SOLID)).bg(paper)),
+            )
+            .into_any_element()
+    } else {
+        body
     };
     if pinned {
         return div()

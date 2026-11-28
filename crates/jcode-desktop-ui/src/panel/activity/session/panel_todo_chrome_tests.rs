@@ -265,3 +265,30 @@ fn the_pinned_card_stays_a_few_rows_tall_however_large_the_plan(cx: &mut gpui::T
         );
     }
 }
+
+#[gpui::test]
+fn a_pinned_card_that_fits_does_not_fade(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.push_test_panel("todo-small", cx);
+        workspace
+    });
+    let panel = workspace
+        .read_with(vcx, |workspace, _| workspace.test_panel(0))
+        .expect("panel exists");
+    panel.update(vcx, |panel, cx| {
+        *panel.items = vec![Item::Todos(TodoCardPayload {
+            todos: vec![
+                item("one", "in_progress", "A", 1),
+                item("two", "pending", "A", 1),
+            ],
+            plan: TodoCardPlan::default(),
+            goals: Vec::new(),
+        })];
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("todo-card-body").is_some());
+    assert!(vcx.debug_bounds("pinned-todo-fade").is_none());
+}
