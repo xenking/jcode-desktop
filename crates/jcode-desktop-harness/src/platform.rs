@@ -240,13 +240,21 @@ pub unsafe fn normalize_runtime_dir() {
 #[cfg(all(test, unix))]
 mod socket_tests {
     use super::*;
-    use std::os::unix::net::UnixListener;
+    use std::os::unix::net::{UnixDatagram, UnixListener};
+
+    /// A socket file that refuses stream connections. A dropped `UnixListener`
+    /// is not deterministic: a child forked by a concurrent test keeps a copy of
+    /// the descriptor until it execs, so the "dead" listener still accepts. A
+    /// bound datagram socket cannot be revived that way.
+    fn stale_socket(path: &Path) {
+        drop(UnixDatagram::bind(path).unwrap());
+    }
 
     #[test]
     fn a_stale_socket_file_is_not_live_and_is_cleared() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("jcode-api.sock");
-        drop(UnixListener::bind(&path).unwrap());
+        stale_socket(&path);
         assert!(path.exists(), "the dead listener leaves its file behind");
         assert!(!socket_live(&path));
         assert!(clear_stale_socket(&path));
@@ -266,7 +274,7 @@ mod socket_tests {
     #[test]
     fn tmpdir_with_a_stale_daemon_socket_falls_back_to_the_live_one() {
         let scratch = tempfile::tempdir().unwrap();
-        drop(UnixListener::bind(scratch.path().join("jcode.sock")).unwrap());
+        stale_socket(&scratch.path().join("jcode.sock"));
         let darwin = tempfile::tempdir().unwrap();
         let _daemon = UnixListener::bind(darwin.path().join("jcode.sock")).unwrap();
         let candidates = vec![darwin.path().to_path_buf()];
