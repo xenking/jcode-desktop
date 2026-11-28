@@ -135,8 +135,10 @@ def main():
                         help="verify visible slash menu selection and overflow scrolling on the private display")
     parser.add_argument("--default-directory-interact", action="store_true",
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
-    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "tool-cards", "tool-cards-details", "external-dm", "external-dm-clean", "btw-normal", "btw-clean", "btw-clean-expanded", "file-mentions", "prompts", "html", "image", "image-prompt", "image-ordinals", "image-ordinals-resolved", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "openrig", "openrig-inspector", "orchestration", "applet"), default="all",
+    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "tool-cards", "tool-cards-details", "external-dm", "external-dm-clean", "btw-normal", "btw-clean", "btw-clean-expanded", "file-mentions", "prompts", "html", "image", "image-prompt", "image-ordinals", "image-ordinals-resolved", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "todos-swarm", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "openrig", "openrig-inspector", "orchestration", "applet"), default="all",
                         help="choose the isolated transcript fixture")
+    parser.add_argument("--todos-file", type=Path,
+                        help="with --transcript todos-swarm: the todo store's JSON array to pin")
     parser.add_argument("--markdown-file", type=Path,
                         help="capture a local file in the native Markdown viewer")
     parser.add_argument("--openrig-attention", choices=("live", "inspector", "confirm"),
@@ -474,7 +476,7 @@ def main():
                         or args.rig_hud or args.transcript in (
                         "openrig", "openrig-inspector", "image-ordinals", "image-ordinals-resolved",
                         "tool-cards", "tool-cards-details", "file-mentions", "external-dm", "external-dm-clean",
-                        "btw-normal", "btw-clean", "btw-clean-expanded",
+                        "btw-normal", "btw-clean", "btw-clean-expanded", "todos-swarm",
                      ))
                     and not any(value for key, value in vars(args).items() if key.endswith("_interact"))
                     and not (args.record or args.focus_panel is not None or args.scroll_up or args.selection_drag))
@@ -589,6 +591,8 @@ def main():
             env["JCODE_DESKTOP_SELF_DEV"] = "1"
         if args.mermaid_source is not None:
             env["JCODE_DESKTOP_SCREENSHOT_MERMAID_SOURCE"] = args.mermaid_source.read_text()
+        if args.todos_file:
+            env["JCODE_DESKTOP_SCREENSHOT_TODOS_FILE"] = str(args.todos_file.resolve())
         if args.markdown_file:
             env["JCODE_DESKTOP_SCREENSHOT_MARKDOWN_FILE"] = str(args.markdown_file.resolve())
         if args.learn_stage is not None:

@@ -6,7 +6,9 @@ use gpui::{
     Context, Entity, FontWeight, ScrollHandle, Subscription, Task, Window, div, prelude::*, px,
 };
 
-use super::{Panel, SessionOpener, TodoCardPayload, render_todo_card_with_style};
+use super::{
+    Panel, SessionOpener, TodoCardPayload, TodoCardStyle, render_todo_card_with_style,
+};
 use crate::harness::{LiveSession, UnfinishedTodo};
 use crate::theme::Theme;
 
@@ -219,7 +221,7 @@ impl Panel {
                     .child(match &focus.plan {
                         FocusedPlan::Ready(payload) => render_todo_card_with_style(
                             payload,
-                            true,
+                            TodoCardStyle::Focused,
                             "orchestration-todos",
                             &self.transcript_selection,
                             window,

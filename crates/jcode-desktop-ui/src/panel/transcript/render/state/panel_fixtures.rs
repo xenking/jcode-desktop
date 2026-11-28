@@ -263,6 +263,48 @@ pub(super) fn demo_items(fixture: Option<&str>) -> Vec<Item> {
             Item::Assistant("The completed header now keeps the task group name. The green dots show that both tasks are complete.".into()),
         ];
     }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("todos-swarm") {
+        // A real swarm plan (JCODE_DESKTOP_SCREENSHOT_TODOS_FILE, the todo store's
+        // JSON array) or, without one, ten finished groups and one with work.
+        let todos = std::env::var_os("JCODE_DESKTOP_SCREENSHOT_TODOS_FILE")
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_else(|| {
+                let item = |content: String, status: &str, group: String| TodoCardItem {
+                    content,
+                    status: status.into(),
+                    group: Some(group),
+                    blocked_by: vec![],
+                    confidence: None,
+                    completion_confidence: None,
+                    stage: Some(6),
+                    assigned_to: Some("session_flamingo_1_a".into()),
+                };
+                let mut todos: Vec<_> = (0..10)
+                    .flat_map(|g| {
+                        (0..3).map(move |n| {
+                            item(
+                                format!("finished step {g}.{n}"),
+                                "completed",
+                                format!("group-{g}"),
+                            )
+                        })
+                    })
+                    .collect();
+                todos.push(item("prototype the bounded timeline".into(), "in_progress", "active".into()));
+                todos.push(item("compare five runs".into(), "pending", "active".into()));
+                todos
+            });
+        return vec![
+            Item::User("Run the whole plan".into()),
+            Item::Todos(TodoCardPayload {
+                todos,
+                plan: TodoCardPlan::default(),
+                goals: Vec::new(),
+            }),
+            Item::Assistant("Working through the plan.".into()),
+        ];
+    }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("prompts") {
         return prompt::fixture_items();
     }

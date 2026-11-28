@@ -857,7 +857,7 @@ impl Render for Panel {
                     .overflow_y_scroll()
                     .child(render_todo_card_with_style(
                         &payload,
-                        true,
+                        TodoCardStyle::Pinned,
                         "pinned-todo",
                         &self.transcript_selection,
                         window,

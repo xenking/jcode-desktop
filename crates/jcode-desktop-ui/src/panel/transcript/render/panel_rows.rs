@@ -792,7 +792,7 @@ impl Panel {
                 .into_any_element(),
             Item::Todos(payload) => render_todo_card_with_style(
                 payload,
-                false,
+                TodoCardStyle::Transcript,
                 &format!("todo-{index}"),
                 &self.transcript_selection,
                 window,
@@ -1189,7 +1189,7 @@ impl Panel {
                             parse_todo_tool_output(output).map(|payload| {
                                 render_todo_card_with_style(
                                     &payload,
-                                    false,
+                                    TodoCardStyle::Transcript,
                                     &format!("todo-{index}"),
                                     &self.transcript_selection,
                                     window,

@@ -70,7 +70,9 @@ pub(super) fn todoist_named_color(color: Option<&str>) -> gpui::Rgba {
 
 /// The evidence state a row's color encodes: what was achieved for completed
 /// work, the planning confidence otherwise.
-pub(super) fn todo_effective_confidence(todo: &TodoCardItem) -> Option<jcode_base::todo::ConfidenceState> {
+pub(super) fn todo_effective_confidence(
+    todo: &TodoCardItem,
+) -> Option<jcode_base::todo::ConfidenceState> {
     if todo.status == "completed" {
         todo.completion_confidence.or(todo.confidence)
     } else {
@@ -337,9 +339,110 @@ pub(super) fn intent_understanding_tone(state: jcode_base::todo::IntentUnderstan
     }
 }
 
+/// Where a todo card is drawn. `Pinned` is the compact summary above the
+/// transcript; `Focused` is the whole plan (orchestration panel); `Transcript`
+/// is the tool-style card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TodoCardStyle {
+    Transcript,
+    Pinned,
+    Focused,
+}
+
+/// Rows the pinned summary shows before its body scrolls inside the card.
+const PINNED_TODO_BODY_MAX_HEIGHT: f32 = 100.0;
+
+/// One group of the card: what its header says and which rows it draws.
+#[derive(Debug)]
+pub(super) struct TodoSection<'a> {
+    pub(super) stage: Option<u32>,
+    pub(super) group: Option<&'a str>,
+    /// First section of its stage; later groups of the same stage say nothing.
+    pub(super) phase: bool,
+    pub(super) done: usize,
+    pub(super) total: usize,
+    pub(super) items: Vec<&'a TodoCardItem>,
+    /// Compact: the one group whose open rows are listed.
+    pub(super) active: bool,
+}
+
+fn todo_is_open(todo: &TodoCardItem) -> bool {
+    !matches!(todo.status.as_str(), "completed" | "cancelled")
+}
+
+/// Groups in stage order. Compact leads with the active group (the first with
+/// work in progress, else the first with open work), lists only its open rows
+/// and keeps every other group to its header line.
+pub(super) fn todo_sections(todos: &[TodoCardItem], compact: bool) -> Vec<TodoSection<'_>> {
+    let mut sections: Vec<TodoSection> = Vec::new();
+    for todo in todos {
+        let group = todo
+            .group
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty());
+        let stage = todo.stage;
+        if let Some(section) = sections
+            .iter_mut()
+            .find(|s| s.stage == stage && s.group == group)
+        {
+            section.items.push(todo);
+        } else {
+            sections.push(TodoSection {
+                stage,
+                group,
+                phase: false,
+                done: 0,
+                total: 0,
+                items: vec![todo],
+                active: false,
+            });
+        }
+    }
+    sections.sort_by_key(|s| (s.stage, s.group.is_none()));
+    for section in &mut sections {
+        section.total = section.items.len();
+        section.done = section
+            .items
+            .iter()
+            .filter(|t| t.status == "completed")
+            .count();
+    }
+    if compact {
+        let active = sections
+            .iter()
+            .position(|s| s.items.iter().any(|t| t.status == "in_progress"))
+            .or_else(|| {
+                sections
+                    .iter()
+                    .position(|s| s.items.iter().any(|t| todo_is_open(t)))
+            });
+        for (index, section) in sections.iter_mut().enumerate() {
+            section.active = Some(index) == active;
+        }
+        if let Some(active) = active {
+            // Work in hand leads, so the cap never hides it behind finished groups.
+            sections[..=active].rotate_right(1);
+        }
+        for section in &mut sections {
+            if section.active {
+                section.items.retain(|t| todo_is_open(t));
+            } else {
+                section.items.clear();
+            }
+        }
+    }
+    let mut last_stage = None;
+    for section in &mut sections {
+        section.phase = section.stage.is_some() && section.stage != last_stage;
+        last_stage = section.stage.or(last_stage);
+    }
+    sections
+}
+
 pub(super) fn render_todo_card_with_style(
     payload: &TodoCardPayload,
-    pinned: bool,
+    style: TodoCardStyle,
     key: &str,
     selection: &Entity<TextSelection>,
     window: &Window,
@@ -358,31 +461,15 @@ pub(super) fn render_todo_card_with_style(
         .iter()
         .filter(|todo| todo.status == "completed")
         .count();
+    let pinned = style != TodoCardStyle::Transcript;
+    let compact = style == TodoCardStyle::Pinned;
     let progress = if total == 0 {
         0.0
     } else {
         completed as f32 / total as f32
     };
 
-    let mut groups: Vec<(Option<u32>, Option<&str>, Vec<&TodoCardItem>)> = Vec::new();
-    for todo in &payload.todos {
-        let group = todo
-            .group
-            .as_deref()
-            .map(str::trim)
-            .filter(|g| !g.is_empty());
-        let stage = todo.stage;
-        if let Some((_, _, items)) = groups
-            .iter_mut()
-            .find(|(known_stage, known, _)| *known_stage == stage && *known == group)
-        {
-            items.push(todo);
-        } else {
-            groups.push((stage, group, vec![todo]));
-        }
-    }
-    groups.sort_by_key(|(stage, group, _)| (*stage, group.is_none()));
-
+    let sections = todo_sections(&payload.todos, compact);
     let mut body = div()
         .id("todo-card-body-scroll")
         .debug_selector(|| "todo-card-body".into())
@@ -390,7 +477,8 @@ pub(super) fn render_todo_card_with_style(
         .flex_col()
         .w_full()
         .gap_0p5()
-        .when(!pinned, |body| body.max_h(px(132.0)));
+        .when(!pinned, |body| body.max_h(px(132.0)))
+        .when(compact, |body| body.max_h(px(PINNED_TODO_BODY_MAX_HEIGHT)));
     if payload.todos.is_empty() {
         body = body.child(
             div()
@@ -400,16 +488,22 @@ pub(super) fn render_todo_card_with_style(
                 .child("No tasks yet. Jcode will populate them as work is planned."),
         );
     } else {
-        for (group_index, (stage, group, todos)) in groups.into_iter().enumerate() {
-            let done = todos
-                .iter()
-                .filter(|todo| todo.status == "completed")
-                .count();
+        let has_any_group = payload.todos.iter().any(|todo| todo.group.is_some());
+        for (group_index, plan_section) in sections.into_iter().enumerate() {
+            let TodoSection {
+                stage,
+                group,
+                phase,
+                done,
+                total: group_total,
+                items: todos,
+                active,
+            } = plan_section;
             // GPUI does not always stretch nested flex rows through a scrolling
             // column. Give every level an explicit width so each row's flex_1
             // text child receives space instead of collapsing to zero width.
             let mut section = div().flex().flex_col().w_full();
-            if let Some(stage) = stage {
+            if let Some(stage) = stage.filter(|_| phase) {
                 section = section.child(
                     div()
                         .debug_selector(move || format!("pinned-todo-phase-{stage}"))
@@ -418,7 +512,6 @@ pub(super) fn render_todo_card_with_style(
                         .child(format!("Phase {stage}")),
                 );
             }
-            let has_any_group = payload.todos.iter().any(|todo| todo.group.is_some());
             if group.is_some() || has_any_group {
                 section = section.child(
                     div()
@@ -434,7 +527,11 @@ pub(super) fn render_todo_card_with_style(
                                 .whitespace_nowrap()
                                 .text_ellipsis()
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(Theme::global().ACCENT_MUTED)
+                                .text_color(if done == group_total {
+                                    Theme::global().TEXT_DIM
+                                } else {
+                                    Theme::global().ACCENT_MUTED
+                                })
                                 .child(text_selection::plain(
                                     selection.clone(),
                                     format!("{key}-group-{group_index}"),
@@ -446,11 +543,13 @@ pub(super) fn render_todo_card_with_style(
                         .child(
                             div()
                                 .text_color(Theme::global().TEXT_FAINT)
-                                .child(format!("{done}/{}", todos.len())),
+                                .child(format!("{done}/{group_total}")),
                         ),
                 );
             }
-            if let Some(goal) = todo_goal_for_group(&payload.goals, group) {
+            if let Some(goal) =
+                todo_goal_for_group(&payload.goals, group).filter(|_| !compact || active)
+            {
                 section = section.child(render_todo_gate_row(goal));
             }
             for (todo_index, todo) in todos.into_iter().enumerate() {
@@ -517,7 +616,7 @@ pub(super) fn render_todo_card_with_style(
         }
     }
 
-    let body = if pinned {
+    let body = if pinned && !compact {
         body.into_any_element()
     } else {
         crate::transcript_scroll::vertical(body).into_any_element()
