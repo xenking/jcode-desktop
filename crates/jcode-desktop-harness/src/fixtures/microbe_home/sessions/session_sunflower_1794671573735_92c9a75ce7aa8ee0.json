@@ -1,0 +1,20 @@
+{
+ "id": "session_sunflower_1794671573735_92c9a75ce7aa8ee0",
+ "parent_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+ "title": "Install mattpocock/skills (https://github.com/mattpocock/ski",
+ "created_at": "2026-11-14T15:52:53.735391Z",
+ "updated_at": "2026-11-14T16:25:46.044448Z",
+ "model_usage_turn_id": "session_sunflower_1794671573735_92c9a75ce7aa8ee0:message_1794671573775_15180261218903008128",
+ "provider_key": "claude-oauth@claude-otter",
+ "model": "claude-opus-5-5",
+ "route_api_method": "claude-oauth@claude-otter",
+ "reasoning_effort": "low",
+ "is_canary": false,
+ "working_dir": "/Users/xenking",
+ "short_name": "sunflower",
+ "status": "Closed",
+ "last_pid": 84375,
+ "last_active_at": "2026-11-14T15:52:53.744020Z",
+ "is_debug": true,
+ "saved": false
+}

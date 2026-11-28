@@ -1,0 +1,425 @@
+//! Startup layout must survive scroll, history timing, reload, and chrome changes.
+use super::*;
+
+fn history(prompt: &str) -> Vec<jcode_sdk::HistoryMessage> {
+    vec![jcode_sdk::HistoryMessage {
+        attachments: Vec::new(),
+        response_stats: None,
+        timestamp_ms: None,
+        tool: None,
+        role: "user".into(),
+        content: prompt.into(),
+    }]
+}
+
+fn focused_startup_panel(
+    cx: &mut gpui::TestAppContext,
+) -> (Entity<Panel>, &mut gpui::VisualTestContext) {
+    cx.update(crate::input::bind_keys);
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new(
+            "startup-lifecycle".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        let focus = panel.read(cx).input.read(cx).editor_focus();
+        window.focus(&focus, cx);
+    });
+    vcx.run_until_parked();
+    (panel, vcx)
+}
+
+#[gpui::test]
+fn startup_tall_prompt_scrolls_in_transcript_and_preserves_position(cx: &mut gpui::TestAppContext) {
+    for discrete in [false, true] {
+        let (panel, vcx) = focused_startup_panel(cx);
+        panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
+        // About scrolling, not typing: commit the 1300-char prompt at once.
+        crate::test_input::commit_text(
+            vcx,
+            &format!("FIRST LINE\n\n{}LAST LINE", "middle line\n\n".repeat(100)),
+        );
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.transcript_list.logical_scroll_top().item_ix, 0);
+            assert_eq!(
+                panel.transcript_list.logical_scroll_top().offset_in_item,
+                px(0.)
+            );
+        });
+        let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
+        assert!(vcx.debug_bounds("prompt-content-0").unwrap().size.height > viewport.size.height);
+        assert!(vcx.debug_bounds("prompt-expand-0").is_none());
+        let transcript_offset = |cx: &gpui::VisualTestContext| {
+            panel.read_with(cx, |panel, _| {
+                let offset = panel.transcript_list.logical_scroll_top();
+                (offset.item_ix, offset.offset_in_item)
+            })
+        };
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: if discrete {
+                gpui::ScrollDelta::Lines(gpui::point(0., -2.))
+            } else {
+                gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-40.)))
+            },
+            ..Default::default()
+        });
+        vcx.run_until_parked();
+        super::scroll_momentum_tests::settle(vcx);
+        let offset = transcript_offset(vcx);
+        assert!(
+            offset.1 > px(0.),
+            "prompt scrolls in transcript (discrete={discrete})"
+        );
+        panel.update(vcx, |panel, cx| {
+            panel.streaming_text = "Answer arrived while reading the beginning".into();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            transcript_offset(vcx),
+            offset,
+            "response stole transcript position"
+        );
+    }
+}
+
+#[gpui::test]
+fn startup_existing_history_has_identical_layout_before_or_after_welcome_paint(
+    cx: &mut gpui::TestAppContext,
+) {
+    let mut bounds = Vec::new();
+    for delayed in [false, true] {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new(
+                "existing-history".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            );
+            if !delayed {
+                panel.load_history(history("Existing conversation"), Vec::new(), cx);
+            }
+            panel
+        });
+        vcx.run_until_parked();
+        if delayed {
+            assert!(vcx.debug_bounds("fresh-session").is_some());
+            panel.update(vcx, |panel, cx| {
+                panel.load_history(history("Existing conversation"), Vec::new(), cx);
+            });
+            vcx.run_until_parked();
+        }
+        assert!(vcx.debug_bounds("fresh-session").is_none());
+        panel.read_with(vcx, |panel, _| {
+            assert!(
+                panel.startup_layout.is_none(),
+                "history timing armed a fresh composer"
+            );
+        });
+        bounds.push((
+            vcx.debug_bounds("prompt-input").unwrap(),
+            vcx.debug_bounds("transcript").unwrap(),
+            vcx.debug_bounds("transcript-row-0").unwrap(),
+        ));
+    }
+    assert_eq!(
+        bounds[0], bounds[1],
+        "existing history layout depends on arrival timing"
+    );
+}
+
+#[gpui::test]
+fn resumed_transcript_keeps_cards_clear_of_the_composer_footer(cx: &mut gpui::TestAppContext) {
+    for (width, height) in [(800., 600.), (1440., 1000.), (640., 480.)] {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new(
+                "composer-spacing".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            );
+            panel.load_history(history(&"Older message\n\n".repeat(100)), Vec::new(), cx);
+            panel.items.push(Item::Error("Last card".into()));
+            panel
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(width), px(height)));
+        vcx.run_until_parked();
+        // The composer floats over the transcript and is measured after
+        // paint. Let the list settle on that padding.
+        panel.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
+        let last_row = vcx.debug_bounds("transcript-row-1").unwrap();
+        let footer = vcx.debug_bounds("panel-meta").unwrap();
+        let input = vcx.debug_bounds("prompt-input").unwrap();
+        assert!(last_row.bottom() <= viewport.bottom() + px(1.));
+        let dock = vcx.debug_bounds("composer-dock").unwrap();
+        assert!(
+            dock.top() - last_row.bottom() >= px(8.),
+            "last card must clear even the veil that intercepts clicks: {last_row:?}, {dock:?}"
+        );
+        let tabs = vcx.debug_bounds("composer-tabs").unwrap();
+        assert!(
+            tabs.top() - last_row.bottom() >= px(8.),
+            "last card must not crowd the composer tabs: {last_row:?}, {tabs:?}"
+        );
+        assert!(footer.top() >= input.bottom());
+        assert!(input.bottom() <= px(height));
+    }
+}
+
+#[gpui::test]
+fn startup_committed_layout_round_trips_reload_and_empty_history_loading_frame(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = focused_startup_panel(cx);
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    let fresh = vcx.debug_bounds("prompt-input").unwrap();
+    vcx.simulate_input("Short first prompt");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    let committed = vcx.debug_bounds("prompt-input").unwrap();
+    // The editor stays where the welcome screen put it, at the same size.
+    assert_eq!(committed, fresh);
+    let fresh = committed;
+    vcx.simulate_input("Unsent followup survives reload");
+    let snapshot = panel.read_with(vcx, |panel, cx| panel.snapshot(cx));
+    let serialized = serde_json::to_vec(&snapshot).unwrap();
+    let snapshot: PanelSnapshot = serde_json::from_slice(&serialized).unwrap();
+    let (restored, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "startup-lifecycle".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.restore_snapshot(snapshot, cx);
+        panel
+    });
+    // The bridge has not supplied history yet. This frame must not overwrite
+    // the committed reservation with a newly centered welcome measurement.
+    vcx.run_until_parked();
+    restored.update(vcx, |panel, cx| {
+        panel.load_history(history("Short first prompt"), Vec::new(), cx);
+    });
+    vcx.run_until_parked();
+    assert_eq!(vcx.debug_bounds("prompt-input"), Some(fresh));
+    let row = vcx.debug_bounds("transcript-row-0").unwrap();
+    let transcript = vcx.debug_bounds("transcript").unwrap();
+    assert!((f32::from(row.top() - transcript.top())).abs() < 1.);
+    restored.read_with(vcx, |panel, cx| {
+        assert_eq!(
+            panel.input.read(cx).content.as_ref(),
+            "Unsent followup survives reload"
+        );
+        assert!(panel.startup_layout.is_some());
+        assert_eq!(
+            panel.transcript_list.logical_scroll_top().offset_in_item,
+            px(0.)
+        );
+    });
+}
+
+#[gpui::test]
+fn startup_resize_and_repeated_notifications_preserve_settled_geometry(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = focused_startup_panel(cx);
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_input("Keep the input stable while the answer grows");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    // Response sizes around the pinned-prompt threshold exercise the feedback
+    // loop which previously alternated list height and pin visibility forever.
+    for (width, height, paragraphs) in [
+        (800., 600., 8),
+        (800., 600., 10),
+        (800., 600., 12),
+        (640., 480., 12),
+        (1440., 1000., 12),
+        (800., 600., 12),
+    ] {
+        vcx.simulate_window_resize(handle, gpui::size(px(width), px(height)));
+        panel.update(vcx, |panel, cx| {
+            panel.streaming_text = (0..paragraphs)
+                .map(|i| format!("Response paragraph {i}\n\n"))
+                .collect();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let input = vcx.debug_bounds("prompt-input").unwrap();
+        let transcript = vcx.debug_bounds("transcript-with-response").unwrap();
+        let pin = vcx.debug_bounds("pinned-latest-prompt");
+        let meta = vcx.debug_bounds("panel-meta").unwrap();
+        assert!(input.top() >= px(0.) && input.bottom() <= meta.top());
+        assert!(input.left() >= px(0.) && input.right() <= px(width));
+        assert!(meta.bottom() <= px(height));
+        assert!(transcript.bottom() <= input.top());
+        for _ in 0..8 {
+            panel.update(vcx, |_, cx| cx.notify());
+            vcx.run_until_parked();
+            assert_eq!(vcx.debug_bounds("prompt-input"), Some(input));
+            assert_eq!(
+                vcx.debug_bounds("transcript-with-response"),
+                Some(transcript)
+            );
+            assert_eq!(vcx.debug_bounds("pinned-latest-prompt"), pin);
+        }
+    }
+}
+
+#[gpui::test]
+fn startup_each_native_submission_paints_the_newest_row(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = focused_startup_panel(cx);
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    for index in 0..20 {
+        let text = format!(
+            "Growth message {index:02}. {}",
+            "Keep the composer steady until the conversation needs more room. ".repeat(3)
+        );
+        // One commit per prompt: this test is about submission and paint,
+        // not keystrokes, and per-character typing made it the slowest test.
+        crate::test_input::commit_text(vcx, &text);
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.items.len(), index + 1);
+            assert!(
+                matches!(panel.items.last(), Some(Item::User(actual)) if actual == text.trim())
+            );
+        });
+        let row = vcx
+            .debug_bounds(Box::leak(
+                format!("transcript-row-{index}").into_boxed_str(),
+            ))
+            .expect("newest row must paint immediately after each submission");
+        let transcript = vcx.debug_bounds("transcript").unwrap();
+        let input = vcx.debug_bounds("prompt-input").unwrap();
+        assert!(
+            row.bottom() <= input.top() + px(1.),
+            "newest row painted behind composer: {row:?}, {input:?}"
+        );
+        assert!(
+            row.top() < transcript.bottom() && row.bottom() <= transcript.bottom() + px(1.),
+            "newest row not in viewport: {row:?}, {transcript:?}"
+        );
+    }
+}
+
+#[gpui::test]
+fn startup_composer_keeps_docked_shape_before_transcript_fills_space(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = focused_startup_panel(cx);
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+    vcx.run_until_parked();
+    let welcome = vcx.debug_bounds("prompt-input").unwrap();
+    assert!(
+        welcome.size.height < px(crate::input::SPACIOUS_MIN_HEIGHT),
+        "the welcome screen uses the docked composer"
+    );
+    vcx.simulate_input("Short question");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    let short = vcx.debug_bounds("prompt-input").unwrap();
+    assert!(
+        (short.size.height - welcome.size.height).abs() < px(1.),
+        "a short transcript keeps the welcome shape: {short:?} vs {welcome:?}"
+    );
+    panel.update(vcx, |panel, cx| {
+        panel.streaming_text = (0..40)
+            .map(|i| format!("Response paragraph {i}\n\n"))
+            .collect();
+        cx.notify();
+    });
+    for _ in 0..4 {
+        vcx.run_until_parked();
+    }
+    let full = vcx.debug_bounds("prompt-input").unwrap();
+    assert!(
+        (full.size.height - short.size.height).abs() < px(1.),
+        "the composer shape is the same before and after the transcript fills: {full:?} vs {short:?}"
+    );
+    assert!(panel.read_with(vcx, |panel, _| {
+        panel
+            .startup_layout
+            .as_ref()
+            .is_some_and(|layout| layout.compact)
+    }));
+}
+
+/// Distance from the composer pill row to the bottom edge of the window.
+fn pill_row_bottom_inset(vcx: &mut gpui::VisualTestContext) -> gpui::Pixels {
+    let tabs = vcx.debug_bounds("composer-tabs").unwrap();
+    let height = vcx.update(|window, _| window.viewport_size().height);
+    height - tabs.bottom()
+}
+
+/// A chat started on the welcome screen keeps that layout for good (the
+/// snapshot carries it), and once its transcript filled the window its pill
+/// row sat flush with the bottom edge while a docked panel beside it kept a
+/// margin. Every panel needs the same bottom inset.
+#[gpui::test]
+fn started_and_docked_composers_share_one_bottom_inset(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = focused_startup_panel(cx);
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+    vcx.run_until_parked();
+    vcx.simulate_input("Short question");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    panel.update(vcx, |panel, cx| {
+        panel.streaming_text = (0..60)
+            .map(|i| format!("Response paragraph {i}\n\n"))
+            .collect();
+        cx.notify();
+    });
+    for _ in 0..4 {
+        vcx.run_until_parked();
+    }
+    assert!(panel.read_with(vcx, |panel, _| {
+        panel
+            .startup_layout
+            .as_ref()
+            .is_some_and(|layout| layout.filled)
+    }));
+    let started = pill_row_bottom_inset(vcx);
+
+    let (docked, dvcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "docked-inset".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.test_settled_conversation(60, cx);
+        panel
+    });
+    let handle = dvcx.update(|window, _| window.window_handle());
+    dvcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+    dvcx.run_until_parked();
+    docked.update(dvcx, |_, cx| cx.notify());
+    dvcx.run_until_parked();
+    assert!(docked.read_with(dvcx, |panel, _| panel.startup_layout.is_none()));
+    let docked = pill_row_bottom_inset(dvcx);
+
+    assert!(docked > px(0.), "a docked composer keeps a bottom margin: {docked:?}");
+    assert!(
+        (started - docked).abs() < px(1.),
+        "started {started:?} vs docked {docked:?}: the pill row must not drop to the edge"
+    );
+}

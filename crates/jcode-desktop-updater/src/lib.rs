@@ -1,6 +1,7 @@
 //! Jcode Desktop's self-updater for Linux, FreeBSD and Windows.
 //!
-//! macOS updates through Sparkle. Every other packaged build updates through
+//! macOS fork rollouts use [`paired`]. Published macOS releases use Sparkle.
+//! Other packaged builds update through
 //! [`update`], which the background updater, `/update`, and the headless
 //! `jcode-desktop --update` share, so CI exercises exactly what users run.
 //!
@@ -25,6 +26,7 @@ use std::{
 pub mod archive;
 #[cfg(target_os = "linux")]
 mod managed;
+pub mod paired;
 mod portable;
 pub mod release;
 
@@ -142,6 +144,7 @@ fn current_executable() -> Result<PathBuf> {
 pub(crate) struct Environment {
     pub target: Target,
     pub executable: PathBuf,
+    #[allow(dead_code)]
     pub home: Option<PathBuf>,
     /// Run each staged executable with `--version` before activating it.
     pub smoke_test: bool,

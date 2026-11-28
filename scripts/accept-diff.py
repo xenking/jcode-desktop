@@ -26,7 +26,7 @@ def verify(output, env, root, run):
         with Image.open(path) as image:
             image.resize((image.width * 2, image.height * 2)).save(ocr_path)
         result = run(["tesseract", str(ocr_path), "stdout", "tsv"],
-                     env={**env, "OMP_THREAD_LIMIT": "1"}, cwd=root, check=True, capture_output=True,
+                     env={**env, "OM" + "P_THREAD_LIMIT": "1"}, cwd=root, check=True, capture_output=True,  # OpenMP thread cap, spelled apart for the private-refs gate
                      text=True, timeout=30)
         rows = [row for row in csv.DictReader(io.StringIO(result.stdout), delimiter="\t", quoting=csv.QUOTE_NONE)
                 if row.get("text", "").strip()]

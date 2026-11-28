@@ -1,69 +1,160 @@
 //! Jcode Desktop: a spatial, niri-inspired canvas of Jcode sessions.
 
+#[path = "panel/transcript/shared/ack.rs"]
 mod ack;
+#[path = "workspace/sidebar/chrome/shared/account_status.rs"]
+mod account_status;
+#[path = "applets/applet_host.rs"]
 mod applet_host;
+#[path = "applets/applet_runtime.rs"]
 mod applet_runtime;
+#[path = "applets/applet_surface.rs"]
 mod applet_surface;
+#[path = "applets/applet_view.rs"]
 mod applet_view;
+#[path = "host/application_menu.rs"]
+mod application_menu;
+#[path = "host/diagnostics/background_probe.rs"]
+mod background_probe;
+#[path = "host/platform/build_info.rs"]
 mod build_info;
+#[path = "applets/bundled_applets.rs"]
 mod bundled_applets;
+#[path = "updates/changelog.rs"]
 mod changelog;
+#[path = "media/clipboard_image.rs"]
 mod clipboard_image;
+#[path = "documents/code_block/mod.rs"]
+mod code_block;
+#[path = "documents/code_editor.rs"]
+mod code_editor;
+#[path = "panel/composer/support/commands.rs"]
 mod commands;
+#[cfg(unix)]
+#[path = "host/desktop_control.rs"]
+mod desktop_control;
+#[path = "documents/diff_block.rs"]
 mod diff_block;
+#[path = "documents/diff_review_content.rs"]
 mod diff_review_content;
+#[path = "documents/diff_view.rs"]
 mod diff_view;
+#[path = "panel/composer/support/effort.rs"]
 mod effort;
+#[path = "panel/composer/support/effort_icon.rs"]
+mod effort_icon;
+#[path = "panel/composer/support/speed_icon.rs"]
+mod speed_icon;
+#[path = "panel/composer/support/example_prompts.rs"]
 mod example_prompts;
+#[path = "host/control/fixture_control_targets.rs"]
+mod fixture_control_targets;
+#[path = "host/diagnostics/fps_counter.rs"]
 mod fps_counter;
+#[path = "documents/html_preview.rs"]
 mod html_preview;
+#[path = "media/image_chip.rs"]
+mod image_chip;
+#[path = "media/image_modal.rs"]
+mod image_modal;
+#[cfg(target_os = "macos")]
+#[path = "host/platform/ime_log.rs"]
+mod ime_log;
+#[path = "media/inline_image.rs"]
 mod inline_image;
 mod input;
+#[path = "host/platform/keyboard.rs"]
+mod keyboard;
+#[path = "workspace/layout/chrome/menu.rs"]
+mod menu;
+#[path = "workspace/layout/chrome/modal_layer.rs"]
+mod modal_layer;
+#[path = "workspace/sidebar/chrome/shared/live_profile.rs"]
 mod live_profile;
 mod markdown;
+#[path = "documents/markdown_inline_code.rs"]
 mod markdown_inline_code;
+#[path = "panel/transcript/shared/memory.rs"]
 pub mod memory;
+#[path = "panel/composer/support/mode_catalog.rs"]
+mod mode_catalog;
+#[path = "documents/native_mermaid.rs"]
 mod native_mermaid;
 #[cfg(test)]
+#[path = "documents/native_mermaid_integration_tests.rs"]
 mod native_mermaid_integration_tests;
+#[path = "workspace/sidebar/catalog/swarm/openrig_feed.rs"]
+mod openrig_feed;
 mod panel;
+mod panel_item;
+#[path = "documents/pdf_viewer.rs"]
 mod pdf_viewer;
+#[path = "host/diagnostics/performance.rs"]
 mod performance;
+#[path = "panel/transcript/shared/persisted_history.rs"]
 mod persisted_history;
+#[path = "workspace/layout/chrome/popover.rs"]
+mod popover;
+#[path = "host/preview_control.rs"]
 mod preview_control;
+#[path = "host/control/preview_state.rs"]
 pub mod preview_state;
+#[path = "media/prompt_images.rs"]
+mod prompt_images;
+#[path = "workspace/sidebar/chrome/shared/provider_mark.rs"]
+mod provider_mark;
+#[path = "workspace/surfaces/publishing/publish.rs"]
 mod publish;
+#[path = "host/restart_spawn.rs"]
 mod restart_spawn;
-mod resume_content_search;
+#[path = "host/audio/sound_events.rs"]
 mod sound_events;
+#[path = "host/audio/sounds.rs"]
 mod sounds;
+#[path = "workspace/sidebar/catalog/swarm/swarm_glyph.rs"]
+mod swarm_glyph;
+#[path = "workspace/sidebar/catalog/swarm/swarm_view.rs"]
 mod swarm_view;
 mod terminal;
 #[cfg(test)]
+#[path = "input/tests/test_input.rs"]
 mod test_input;
+#[path = "panel/transcript/shared/tool_icon.rs"]
 mod tool_icon;
+#[path = "panel/transcript/shared/transcript_scroll.rs"]
+mod transcript_scroll;
+#[path = "host/control/ui_actions.rs"]
 mod ui_actions;
+#[cfg(unix)]
+#[path = "host/unix_listener_ready.rs"]
+mod unix_listener_ready;
+#[path = "updates/update_entry.rs"]
 pub mod update_entry;
+#[path = "updates/update_notes.rs"]
 mod update_notes;
 mod updates;
+#[path = "host/window_caption.rs"]
 mod window_caption;
 mod workspace;
+#[path = "workspace/controls/workspace_command_parse.rs"]
+mod workspace_command_parse;
 
 // The GPUI-free harness bridge and its transports live in their own crate so
 // edits there do not recompile this one. Re-exported under their old paths.
 pub(crate) use jcode_desktop_harness::{
-    accounts, harness, managed_cloud, platform, remote_targets,
+    accounts, connect_failure, harness, managed_cloud, platform, remote_targets, routing,
 };
 // GPUI-free models (diff previews, learning coach, Todoist, PDF rendering).
 pub use jcode_desktop_model::todoist;
 pub(crate) use jcode_desktop_model::{
-    diff, diff_model, friendly_error, learning, pdf_render, platform_dirs, prompt_completion,
+    diff, diff_model, friendly_error, global_search, learning, pdf_render, platform_dirs,
+    prompt_completion,
 };
 // The shared UI foundation every view uses, in its own crate so feature view
 // crates can depend on it without the whole UI.
 pub(crate) use jcode_desktop_ui_core::{
-    animation_clock, config, image_cache, prompt_background, pulse_text, render_stats, scrollbar,
-    text_selection, theme, transition,
+    animation_clock, choice_keys, components, config, image_cache, prompt_background, pulse_text, render_stats,
+    scrollbar, text_selection, theme, transition,
 };
 // Feature leaves with no Panel/Workspace involvement, in their own crates.
 pub use jcode_desktop_accounts_ui::login_input;
@@ -102,16 +193,36 @@ pub fn build_version() -> String {
 
 use workspace::{
     ClosePanel, CycleTheme, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious,
-    FocusRight, FocusUp, ForkPanel, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight,
-    MovePanelToFirst, MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel,
-    NewPanelInPinnedDirectory, NewTerminal, OpenFolder, OpenGmail, OpenOrchestration, OpenTodoist,
-    Quit, ToggleHints, ToggleOverview, ToggleShowcase, ToggleSidebar, WidthPreset1, WidthPreset2,
-    WidthPreset3, WidthPreset4, Workspace,
+    FocusRight, FocusUp, ForkPanel, GlobalSearch, MaximizeWidth, MovePanelDown, MovePanelLeft,
+    MovePanelRight, MovePanelToFirst, MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel,
+    NewPanelInPinnedDirectory, NewTerminal, OpenFolder, OpenGmail, OpenOpenrig, OpenOrchestration,
+    OpenTodoist, Quit, ToggleHints, ToggleOverview, ToggleShowcase, ToggleSidebar, WidthPreset1,
+    WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
 };
 
-/// The workspace keymap. Extracted so tests can dispatch through exactly the
-/// bindings the user presses, rather than a second copy that could drift.
+/// Key context for chords only the workspace handles. Bindings that stay
+/// context-free are the ones that must also work, or win over a deeper
+/// binding, outside it: navigation (which recovers focus after a reload and
+/// beats the code editor's Cmd+arrows), Ctrl+B (which beats the composer's word
+/// motion), panel-window close and quit.
+const WORKSPACE: Option<&str> = Some(workspace::KEY_CONTEXT);
+
+/// Replace the UI keymap without changing the host's reload and rollback shortcuts.
 pub fn bind_workspace_keys(cx: &mut App) {
+    workspace::Workspace::install_panel_window_origin(cx);
+    let host_bindings: Vec<_> = cx
+        .key_bindings()
+        .borrow()
+        .bindings()
+        .filter(|binding| binding.action().name().starts_with("jcode_desktop_host::"))
+        .cloned()
+        .collect();
+    cx.clear_key_bindings();
+    if !host_bindings.is_empty() {
+        cx.bind_keys(host_bindings);
+    }
+    code_editor::bind_keys(cx);
+    menu::bind_keys(cx);
     terminal::bind_keys(cx);
     panel::voice::bind_keys(cx);
     panel::shortcuts::bind_keys(cx);
@@ -141,28 +252,34 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-end", FocusLast, None),
         KeyBinding::new("super-u", FocusFirst, None),
         KeyBinding::new("super-p", FocusLast, None),
-        KeyBinding::new("super-shift-h", MovePanelLeft, None),
-        KeyBinding::new("super-shift-l", MovePanelRight, None),
-        KeyBinding::new("super-shift-k", MovePanelUp, None),
-        KeyBinding::new("super-shift-j", MovePanelDown, None),
-        KeyBinding::new("super-shift-home", MovePanelToFirst, None),
-        KeyBinding::new("super-shift-end", MovePanelToLast, None),
-        KeyBinding::new("super-n", NewPanel, None),
-        KeyBinding::new("super-space", ForkPanel, None),
-        KeyBinding::new("super-t", NewTerminal, None),
-        KeyBinding::new("super-shift-g", OpenGmail, None),
-        KeyBinding::new("super-shift-d", OpenTodoist, None),
-        KeyBinding::new("super-shift-a", OpenOrchestration, None),
+        KeyBinding::new("super-shift-h", MovePanelLeft, WORKSPACE),
+        KeyBinding::new("super-shift-l", MovePanelRight, WORKSPACE),
+        KeyBinding::new("super-shift-k", MovePanelUp, WORKSPACE),
+        KeyBinding::new("super-shift-j", MovePanelDown, WORKSPACE),
+        KeyBinding::new("super-shift-home", MovePanelToFirst, WORKSPACE),
+        KeyBinding::new("super-shift-end", MovePanelToLast, WORKSPACE),
+        KeyBinding::new("super-n", NewPanel, WORKSPACE),
+        KeyBinding::new("super-space", ForkPanel, WORKSPACE),
+        KeyBinding::new("super-t", NewTerminal, WORKSPACE),
+        KeyBinding::new("super-shift-g", OpenGmail, WORKSPACE),
+        KeyBinding::new("super-shift-d", OpenTodoist, WORKSPACE),
+        KeyBinding::new("super-shift-r", OpenOpenrig, WORKSPACE),
+        KeyBinding::new("super-shift-a", OpenOrchestration, WORKSPACE),
+        // Global search: Cmd+Shift+F on macOS, Ctrl+Shift+F elsewhere. Both are
+        // bound unconditionally so a Linux build matches the platform habit
+        // without a second keymap.
+        KeyBinding::new("super-shift-f", GlobalSearch, WORKSPACE),
+        KeyBinding::new("ctrl-shift-f", GlobalSearch, WORKSPACE),
         // Enter and ; use the configured fixed favorite. ' explicitly uses
         // home. Super+T remains the terminal shortcut.
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("super-enter", NewPanelInPinnedDirectory, None),
+        KeyBinding::new("super-enter", NewPanelInPinnedDirectory, WORKSPACE),
         // Non-Super alias for global-shortcut helpers that intercept Enter.
-        KeyBinding::new("ctrl-alt-enter", NewPanelInPinnedDirectory, None),
+        KeyBinding::new("ctrl-alt-enter", NewPanelInPinnedDirectory, WORKSPACE),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("super-;", NewPanelInPinnedDirectory, None),
+        KeyBinding::new("super-;", NewPanelInPinnedDirectory, WORKSPACE),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("super-'", NewPanel, None),
+        KeyBinding::new("super-'", NewPanel, WORKSPACE),
         // Cmd/Super+Q closes the focused panel on every platform. Quitting the
         // app lives on Cmd+Shift+Q so the common chord does the common thing.
         KeyBinding::new("super-q", ClosePanel, None),
@@ -183,30 +300,31 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("ctrl-alt-right", FocusRight, None),
         KeyBinding::new("ctrl-alt-up", FocusUp, None),
         KeyBinding::new("ctrl-alt-down", FocusDown, None),
-        KeyBinding::new("super-shift-tab", ToggleOverview, None),
-        KeyBinding::new("super-o", ToggleOverview, None),
-        KeyBinding::new("super-/", ToggleHints, None),
-        KeyBinding::new("f1", ToggleHints, None),
-        KeyBinding::new("f2", workspace::RenameSession, None),
-        KeyBinding::new("alt-9", workspace::ToggleOnboardingSimulator, None),
-        KeyBinding::new("super-shift-s", ToggleShowcase, None),
-        KeyBinding::new("super-shift-t", CycleTheme, None),
-        KeyBinding::new("alt-r", workspace::OpenResume, None),
-        KeyBinding::new("ctrl-shift-e", ToggleSidebar, None),
+        KeyBinding::new("super-shift-tab", ToggleOverview, WORKSPACE),
+        KeyBinding::new("super-o", ToggleOverview, WORKSPACE),
+        KeyBinding::new("super-/", ToggleHints, WORKSPACE),
+        KeyBinding::new("f1", ToggleHints, WORKSPACE),
+        KeyBinding::new("f2", workspace::RenameSession, WORKSPACE),
+        KeyBinding::new("alt-9", workspace::ToggleOnboardingSimulator, WORKSPACE),
+        KeyBinding::new("super-shift-s", ToggleShowcase, WORKSPACE),
+        KeyBinding::new("super-shift-t", CycleTheme, WORKSPACE),
+        KeyBinding::new("alt-r", workspace::OpenResume, WORKSPACE),
+        KeyBinding::new("ctrl-shift-e", ToggleSidebar, WORKSPACE),
+        KeyBinding::new("super-shift-e", workspace::files::ToggleFiles, WORKSPACE),
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
-        KeyBinding::new("super-b", ToggleSidebar, None),
-        KeyBinding::new("super-shift-/", NewHelpSession, None),
+        KeyBinding::new("super-b", ToggleSidebar, WORKSPACE),
+        KeyBinding::new("super-shift-/", NewHelpSession, WORKSPACE),
         // niri switch-preset-column-width / maximize-column.
-        KeyBinding::new("super-r", CycleWidth, None),
-        KeyBinding::new("super-f", MaximizeWidth, None),
-        KeyBinding::new("super-1", WidthPreset1, None),
-        KeyBinding::new("super-2", WidthPreset2, None),
-        KeyBinding::new("super-3", WidthPreset3, None),
-        KeyBinding::new("super-4", WidthPreset4, None),
+        KeyBinding::new("super-r", CycleWidth, WORKSPACE),
+        KeyBinding::new("super-f", MaximizeWidth, WORKSPACE),
+        KeyBinding::new("super-1", WidthPreset1, WORKSPACE),
+        KeyBinding::new("super-2", WidthPreset2, WORKSPACE),
+        KeyBinding::new("super-3", WidthPreset3, WORKSPACE),
+        KeyBinding::new("super-4", WidthPreset4, WORKSPACE),
         KeyBinding::new("super-shift-q", Quit, None),
-        KeyBinding::new("ctrl-shift-n", NewPanel, None),
-        KeyBinding::new("ctrl-t", NewPanel, None),
-        KeyBinding::new("ctrl-o", OpenFolder, None),
+        KeyBinding::new("ctrl-shift-n", NewPanel, WORKSPACE),
+        KeyBinding::new("ctrl-t", NewPanel, WORKSPACE),
+        KeyBinding::new("ctrl-o", OpenFolder, WORKSPACE),
     ]);
 
     // GPUI names the native macOS Command modifier `cmd`. Keep these explicit
@@ -222,27 +340,124 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-right", MovePanelRight, None),
         KeyBinding::new("cmd-shift-up", MovePanelUp, None),
         KeyBinding::new("cmd-shift-down", MovePanelDown, None),
-        KeyBinding::new("cmd-n", NewPanel, None),
-        KeyBinding::new("cmd-space", ForkPanel, None),
+        KeyBinding::new("cmd-n", NewPanel, WORKSPACE),
+        KeyBinding::new("cmd-space", ForkPanel, WORKSPACE),
         // Cmd+T is the terminal shortcut, matching the cross-platform
         // `super-t` binding above. Binding it to NewPanel here shadowed that
         // binding, so macOS opened a session panel instead of a terminal.
-        KeyBinding::new("cmd-t", NewTerminal, None),
-        KeyBinding::new("cmd-shift-g", OpenGmail, None),
-        KeyBinding::new("cmd-shift-t", CycleTheme, None),
-        KeyBinding::new("cmd-shift-d", OpenTodoist, None),
-        KeyBinding::new("cmd-shift-a", OpenOrchestration, None),
-        KeyBinding::new("cmd-enter", NewPanelInPinnedDirectory, None),
-        KeyBinding::new("cmd-;", NewPanelInPinnedDirectory, None),
-        KeyBinding::new("cmd-'", NewPanel, None),
+        KeyBinding::new("cmd-t", NewTerminal, WORKSPACE),
+        KeyBinding::new("cmd-shift-g", OpenGmail, WORKSPACE),
+        KeyBinding::new("cmd-shift-t", CycleTheme, WORKSPACE),
+        KeyBinding::new("cmd-shift-d", OpenTodoist, WORKSPACE),
+        KeyBinding::new("cmd-shift-r", OpenOpenrig, WORKSPACE),
+        KeyBinding::new("cmd-shift-a", OpenOrchestration, WORKSPACE),
+        KeyBinding::new("cmd-enter", NewPanelInPinnedDirectory, WORKSPACE),
+        KeyBinding::new("cmd-;", NewPanelInPinnedDirectory, WORKSPACE),
+        KeyBinding::new("cmd-'", NewPanel, WORKSPACE),
         KeyBinding::new("cmd-w", ClosePanel, None),
         KeyBinding::new("cmd-q", ClosePanel, None),
-        KeyBinding::new("cmd-o", ToggleOverview, None),
-        KeyBinding::new("cmd-shift-o", OpenFolder, None),
-        KeyBinding::new("cmd-b", ToggleSidebar, None),
-        KeyBinding::new("cmd-/", ToggleHints, None),
+        KeyBinding::new("cmd-o", ToggleOverview, WORKSPACE),
+        KeyBinding::new("cmd-shift-o", OpenFolder, WORKSPACE),
+        KeyBinding::new("cmd-b", ToggleSidebar, WORKSPACE),
+        KeyBinding::new("cmd-shift-e", workspace::files::ToggleFiles, WORKSPACE),
+        KeyBinding::new("cmd-/", ToggleHints, WORKSPACE),
         KeyBinding::new("cmd-shift-q", Quit, None),
     ]);
+
+    input::bind_keys(cx);
+    application_menu::bind_keys(cx);
+}
+
+struct InstalledKeymap {
+    generation: &'static u8,
+    version: gpui::KeymapVersion,
+}
+
+impl gpui::Global for InstalledKeymap {}
+
+fn activate_keymap(cx: &mut App, generation: &'static u8) {
+    let keymap = cx.key_bindings();
+    if cx.try_global::<InstalledKeymap>().is_some_and(|active| {
+        std::ptr::eq(active.generation, generation) && active.version == keymap.borrow().version()
+    }) {
+        return;
+    }
+    bind_workspace_keys(cx);
+    cx.set_global(InstalledKeymap {
+        generation,
+        version: keymap.borrow().version(),
+    });
+}
+
+/// Quit from the keyboard or the menu.
+fn quit_window_or_app(cx: &mut App) {
+    // A shared single-panel host owns other people's windows. Quit closes this
+    // one; the process exits after its last window.
+    if let Some(window) = cx.active_window()
+        && (jcode_desktop_api::WindowLaunches::shared(cx)
+            || jcode_desktop_api::WindowLaunches::is_forwarded(cx, window.window_id().as_u64()))
+    {
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |_, window, cx| {
+                workspace::recovery::clean_window(window, cx);
+                window.remove_window();
+            });
+        });
+        return;
+    }
+    cx.quit()
+}
+
+/// The active UI generation's quit behaviour.
+///
+/// GPUI cannot remove a global action listener, and every activation of every
+/// window would add another one that outlives its generation. The App gets one
+/// listener, and a generation only replaces the function it calls.
+struct QuitHandler(fn(&mut App));
+
+impl gpui::Global for QuitHandler {}
+
+fn install_quit_action(cx: &mut App, handler: fn(&mut App)) {
+    let registered = cx.has_global::<QuitHandler>();
+    cx.set_global(QuitHandler(handler));
+    if !registered {
+        cx.on_action(|_: &Quit, cx| {
+            let handler = cx.global::<QuitHandler>().0;
+            handler(cx);
+        });
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+    static RUNS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
+
+    fn first(_: &mut App) {
+        RUNS[0].fetch_add(1, SeqCst);
+    }
+    fn second(_: &mut App) {
+        RUNS[1].fetch_add(1, SeqCst);
+    }
+    fn third(_: &mut App) {
+        RUNS[2].fetch_add(1, SeqCst);
+    }
+
+    #[gpui::test]
+    fn repeated_activations_leave_one_quit_handler_running_the_latest_generation(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            for handler in [first as fn(&mut App), second, third] {
+                install_quit_action(cx, handler);
+            }
+            cx.dispatch_action(&Quit);
+        });
+        let runs: Vec<_> = RUNS.iter().map(|runs| runs.load(SeqCst)).collect();
+        assert_eq!(runs, [0, 0, 1], "handler runs per generation");
+    }
 }
 
 use jcode_desktop_api::{
@@ -282,18 +497,27 @@ unsafe extern "C-unwind" fn activate(
     // generations so allocation destructors and these accessors stay callable.
     unsafe { host.install_element_arena_context() };
     init_harness();
-    let snapshot = if snapshot_len == 0 {
-        // A `/restart-all` relaunch names its own saved window state.
-        let restart = {
-            let window = unsafe { &*window.cast::<Window>() };
-            let app = unsafe { &*app.cast::<App>() };
-            workspace::restart::take_restore_state(window, app)
-        };
-        restart.or_else(workspace::recovery::load)
+    let activation_window = unsafe { &*window.cast::<Window>() };
+    let activation_app = unsafe { &*app.cast::<App>() };
+    let recovery = workspace::recovery::Recovery::for_window(activation_window, activation_app);
+    let (snapshot, crash_owner, handoff) = if snapshot_len == 0 {
+        let recovered = recovery
+            .as_ref()
+            .and_then(workspace::recovery::Recovery::load);
+        let restart = workspace::restart::take_restore_state(activation_window, activation_app);
+        match recovered {
+            Some(restored) if restored.crash_owner.is_some() || restart.is_none() => {
+                (Some(restored.snapshot), restored.crash_owner, false)
+            }
+            _ => {
+                let handoff = restart.is_some();
+                (restart, None, handoff)
+            }
+        }
     } else {
         let bytes = unsafe { std::slice::from_raw_parts(snapshot, snapshot_len) };
         match workspace::WorkspaceSnapshot::decode(bytes) {
-            Ok(snapshot) => Some(snapshot),
+            Ok(snapshot) => (Some(snapshot), None, false),
             Err(error) => {
                 eprintln!("refusing invalid workspace snapshot: {error:#}");
                 return ACTIVATE_FAILED;
@@ -311,25 +535,116 @@ unsafe extern "C-unwind" fn activate(
         // WindowOptions before mapping. Updating WM_CLASS during initial X11
         // setup can disrupt the first paint, so defer until the next frame.
         window.on_next_frame(|window, _| window.set_app_id(APP_ID));
-        bind_workspace_keys(app);
-        app.on_action(|_: &Quit, cx| {
-            // A shared single-panel host owns other people's windows. Quit
-            // closes this one; the process exits after its last window.
-            if jcode_desktop_api::WindowLaunches::shared(cx) {
-                if let Some(window) = cx.active_window() {
-                    cx.defer(move |cx| {
-                        let _ = window.update(cx, |_, window, _| window.remove_window());
-                    });
-                    return;
-                }
-            }
-            cx.quit()
+        // Each linked or loaded UI image owns a distinct static. The host calls
+        // activate for each window, including when it restores an earlier image.
+        static KEYMAP_GENERATION: u8 = 0;
+        activate_keymap(app, &KEYMAP_GENERATION);
+        install_quit_action(app, quit_window_or_app);
+        let crash_launch = crash_owner.as_ref().map(|_| {
+            jcode_desktop_api::WindowLaunches::get(app, window.window_handle().window_id().as_u64())
         });
-        let workspace =
-            window.replace_root(app, |window, cx| Workspace::new(window, cx, host, snapshot));
+        let workspace = window.replace_root(app, |window, cx| {
+            Workspace::new(window, cx, host, snapshot, crash_launch)
+        });
         workspace.update(app, |workspace, cx| {
             workspace.restore_focus(window, cx);
             let fixture = harness::screenshot_mode();
+            #[cfg(target_os = "macos")]
+            if fixture {
+                updates::paired_screenshot_fixture(window, cx);
+            }
+            // `JCODE_DESKTOP_SCREENSHOT_SEARCH=<query>`: the screenshot harness
+            // needs the results screen populated without a keyboard or a daemon.
+            if fixture && let Ok(query) = std::env::var("JCODE_DESKTOP_SCREENSHOT_SEARCH") {
+                workspace.search_sessions_for(&query, window, cx);
+            }
+            // `JCODE_DESKTOP_SCREENSHOT_PNG=<path>`: render the settled frame
+            // through the window's own renderer into a PNG and quit. Unlike
+            // `screencapture`, this works for an offscreen, occluded or
+            // locked-screen window, so fixture reviews do not flake.
+            if fixture && let Some(path) = std::env::var_os("JCODE_DESKTOP_SCREENSHOT_PNG") {
+                cx.spawn_in(window, async move |_, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(4))
+                        .await;
+                    if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RIG_HUD").is_some() {
+                        let hovered = cx
+                            .update(|window, cx| {
+                                fixture_control_targets::dispatch(
+                                    "hover:panel-openrig",
+                                    "screenshot-fixture",
+                                    window,
+                                    cx,
+                                )
+                            })
+                            .unwrap_or(false);
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(2))
+                            .await;
+                        let located = cx
+                            .update(|window, cx| {
+                                fixture_control_targets::locate(
+                                    "tooltip:openrig",
+                                    "screenshot-fixture",
+                                    window,
+                                    cx,
+                                )
+                                .is_some()
+                            })
+                            .unwrap_or(false);
+                        if !hovered || !located {
+                            eprintln!("screenshot: OpenRig HUD tooltip not visible");
+                            cx.update(|_, cx| cx.quit()).ok();
+                            return;
+                        }
+                        if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RIG_HUD_CLICK").is_some() {
+                            let clicked = cx.update(|window, cx| fixture_control_targets::dispatch("click:panel-openrig", "screenshot-fixture", window, cx)).unwrap_or(false);
+                            for _ in 0..30 {
+                                let _ = cx.update(|window, cx| {
+                                    window.refresh();
+                                    window.draw(cx).clear(cx);
+                                });
+                                cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+                            }
+                            let selected = cx.update(|window, cx| fixture_control_targets::locate("inspector:host-fixture-local:local-kernel:local-operator.agent", "screenshot-fixture", window, cx).is_some()).unwrap_or(false);
+                            if !clicked || !selected {
+                                eprintln!("screenshot: OpenRig HUD click did not select the expected inspector");
+                                cx.update(|_, cx| cx.quit()).ok();
+                                return;
+                            }
+                        }
+                    }
+                    let needs_layout_pass = std::env::var_os("JCODE_DESKTOP_SCREENSHOT_MARKDOWN_FILE").is_some()
+                        || matches!(
+                            std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref(),
+                            Ok("btw-normal" | "btw-clean-expanded")
+                        );
+                    let _ = cx.update(|window, cx| {
+                        window.refresh();
+                        if needs_layout_pass {
+                            window.draw(cx).clear(cx);
+                        }
+                    });
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(600))
+                        .await;
+                    let _ = cx.update(|window, cx| {
+                        if needs_layout_pass {
+                            window.refresh();
+                            window.draw(cx).clear(cx);
+                        }
+                        match window.render_to_image() {
+                            Ok(image) => match image.save(&path) {
+                                Ok(()) => eprintln!("screenshot: wrote {}", path.display()),
+                                Err(error) => eprintln!("screenshot: save failed: {error}"),
+                            },
+                            Err(error) => eprintln!("screenshot: render failed: {error:#}"),
+                        }
+                        cx.quit();
+                    });
+                })
+                .detach();
+            }
             let changelog_enabled = jcode_desktop_api::LaunchMode::from_args(std::env::args_os())
                 != jcode_desktop_api::LaunchMode::SinglePanel
                 && (!fixture || std::env::var_os("JCODE_DESKTOP_SCREENSHOT_CHANGELOG").is_some());
@@ -343,7 +658,20 @@ unsafe extern "C-unwind" fn activate(
                 }
             }
         });
-        workspace::recovery::install(&workspace, window, app);
+        application_menu::init(app);
+        if let Some(recovery) = recovery {
+            use workspace::recovery::Claim;
+            let claim = if snapshot_len != 0 {
+                Claim::Reload
+            } else if let Some(owner) = crash_owner.as_deref() {
+                Claim::Restored(owner)
+            } else if handoff {
+                Claim::Handoff
+            } else {
+                Claim::Fresh
+            };
+            recovery.install(&workspace, window, app, claim);
+        }
         workspace::restart::install(&workspace, window, app);
         workspace::applets::install(&workspace, window, app);
         // The host activates explicit launches/reopens. A background startup
@@ -396,6 +724,12 @@ pub fn plugin_api() -> PluginApi {
     PluginApi::new(activate, snapshot)
 }
 
+/// The exported plugin entry point.
+///
+/// # Safety
+/// Called once by the host through the shared object's symbol table, on the
+/// thread that loaded it. The host must not call it twice for one load, and
+/// must keep the returned [`PluginApi`] alive for the lifetime of the host.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn jcode_desktop_ui_plugin() -> PluginApi {
     plugin_api()

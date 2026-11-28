@@ -17,8 +17,7 @@ HOSTED = {'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'github-hosted', 'RUNN
 
 class PrivateDesktopTests(unittest.TestCase):
     def test_all_native_ui_workflows_use_guarded_wrapper(self):
-        for workflow in ('windows-runtime-acceptance.yml', 'cross-platform-release.yml',
-                         'windows-screenshots.yml'):
+        for workflow in ('cross-platform-release.yml',):
             source = (ROOT / '.github/workflows' / workflow).read_text()
             with self.subTest(workflow=workflow):
                 self.assertGreaterEqual(source.count('scripts/windows-ci-desktop.py --evidence'), 2)

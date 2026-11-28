@@ -1,0 +1,26 @@
+{
+  "hosts": [
+    { "hostId": "local", "status": "ok" },
+    { "hostId": "worker-east", "status": "ok" },
+    { "hostId": "offline", "status": "unreachable", "error": "read timed out" }
+  ],
+  "items": [
+    {
+      "hostId": "local", "qitemId": "q1", "tier": "human-gate", "state": "pending",
+      "sourceSession": "advisor-lead@kernel", "destinationSession": "human@kernel",
+      "summary": "Approve migration", "body": "The migration passed the staging checks. Can it ship?",
+      "tsCreated": "2026-11-20T08:00:00.000Z", "tsUpdated": "2026-11-20T08:30:00.000Z",
+      "humanQuestions": [{ "id": "deploy", "question": "Can the migration ship?", "options": [{ "id": "ship", "label": "Ship" }, { "id": "wait", "label": "Wait" }] }]
+    },
+    {
+      "hostId": "worker-east", "qitemId": "q1", "state": "pending",
+      "sourceSession": "operator-agent@kernel", "destinationSession": "human@kernel",
+      "body": "Choose the maintenance window before I schedule the work.",
+      "tsCreated": "2026-11-19T09:00:00.000Z"
+    },
+    {
+      "hostId": "local", "qitemId": "q2", "state": "blocked", "blockedOn": "human@kernel",
+      "tsCreated": "not recorded", "sourceSession": "", "body": null
+    }
+  ]
+}

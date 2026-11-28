@@ -175,7 +175,7 @@ pub fn cause_delta(
             (count > &previous).then_some((*name, count - previous))
         })
         .collect::<Vec<_>>();
-    changes.sort_by(|a, b| b.1.cmp(&a.1));
+    changes.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     changes
 }
 
@@ -204,7 +204,7 @@ pub fn delta(
             ))
         })
         .collect::<Vec<_>>();
-    changes.sort_by(|a, b| b.1.nanos.cmp(&a.1.nanos));
+    changes.sort_by_key(|change| std::cmp::Reverse(change.1.nanos));
     changes
 }
 

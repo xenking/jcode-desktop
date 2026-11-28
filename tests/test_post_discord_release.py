@@ -34,6 +34,38 @@ def release(repository=D.SOURCE_REPOSITORY, tag=TAG):
                        + [dict(name="latest.json", state="uploaded")])
 
 
+class DownloadRetryTests(unittest.TestCase):
+    def test_transient_errors_retry_from_scratch(self):
+        for error in (D.urllib.error.HTTPError("https://public", 502, "bad gateway", {}, None),
+                      D.urllib.error.URLError("connection reset"),
+                      D.http.client.IncompleteRead(b"partial"), TimeoutError()):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(D, "_verify_website_asset_once", side_effect=[error, None]) as read, \
+                    patch.object(D.time, "sleep") as sleep:
+                D.verify_website_asset({})
+                self.assertEqual(read.call_count, 2)
+                sleep.assert_called_once_with(1)
+
+    def test_nontransient_and_integrity_errors_never_retry(self):
+        for error in (ValueError("Website asset integrity mismatch"),
+                      D.urllib.error.HTTPError("https://public", 404, "missing", {}, None)):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(D, "_verify_website_asset_once", side_effect=error) as read, \
+                    patch.object(D.time, "sleep") as sleep:
+                with self.assertRaises(type(error)):
+                    D.verify_website_asset({})
+                self.assertEqual(read.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_retry_exhaustion_fails_closed(self):
+        with patch.object(D, "_verify_website_asset_once", side_effect=TimeoutError) as read, \
+                patch.object(D.time, "sleep") as sleep:
+            with self.assertRaises(TimeoutError):
+                D.verify_website_asset({})
+            self.assertEqual(read.call_count, 3)
+            self.assertEqual(sleep.call_count, 2)
+
+
 class AnnouncementTests(unittest.TestCase):
     def setUp(self):
         self.fetch = self.enterContext(patch.object(D, "fetch_release", return_value=release()))
@@ -178,7 +210,7 @@ class PublicGuardTests(unittest.TestCase):
                 D.verify_publication(TAG)
 
     def test_immutable_manifest_mismatch_rejected(self):
-        self.json.side_effect = [self.live, self.live | {"name": "other"}]
+        self.json.side_effect = [self.live, self.live | {"assets": [a | {"size": 4} for a in self.live["assets"]]}]
         with self.assertRaisesRegex(ValueError, "manifests differ"):
             D.verify_publication(TAG)
         self.verify.assert_not_called()
@@ -200,7 +232,147 @@ class PublicGuardTests(unittest.TestCase):
             D.verify_publication(TAG)
 
 
+class BetaBehindStableGuardTests(unittest.TestCase):
+    beta = "desktop-v0.6.6-beta.19"
+    stable = "desktop-v0.6.5"
+
+    def setUp(self):
+        self.requested = manifest(self.beta)
+        self.live = manifest(self.stable)
+        self.public = release(D.PUBLIC_REPOSITORY, self.beta)
+        self.stable_public = release(D.PUBLIC_REPOSITORY, self.stable)
+        self.fetch = self.enterContext(patch.object(D, "fetch_release", side_effect=self.fetch_release))
+        self.json = self.enterContext(patch.object(D, "request_json", side_effect=self.request_json))
+        self.verify = self.enterContext(patch.object(D, "verify_website_asset"))
+        self.post = self.enterContext(patch.object(D, "post_to_discord"))
+        self.mark = self.enterContext(patch.object(D, "mark_release_announced"))
+
+    def fetch_release(self, *, repository, tag, **kwargs):
+        if repository == D.SOURCE_REPOSITORY:
+            return release(repository, tag)
+        if tag == self.beta:
+            return self.public
+        if tag == self.stable:
+            return self.stable_public
+        self.fail(f"Unexpected release fetch: {repository} {tag}")
+
+    def request_json(self, url, **kwargs):
+        self.assertFalse(kwargs.get("token"), "Public verification must be anonymous")
+        if url == f"{D.WEBSITE}/latest.json":
+            return copy.deepcopy(self.live)
+        if url == f"https://github.com/{D.PUBLIC_REPOSITORY}/releases/download/{self.beta}/latest.json":
+            return copy.deepcopy(self.requested)
+        self.fail(f"Unexpected metadata URL: {url}")
+
+    def assert_announcement_rejected(self):
+        with self.assertRaises((ValueError, RuntimeError)):
+            D.announce_release(repository=D.SOURCE_REPOSITORY, tag=self.beta,
+                               token="token", webhook_url=WEBHOOK)
+        self.post.assert_not_called()
+        self.mark.assert_not_called()
+
+    def test_newer_beta_verifies_immutable_manifest_and_every_versioned_asset(self):
+        original = copy.deepcopy(self.live)
+        self.assertEqual(D.verify_publication(self.beta), self.public)
+        self.assertEqual(self.live, original, "Verifying a beta must not promote it")
+        self.assertEqual([call.args[0] for call in self.verify.call_args_list], self.requested["assets"])
+        urls = [call.args[0] for call in self.json.call_args_list]
+        self.assertEqual(urls.count(f"{D.WEBSITE}/latest.json"), 2)
+        self.assertIn(f"https://github.com/{D.PUBLIC_REPOSITORY}/releases/download/{self.beta}/latest.json", urls)
+        for call in self.verify.call_args_list:
+            self.assertTrue(call.args[0]["browser_download_url"].startswith(f"{D.WEBSITE}/releases/{self.beta}/"))
+
+    def test_unrelated_stable_uses_identity_not_requested_platform_schema(self):
+        # A historical stable can have a different platform matrix from this beta.
+        self.live["assets"] = []
+        self.assertEqual(D.verify_publication(self.beta), self.public)
+        self.assertEqual(self.verify.call_count, len(self.requested["assets"]))
+
+    def test_beta_already_live_keeps_full_verification(self):
+        self.live = copy.deepcopy(self.requested)
+        self.assertEqual(D.verify_publication(self.beta), self.public)
+        self.assertEqual(self.verify.call_count, len(self.requested["assets"]))
+
+    def test_same_version_or_newer_stable_supersedes_beta(self):
+        for stable in ("desktop-v0.6.6", "desktop-v0.6.7", "desktop-v0.10.0"):
+            with self.subTest(stable=stable):
+                self.stable = stable
+                self.live = manifest(stable)
+                self.stable_public = release(D.PUBLIC_REPOSITORY, stable)
+                self.assertIsNone(D.verify_publication(self.beta))
+        self.verify.assert_not_called()
+
+    def test_malformed_or_inconsistent_live_identity_never_posts(self):
+        for update in ({"tag_name": "not-a-desktop-release"}, {"tag_name": "desktop-v0.6.5\n"},
+                       {"prerelease": True}, {"prerelease": None}, {"draft": True},
+                       {"name": "Jcode CLI"}):
+            with self.subTest(update=update):
+                self.live = manifest(self.stable) | update
+                self.assert_announcement_rejected()
+
+    def test_different_live_beta_never_posts(self):
+        self.live = manifest("desktop-v0.6.6-beta.20")
+        self.assert_announcement_rejected()
+
+    def test_unpublished_or_inconsistent_stable_public_metadata_never_posts(self):
+        for update in ({"prerelease": True}, {"draft": True}, {"published_at": None},
+                       {"tag_name": "desktop-v0.6.4"}):
+            with self.subTest(update=update):
+                self.stable_public = release(D.PUBLIC_REPOSITORY, self.stable) | update
+                self.assert_announcement_rejected()
+
+    def test_requested_manifest_failures_never_post(self):
+        original = copy.deepcopy(self.requested)
+        for update in ({"tag_name": self.stable}, {"prerelease": False}, {"draft": True},
+                       {"name": "other"}, {"assets": []},
+                       {"assets": original["assets"] + [original["assets"][0]]}):
+            with self.subTest(update=update):
+                self.requested = original | update
+                self.assert_announcement_rejected()
+
+    def test_missing_requested_public_asset_never_posts(self):
+        self.public["assets"].pop(0)
+        self.assert_announcement_rejected()
+
+    def test_invalid_requested_asset_metadata_never_posts(self):
+        for update in ({"size": 0}, {"sha256": "invalid"},
+                       {"browser_download_url": f"{D.WEBSITE}/releases/{self.stable}/package"}):
+            with self.subTest(update=update):
+                self.requested = manifest(self.beta)
+                self.requested["assets"][0].update(update)
+                self.assert_announcement_rejected()
+
+    def test_requested_asset_hash_failure_never_posts(self):
+        self.verify.side_effect = ValueError("Website asset integrity mismatch")
+        self.assert_announcement_rejected()
+
+    def test_requested_manifest_fetch_failure_never_posts(self):
+        original = self.request_json
+
+        def fetch(url, **kwargs):
+            if "/releases/download/" in url:
+                raise RuntimeError("Unavailable immutable manifest")
+            return original(url, **kwargs)
+
+        self.json.side_effect = fetch
+        self.assert_announcement_rejected()
+
+    def test_live_channel_change_during_beta_hash_verification_never_posts(self):
+        def change_channel(asset):
+            self.live = manifest("desktop-v0.6.7")
+
+        self.verify.side_effect = change_channel
+        self.assert_announcement_rejected()
+
+
 class FormattingAndTransportTests(unittest.TestCase):
+    def test_beta_download_link_targets_public_release_not_stable_landing_page(self):
+        tag = "desktop-v0.6.6-beta.19"
+        url = release(D.PUBLIC_REPOSITORY, tag)["html_url"]
+        message = D.format_message(tag=tag, body="- Beta improvements", url=url)
+        self.assertIn(f"Download beta: <{url}>", message)
+        self.assertNotIn(f"Download beta: <{D.WEBSITE}>", message)
+
     def test_notes_limit_links_version_comments_and_mentions(self):
         for body in ("", "- " + "x" * 10000, "- @everyone <@123> <!-- secret -->\n- Fix terminals"):
             message = D.format_message(tag=TAG, body=body, url=release(D.PUBLIC_REPOSITORY)["html_url"])
@@ -309,28 +481,6 @@ Development builds additionally report uncommitted files.
             with patch.object(D.urllib.request, "urlopen", return_value=io.BytesIO(b"abc")):
                 with self.assertRaises(ValueError):
                     D.verify_website_asset(bad)
-
-
-class WorkflowContractTests(unittest.TestCase):
-    def test_standalone_manual_only_source_write_and_per_tag_serialization(self):
-        text = (ROOT / ".github/workflows/discord-release.yml").read_text()
-        self.assertIn("  workflow_dispatch:", text)
-        self.assertNotRegex(text, r"(?m)^  (release|push|workflow_run):")
-        for required in ("contents: write", "group: desktop-discord-release-${{ inputs.tag }}", "cancel-in-progress: false", "ref: main", "persist-credentials: false", "${{ secrets.DISCORD_RELEASE_WEBHOOK }}", "${{ github.token }}", '--tag "$RELEASE_TAG"', "if: failure()", "::warning::"):
-            self.assertIn(required, text)
-
-    def test_publisher_dispatch_after_website_verification_and_nonblocking(self):
-        text = (ROOT / ".github/workflows/publish-public-release.yml").read_text()
-        self.assertLess(text.index("digest.hexdigest()"), text.index("gh workflow run discord-release.yml"))
-        self.assertIn("id: website_verification", text)
-        self.assertIn("steps.website_verification.outcome == 'success'", text)
-        discord = text[text.index("      - name: Dispatch verified public Desktop Discord announcement"):]
-        self.assertIn("continue-on-error: true", discord)
-        self.assertIn("--ref main", discord)
-        self.assertIn('tag="$RELEASE_TAG"', discord)
-        self.assertIn("steps.discord_dispatch.outcome == 'failure'", discord)
-        self.assertIn("::warning::", discord)
-        self.assertIn("macos-public-release-verify.yml", text)
 
 
 if __name__ == "__main__":

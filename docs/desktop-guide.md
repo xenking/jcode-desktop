@@ -30,14 +30,26 @@ These shortcuts use the default machine selected under **Machines**. When the
 default is remote, new session panels start in that machine's home directory.
 The local directory behavior below applies when **This computer** is the default.
 
-- **Super+Enter** opens a new session panel in your fixed most-used directory,
-  just like Super+;. **Ctrl+Alt+Enter** is its non-Super alias. Hints and the
-  tutorial teach Enter. Super+N still opens a session in home.
-- **Super+;** opens a session in your fixed most-used directory.
-- **Super+'** opens a session in your home directory.
+- **Super+N**, **Super+Enter**, **Ctrl+Alt+Enter**, **Super+;**, **Super+'** and
+  the tab bar **+** all open a new session using the selected default directory.
 - **Super+T** opens a terminal panel.
 - **Super+Q** closes the focused panel, not the application. **Ctrl+Shift+W**
   is its non-Super alias. Ctrl+W remains word deletion in the composer.
+
+## Side questions
+
+Type `/btw` followed by a question to start a separate topic about the current
+chat. The answer appears above the main composer. Use **Follow-up** in the card
+to continue the same topic without sending anything to the main chat.
+
+Type `/btw` by itself or select **History** in a card to browse this chat's
+saved topics. Desktop also accepts `btw` by itself in the main composer when
+you press Enter without attachments. `btw` in a sentence remains ordinary text.
+Listing topics and opening an answer do not contact the model. **Open in sidechat**
+makes the same topic available as a separate chat.
+
+History requires a runtime and bridge with side-question support. Older Desktop
+questions saved as ordinary archived forks do not appear in the new history.
 
 ## Agent-created document panels
 
@@ -114,11 +126,10 @@ remote_hosts = ["desktop", "user@build-server"]
 
 For a standalone `JCODE_DESKTOP_CONFIG`, use `[workspace]` instead.
 
-### Local pinned directory
+### Defaults for new local sessions
 
-Use Cmd instead of Super on macOS. Click **Default directory** at the top left
-to open a regular, focusable panel for the local directory used by
-**Super+Enter** and **Super+;**. Switch between it and chats with the usual panel
+Use Cmd instead of Super on macOS. In **New session destination**, choose
+**Default directory on this computer**. Switch between the picker and chats with the usual panel
 shortcuts or tabs. Clicking the control again returns to the same picker, keeping
 your unfinished search. The panel can also be moved, resized, or closed like a chat.
 Click a directory in the usage-ranked list to select it immediately, or browse
@@ -131,7 +142,7 @@ of changing this preference.
 The directory is saved as `pinned_working_dir` in `[desktop.workspace]` and stays
 fixed across usage changes, reloads, and restarts. If you have not selected one,
 it is chosen once from usable session history. Until that history arrives,
-Super+Enter and Super+; use home without pinning that fallback. You can also edit
+new sessions use home without pinning that fallback. You can also edit
 the setting directly, or remove it and restart to choose from history again.
 For a standalone `JCODE_DESKTOP_CONFIG`, use `[workspace]` instead. For example:
 
@@ -139,6 +150,12 @@ For a standalone `JCODE_DESKTOP_CONFIG`, use `[workspace]` instead. For example:
 [desktop.workspace]
 pinned_working_dir = "/path/to/your/project"
 ```
+
+Select a **Model** and **Effort** on a new local draft to set the defaults for
+future local drafts, including after restarting Desktop. Clicking an effort
+level in the model picker selects both at once. The current draft shows your
+choices immediately and applies them with its first prompt. **Mode** applies
+to that draft only. Changes to a running session do not change these defaults.
 
 Global Firefox bindings can consume Super+Enter before Desktop receives it.
 See [global shortcut compatibility](global-focus-shortcuts.md) for the
@@ -308,6 +325,13 @@ The fixture renders production UI, but is not a capture of the live window or
 evidence of live compositor performance. `JCODE_DESKTOP_SCREENSHOT=1` selects
 the offline fixture internally. Prefer the script, which also supplies isolation.
 
+`JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT=expandable` renders one transcript with
+every truncated class a row can carry: a tool title past its budget, a long tool
+output and an error long enough to be cut. Adding
+`JCODE_DESKTOP_SCREENSHOT_EXPANDED=1` opens every disclosure in that fixture
+before the first frame, so a capture shows the expanded text (wrapped title,
+scrolling output region with Copy, full error) without replaying a click.
+
 ## Updating on Linux
 
 Type `/update` in Desktop to check and update a managed x86_64 or ARM64 archive install
@@ -320,11 +344,18 @@ System/`.deb` installs must use their original installer. In a source checkout,
 Git files. See [Linux updates](linux-updates.md) for supported layouts,
 security boundaries, error recovery, and verification.
 
+The Desktop build version appears in Settings → About and in the account popup,
+never in the composer footer. While an update is available the sidebar account
+avatar wears a small badge; pressing the badge runs the update (or restarts into
+a staged one), and the account popup names both the installed and the offered
+version beside the same Update/Restart button. A current build shows the plain
+avatar and no extra text.
+
 ## FPS counter
 
-The FPS readout sits on the left of the session tab row, with a **+** button on
-the right to open a new session. No separate header takes space above the tabs.
-It samples the presentation intervals of actual animation frames
+The session tab row does not show FPS by default. Launch Desktop with
+`JCODE_DESKTOP_SHOW_FPS=1` to enable the readout in a wide window with the sidebar
+visible. It samples the presentation intervals of actual animation frames
 at most four times per second. Deliberate idle gaps do not count as slow frames:
 `FPS · idle` means no new animated frames were presented in the last sample.
 Sampling only happens on existing redraws, so the counter never creates an idle

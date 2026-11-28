@@ -1,0 +1,19 @@
+{
+  "seats": [
+    {"seatSession": "dev-claude@r", "status": "reported", "runtime": "claude-code", "kind": "estimate", "source": "claude statusline", "costUsd": 1.2345,
+     "window": {"nativeSessionId": "sess-1", "since": "2026-10-13T10:00:00Z", "asOf": "2026-10-13T17:00:00Z"}, "resets": 2, "stale": true, "ageSeconds": 900,
+     "tokens": {"input": 1200, "output": 340}},
+    {"seatSession": "dev-pi@r", "status": "reported", "runtime": "pi", "kind": "estimate", "source": "pi entries", "costUsd": 0.003,
+     "window": {"piSessionId": "pi-9", "since": "2026-10-13T09:00:00Z", "asOf": "2026-10-13T12:00:00Z"},
+     "entries": {"own": 4, "ownWithoutCost": 1, "errorOrAborted": 1, "inherited": {"count": 2, "costUsd": 0.5}, "unknownOrigin": {"count": 0, "costUsd": null}},
+     "kinds": {"assistant": 3, "tool": 1},
+     "tokens": {"input": 50, "output": 20, "cacheRead": 5, "cacheWrite": 0},
+     "providerCharge": {"kind": "OpenRouter charge", "status": "partial", "source": "openrouter generation lookup", "costUsd": 0.0042, "estimateForChargedUsd": 0.003,
+       "requests": {"openRouter": 5, "covered": 4, "charged": 3, "pending": 1, "unavailable": {"count": 2, "reasons": {"timeout": 2}}, "notCovered": {"count": 1, "reasons": {"byok": 1}}},
+       "accountContext": {"credentialSources": ["env"], "workspaceIds": [], "byokRequests": 1}, "coverage": "3 of 4 covered"}},
+    {"seatSession": "dev-codex@r", "status": "absent", "runtime": "codex", "reason": "no cost reported", "tokens": {"input": 9, "output": null}},
+    {"seatSession": "term@r", "status": "no-cost-method", "runtime": "terminal", "note": "no cost method for this runtime", "tokens": {"input": null, "output": null}},
+    {"seatSession": "odd@r", "status": "mystery", "runtime": "x", "reason": "not understood"}
+  ],
+  "note": "estimates only"
+}

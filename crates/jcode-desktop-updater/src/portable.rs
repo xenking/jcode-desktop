@@ -194,7 +194,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-            assert_eq!(announced, [latest.clone()]);
+            assert_eq!(announced, std::slice::from_ref(&latest));
             let crate::Outcome::Installed {
                 version,
                 relaunch,

@@ -55,6 +55,12 @@ def render(args: argparse.Namespace) -> None:
     info["CFBundleVersion"] = validate_build(args.build)
 
     have_update_config = bool(args.public_key or args.feed_url)
+    if args.paired_rollout and (have_update_config or args.require_updates):
+        raise ValueError("paired rollout cannot use a Sparkle feed")
+    if args.paired_rollout:
+        info["JcodePairedRollout"] = True
+    else:
+        info.pop("JcodePairedRollout", None)
     if have_update_config and not (args.public_key and args.feed_url):
         raise ValueError("Sparkle public key and feed URL must be supplied together")
     if args.require_updates and not have_update_config:
@@ -90,6 +96,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--public-key", default="")
     parser.add_argument("--feed-url", default="")
     parser.add_argument("--require-updates", action="store_true")
+    parser.add_argument("--paired-rollout", action="store_true")
     return parser.parse_args()
 
 

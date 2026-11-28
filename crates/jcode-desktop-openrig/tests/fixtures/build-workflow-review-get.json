@@ -1,0 +1,33 @@
+{
+  "kind": "workflow",
+  "name": "basic-loop",
+  "libraryEntryId": "workflow:basic-loop:1",
+  "purpose": "Walk one work packet through the conveyor rig slowly enough for a new user to inspect each handoff.\n",
+  "steps": [
+    {
+      "stepId": "intake",
+      "role": "intake",
+      "objective": "Restate the objective and hand off one packet."
+    },
+    {
+      "stepId": "plan",
+      "role": "planner",
+      "objective": "Produce a short plan for one build turn."
+    },
+    {
+      "stepId": "build",
+      "role": "builder",
+      "objective": "Build or draft the planned output."
+    },
+    {
+      "stepId": "review",
+      "role": "reviewer",
+      "objective": "Check the output and clear it for close."
+    },
+    {
+      "stepId": "close",
+      "role": "closer",
+      "objective": "Close the walkthrough packet."
+    }
+  ]
+}

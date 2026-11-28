@@ -82,21 +82,6 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'Desktop exited'):
             NATIVE.wait_until(lambda: (_ for _ in ()).throw(AssertionError('Desktop exited')), 1)
 
-    def test_workflow_is_on_demand_read_only_and_native_both_architectures(self):
-        workflow = (ROOT / '.github/workflows/windows-runtime-acceptance.yml').read_text()
-        self.assertIn('workflow_dispatch:', workflow)
-        self.assertNotIn('  push:', workflow)
-        self.assertNotIn('contents: write', workflow)
-        self.assertIn('windows-2025', workflow)
-        self.assertIn('group: windows-runtime-acceptance-${{ github.sha }}', workflow)
-        self.assertIn('windows-11-arm', workflow)
-        self.assertIn('jcode-transport', workflow)
-        self.assertIn('include-hidden-files: true', workflow)
-        self.assertIn('verify-release-package.py', workflow)
-        self.assertIn('Get-FileHash', workflow)
-        self.assertIn('inputs.runtime_ref || inputs.artifact_run || inputs.release_tag', workflow)
-        self.assertIn('cancel-in-progress: false', workflow)
-
     def test_runner_never_starts_companions_manually_or_uses_offline_fixtures(self):
         source = (ROOT / 'scripts/windows-runtime-acceptance.py').read_text()
         self.assertEqual(source.count('subprocess.Popen('), 1)
@@ -105,17 +90,6 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
         self.assertNotIn('JCODE_DESKTOP_SCREENSHOT=', source)
         self.assertIn('JCODE_NO_AUTO_UPDATE="1"', source)
         self.assertIn('no_reply=True', source)
-
-    def test_source_build_runs_real_instance_regressions_before_packaging(self):
-        workflow = (ROOT / '.github/workflows/windows-runtime-acceptance.yml').read_text()
-        gate = workflow.split('      - name: Test native Desktop single-instance handoff\n', 1)[1]
-        gate = gate.split('      - name: Build the actual Windows package', 1)[0]
-        self.assertIn('if: inputs.build_source', gate)
-        self.assertIn('--bin jcode-desktop', gate)
-        self.assertIn("--target '${{ matrix.target }}'", gate)
-        self.assertIn('host::instance::platform::tests', gate)
-        self.assertIn('if ($LASTEXITCODE)', gate)
-        self.assertNotIn('continue-on-error', gate)
 
     def test_release_gate_exercises_extracted_zip_before_upload(self):
         workflow = (ROOT / '.github/workflows/cross-platform-release.yml').read_text()
@@ -129,16 +103,6 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
         self.assertIn('--states caption,caption-light,windows-integration,chat,diff,applet', gate)
         self.assertLess(workflow.index('windows-runtime-acceptance.py'),
                         workflow.index('Upload verified platform packages to private draft'))
-
-    def test_on_demand_reuses_built_artifacts_and_separates_fixture_ui(self):
-        workflow = (ROOT / '.github/workflows/windows-runtime-acceptance.yml').read_text()
-        self.assertIn('artifact_run:', workflow)
-        self.assertIn('gh run download', workflow)
-        self.assertIn('source-run.json', workflow)
-        self.assertIn('--states caption,caption-light,windows-integration,chat,diff,applet', workflow)
-        self.assertIn("if: always() && inputs.ui_integration && env.PACKAGE_DIR != ''", workflow)
-        self.assertLess(workflow.index('windows-runtime-acceptance.py'),
-                        workflow.index('windows_screenshots.py'))
 
     def exercise_runner(self, fail_history=False, fail_foreground=False):
         launches, requests = [], []

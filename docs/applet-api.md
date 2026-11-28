@@ -127,7 +127,7 @@ Spacing uses tokens (`none`, `xs`, `sm`, `md`, `lg`, `xl`), not pixels. Colors u
 tones (`default`, `dim`, `accent`, `success`, `warning`, `danger`), not hex values.
 
 The complete reference example is
-`crates/jcode-desktop-ui/src/applet_showcase.json`. It is also what the screenshot
+`crates/jcode-desktop-ui/src/workspace/applets/applet_showcase.json`. It is also what the screenshot
 fixture renders (`scripts/screenshot.py --transcript applet --applet-tab media`).
 
 ## Protocol
@@ -217,6 +217,20 @@ The host/UI C ABI is unchanged. Applets are all in the reloadable UI crate, and 
 is an App global, so instances survive Ctrl+R.
 
 ## Agent applets
+
+### Compact Express macros
+
+In a connected Desktop chat, the agent can pass `express` instead of a `view` tree to the `applet` tool. For example:
+
+```json
+{"action":"mount","instance":"review","express":"root = ReviewChange(\"Review patch\", \"src/ui.rs\", \"change42\")","wait":true}
+```
+
+The chat shows a native card with a note field and two actions. Approve returns `review.approve`; Request changes returns `review.request_changes`. Both include `args.change_id`, and the typed note is in the applet state under `note`. These are user choices, not automatic permission to run a tool. Use `action: "update"` with the same instance to revise a card in place. The one-button form is `root = GreetingButton("Say hello", "greet", "world")`; its action carries `args.recipient`.
+
+For a table that updates **without further agent calls**, mount `root = TaskTable("Tasks")` inline in a chat. Its source is the owning session's task state. As that state changes, Desktop renders the rows and completed/total count again. An empty source shows an empty state. Ordinary `table` and `progress` nodes are snapshots; an external job needs its own event producer. Do not use `wait` or send timer-driven patches for `TaskTable`.
+
+This is a bounded **Express subset**, not a general A2UI renderer: one root macro call with the advertised positional JSON strings, at most 64 KiB, no user-defined code, nested calls, external catalog loading or `host.*` actions. The daemon expands trusted macros directly to existing applet nodes in Rust. Desktop uses the same renderer, theme and session transport as explicit `view` documents. No Bun process, browser or new network request is needed to display a card. For other layouts, use `view`. The daemon and Desktop must both support the applet capability; a terminal-only client does not advertise it.
 
 The agent's `applet` tool mounts validated native UI into its own session. By
 default the card replaces the tool call's row. `placement` accepts `inline`,

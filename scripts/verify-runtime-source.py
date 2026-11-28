@@ -6,6 +6,7 @@ It does not replace the native compilation, package, or smoke-test release gates
 Use --revision to inspect committed Git objects without reading dirty runtime work.
 """
 import argparse
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -19,12 +20,14 @@ API_REQUIREMENTS = {
         r"effective_budget\s*:\s*Option<usize>",
         r"pub\s+struct\s+HistoryTool\b",
         r"pub\s+tool\s*:\s*Option<HistoryTool>",
+        r"codemode\s*:\s*Option<Box<(?:jcode_session_types::)?CodemodeSummary>>",
     ),
     "crates/jcode-sdk/src/client.rs": (
         r"pub\s+supports_user_response\s*:\s*bool",
+        r"pub\s+supports_applets\s*:\s*bool",
         r"pub\s+fn\s+runtime_command\s*\(",
     ),
-    "crates/jcode-sdk/src/ssh.rs": (r"pub\s+supports_user_response\s*:\s*bool",),
+    "crates/jcode-sdk/src/ssh.rs": (r"pub\s+supports_user_response\s*:\s*bool", r"pub\s+supports_applets\s*:\s*bool"),
     "crates/jcode-sdk/src/collections.rs": (r"pub\s+fn\s+create_with_id\s*\(",),
     "crates/jcode-harness-api/src/runtime_commands.rs": (r"pub\s+enum\s+RuntimeCommand\b",),
     "crates/jcode-voice/src/lib.rs": (
@@ -56,7 +59,9 @@ def runtime_dependencies(desktop):
             for alias, dependency in table.items():
                 if not isinstance(dependency, dict) or "path" not in dependency:
                     continue
-                path = (manifest.parent / dependency["path"]).resolve()
+                # Match Cargo's declared sibling layout even when jcode points
+                # to a separate worktree. The reader opens the chosen runtime.
+                path = Path(os.path.abspath(manifest.parent / dependency["path"]))
                 if not path.is_relative_to(nominal_runtime):
                     continue
                 requirements.append(((path.relative_to(nominal_runtime) / "Cargo.toml").as_posix(),

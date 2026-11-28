@@ -152,7 +152,7 @@ class ConsumerTests(unittest.TestCase):
         self.assertIn("### Highlights", body)
 
     def test_announcing_workflows_fetch_full_history(self):
-        for workflow in ("discord-release.yml", "publish-public-release.yml"):
+        for workflow in ("publish-public-release.yml",):
             self.assertIn("fetch-depth: 0", (ROOT / ".github/workflows" / workflow).read_text())
 
 

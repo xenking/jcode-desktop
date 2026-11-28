@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 gpui.workspace = true
+jcode-desktop-model.workspace = true
 jcode-desktop-ui-core.workspace = true
 anyhow = "1"
 

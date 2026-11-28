@@ -113,9 +113,9 @@ Removing confidence thresholds does not remove execution checks:
 - Shared action types, question IDs, validation, and selection:
   [`voice_intent.rs`](../../jcode/crates/jcode-base/src/voice_intent.rs).
 - Desktop candidate collection, navigation, and quick-action execution:
-  [`workspace_voice.rs`](../crates/jcode-desktop-ui/src/workspace_voice.rs).
+  [`workspace_voice.rs`](../crates/jcode-desktop-ui/src/workspace/voice/workspace_voice.rs).
 - Agent submission, draft retention, and canceled-request protection:
-  [`panel_voice.rs`](../crates/jcode-desktop-ui/src/panel_voice.rs).
+  [`panel_voice.rs`](../crates/jcode-desktop-ui/src/panel/voice/panel_voice.rs).
 
 Keep this catalog synchronized when adding a `QuickAction`, changing
 `VoiceIntent`, or adding a Desktop voice dispatch branch.

@@ -153,25 +153,26 @@ pathlib.Path("target/mock-report.json").write_text(json.dumps(report))
             self.assertIn("architecture mismatch", result.stderr)
             self.assertFalse((Path(env["OUT_DIR"]) / "SHA256SUMS-linux").exists())
 
-    def test_manual_workflow_preserves_native_smokes_and_never_publishes(self):
-        workflow = (ROOT / ".github/workflows/linux-hosted-validation.yml").read_text()
-        self.assertIn("workflow_dispatch:", workflow)
-        self.assertIn("if: github.ref == 'refs/heads/main'", workflow)
-        self.assertIn("contents: read", workflow)
-        self.assertNotIn("contents: write", workflow)
-        for forbidden in ("pull_request:", "push:", "gh release", "release upload", "PUBLIC_RELEASE_TOKEN"):
-            self.assertNotIn(forbidden, workflow)
-        self.assertIn("secrets.JCODE_API_KEY", workflow)
-        self.assertIn("persist-credentials: false", workflow)
-        self.assertIn("justrust_revision", workflow)
-        self.assertIn("RUSTUP_TOOLCHAIN: ${{ inputs.rust_version }}", workflow)
-        original = (ROOT / ".github/workflows/cross-platform-release.yml").read_text()
-        for name in ("Smoke-test Linux package on X11", "Smoke-test Linux package on native Wayland"):
-            def body(text):
-                return text.split("      - name: " + name, 1)[1].split("      - name:", 1)[0].replace("        if: matrix.platform == 'linux'\n", "")
-            self.assertEqual(body(original), body(workflow))
-            self.assertLess(workflow.index(name), workflow.index("Preserve successful validation packages"))
-        self.assertNotIn("LINUX_BUILD_BACKEND", original)
+
+class LinuxReleaseWorkflowTests(unittest.TestCase):
+    def test_native_smokes_gate_draft_upload_without_hosted_validation(self):
+        workflows = ROOT / ".github/workflows"
+        self.assertFalse((workflows / "linux-hosted-validation.yml").exists())
+        workflow = (workflows / "cross-platform-release.yml").read_text()
+        self.assertNotIn("LINUX_BUILD_BACKEND", workflow)
+        upload = workflow.index("- name: Upload verified platform packages to private draft")
+        for display, markers in (
+            ("X11", ("env -u WAYLAND_DISPLAY", '"$app"')),
+            ("native Wayland", ("wayland-info", "env -u DISPLAY", '"$app"')),
+        ):
+            with self.subTest(display=display):
+                start = workflow.index(f"- name: Smoke-test Linux package on {display}")
+                self.assertLess(start, upload)
+                smoke = workflow[start:].split("\n      - name:", 1)[0]
+                self.assertIn("if: matrix.platform == 'linux'", smoke)
+                self.assertNotIn("continue-on-error", smoke)
+                for marker in markers:
+                    self.assertIn(marker, smoke)
 
 
 @unittest.skipUnless(shutil.which("rustc"), "standalone build-script compiler required")

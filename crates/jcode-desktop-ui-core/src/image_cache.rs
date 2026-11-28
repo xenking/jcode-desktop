@@ -3,7 +3,7 @@
 //! GPUI's RenderImage::new uses a library-local static counter. The host SVG
 //! renderer, linked UI, and each loaded UI generation have separate counters,
 //! but share one GPU atlas. Reusing an ID can paint an unrelated old texture.
-use gpui::{App, Asset, Global, Image, ImageCacheError, ImageSource, RenderImage};
+use gpui::{App, Asset, Global, Image, ImageCacheError, ImageSource, RenderImage, Window};
 use std::sync::Arc;
 
 /// Encoded assets are keyed by `Image::id`, not by byte equality. Independent
@@ -210,36 +210,43 @@ impl Global for ImagePaintTraceGlobal {}
 
 /// Keep asynchronous decoding/caching, but never publish library-local IDs.
 pub fn source(image: Arc<Image>) -> ImageSource {
-    ImageSource::Custom(Arc::new(move |window, cx| {
-        let result = window.use_asset::<DesktopImageDecoder>(&image, cx);
-        let state = match &result {
-            None => ImagePaintState::Pending,
-            Some(Ok(decoded)) => ImagePaintState::Ready(decoded.id.0),
-            Some(Err(_)) => ImagePaintState::Error,
-        };
-        let view = window.current_view().as_u64();
-        if !cx.has_global::<ImagePaintTraceGlobal>() {
-            cx.set_global(ImagePaintTraceGlobal::default());
-        }
-        // Read the global immutably: global_mut/default_global would enqueue a
-        // NotifyGlobalObservers effect on every image lookup, including paint.
-        let event = cx.global::<ImagePaintTraceGlobal>().0.borrow_mut().observe(
-            (view, image.id),
-            state,
-            std::time::Instant::now(),
+    ImageSource::Custom(Arc::new(move |window, cx| load(&image, window, cx)))
+}
+
+/// Get or start decoding the same asset used by [`source`].
+pub fn load(
+    image: &Arc<Image>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
+    let result = window.use_asset::<DesktopImageDecoder>(image, cx);
+    let state = match &result {
+        None => ImagePaintState::Pending,
+        Some(Ok(decoded)) => ImagePaintState::Ready(decoded.id.0),
+        Some(Err(_)) => ImagePaintState::Error,
+    };
+    let view = window.current_view().as_u64();
+    if !cx.has_global::<ImagePaintTraceGlobal>() {
+        cx.set_global(ImagePaintTraceGlobal::default());
+    }
+    // Read the global immutably: global_mut/default_global would enqueue a
+    // NotifyGlobalObservers effect on every image lookup, including paint.
+    let event = cx.global::<ImagePaintTraceGlobal>().0.borrow_mut().observe(
+        (view, image.id),
+        state,
+        std::time::Instant::now(),
+    );
+    if let Some(event) = event {
+        let timestamp_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        eprintln!(
+            "desktop-image paint-state timestamp_ms={timestamp_ms} view={view} source={:016x} reason={} previous={:?} previous_texture={:?} current={:?}",
+            image.id, event.reason, event.previous, event.previous_texture, event.current
         );
-        if let Some(event) = event {
-            let timestamp_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis();
-            eprintln!(
-                "desktop-image paint-state timestamp_ms={timestamp_ms} view={view} source={:016x} reason={} previous={:?} previous_texture={:?} current={:?}",
-                image.id, event.reason, event.previous, event.previous_texture, event.current
-            );
-        }
-        result
-    }))
+    }
+    result
 }
 
 #[cfg(test)]

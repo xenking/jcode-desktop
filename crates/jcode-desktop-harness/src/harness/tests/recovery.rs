@@ -1,0 +1,162 @@
+fn recovery_event(session: &str) -> ApiEvent {
+    ApiEvent::SessionRecovery {
+        session_id: session.into(),
+        continuation_message: "Continue interrupted work.".into(),
+        reconnect_notice: None,
+    }
+}
+
+fn recovery_fence(worker: &Worker, expected_notices: usize) {
+    worker.event(ApiEvent::RuntimeInfo {
+        speed_mode: Default::default(),
+        speed_options: Vec::new(),
+        session_id: "s1".into(),
+        provider: None,
+        model: None,
+        routes: vec![],
+        reasoning_effort: None,
+        auth_method: None,
+        account_label: None,
+    });
+    let notices = std::cell::Cell::new(0);
+    worker.wait_for(|update| {
+        if matches!(update, Update::Event { event: ApiEvent::SessionRecovery { .. }, .. }) {
+            notices.set(notices.get() + 1);
+        }
+        matches!(
+            update,
+            Update::Event {
+                event: ApiEvent::RuntimeInfo { .. },
+                ..
+            }
+        )
+    });
+    assert_eq!(notices.get(), expected_notices);
+}
+
+#[test]
+fn interrupted_session_recovery_only_displays_state_without_sending_input() {
+    let worker = Worker::new(|_| vec![ApiEvent::MessageAccepted { session_id: "s1".into() }]);
+    worker.event(recovery_event("s1"));
+    worker.wait_for(|update| {
+        matches!(update, Update::Event {
+            session_id,
+            event: ApiEvent::SessionRecovery { session_id: target, .. },
+        } if session_id == "s1" && target == "s1")
+    });
+    recovery_fence(&worker, 0);
+    assert!(worker.requests.try_recv().is_err(), "daemon owns continuation, Desktop must not send a reminder");
+    worker.event(ApiEvent::SessionStatus { session_id: "s1".into(), status: "running".into(), pending_soft_interrupts: None });
+    worker.wait_for(|update| matches!(update, Update::Event { event: ApiEvent::SessionStatus { status, .. }, .. } if status == "running"));
+    worker.event(recovery_event("s1"));
+    recovery_fence(&worker, 0);
+    assert!(worker.requests.try_recv().is_err());
+}
+
+#[test]
+fn completed_session_and_other_sessions_recovery_remain_idle() {
+    let worker = Worker::new(|_| panic!("idle session must not send"));
+    worker.event(ApiEvent::SessionStatus {
+        session_id: "s1".into(),
+        status: "idle".into(),
+        pending_soft_interrupts: None,
+    });
+    worker.event(recovery_event("other-session"));
+    recovery_fence(&worker, 0);
+    assert!(worker.requests.try_recv().is_err());
+}
+
+#[test]
+fn resumed_or_completed_turn_suppresses_stale_recovery() {
+    for event in [
+        ApiEvent::ToolStart {
+            session_id: "s1".into(),
+            call_id: "call-1".into(),
+            name: "read".into(),
+        },
+        ApiEvent::TurnDone {
+            session_id: "s1".into(),
+            pending_soft_interrupts: None,
+        },
+        ApiEvent::SessionStatus {
+            session_id: "s1".into(),
+            status: "cancelled".into(),
+            pending_soft_interrupts: None,
+        },
+    ] {
+        let worker = Worker::new(|_| panic!("stale recovery must not send"));
+        worker.event(event);
+        worker.event(recovery_event("s1"));
+        recovery_fence(&worker, 0);
+        assert!(worker.requests.try_recv().is_err());
+    }
+}
+
+#[test]
+fn busy_recovery_is_not_replayed_as_steering() {
+    let worker = Worker::new(|_| vec![busy_error()]);
+    worker.event(recovery_event("s1"));
+    recovery_fence(&worker, 1);
+    assert!(
+        worker.requests.try_recv().is_err(),
+        "another client's continuation is sufficient"
+    );
+}
+
+#[test]
+fn user_submission_supersedes_automatic_continuation() {
+    let worker = Worker::new(|_| {
+        vec![ApiEvent::MessageAccepted {
+            session_id: "s1".into(),
+        }]
+    });
+    worker.send("new instructions", vec![]);
+    assert!(
+        matches!(worker.request(), ApiRequest::SendMessage { content, .. } if content == "new instructions")
+    );
+    worker.event(ApiEvent::TurnDone {
+        session_id: "s1".into(),
+        pending_soft_interrupts: None,
+    });
+    worker.event(recovery_event("s1"));
+    recovery_fence(&worker, 0);
+    assert!(worker.requests.try_recv().is_err());
+}
+
+#[test]
+fn recovery_state_resets_for_a_new_attachment_and_rejects_empty_directives() {
+    let mut recovery = recovery::Recovery::default();
+    assert!(!recovery.notice("  "));
+    assert!(recovery.notice("continue"));
+    assert!(!recovery.notice("continue"));
+    let mut reconnected = recovery::Recovery::default();
+    assert!(reconnected.notice("continue after another crash"));
+}
+
+#[test]
+fn explicit_cancel_or_clear_suppresses_late_recovery() {
+    for command in [
+        SessionCommand::Cancel,
+        SessionCommand::Operation(SessionOperation::Clear),
+    ] {
+        let worker = Worker::new(|_| panic!("explicit user stop must win"));
+        worker.commands.send(command).unwrap();
+        worker
+            .commands
+            .send(SessionCommand::RefreshRuntime)
+            .unwrap();
+        // The synchronous runtime reply fences the preceding user command.
+        worker.wait_for(|update| {
+            matches!(
+                update,
+                Update::Event {
+                    event: ApiEvent::RuntimeInfo { .. },
+                    ..
+                }
+            )
+        });
+        worker.event(recovery_event("s1"));
+        recovery_fence(&worker, 0);
+        assert!(worker.requests.try_recv().is_err());
+    }
+}

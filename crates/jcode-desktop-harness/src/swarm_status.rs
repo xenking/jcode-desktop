@@ -1,0 +1,221 @@
+//! Ordered live swarm facts, shared by the sidebar and composer through the
+//! workspace session catalog. Polling durable metadata cannot roll these back.
+
+use jcode_sdk::{SessionInfo, SwarmMemberInfo, WorkerMeta};
+use std::collections::{HashMap, HashSet};
+
+#[derive(Default)]
+pub struct LiveSwarmStatus {
+    snapshots: HashMap<String, (u64, HashSet<String>)>,
+    members: HashMap<String, (u64, SwarmMemberInfo)>,
+    pending_titles: HashMap<String, String>,
+}
+
+impl LiveSwarmStatus {
+    /// Apply the complete snapshot in daemon publication order. A member
+    /// missing from a newer snapshot was removed, not left running forever.
+    pub fn apply(&mut self, source: &str, updated_at: u64, members: &[SwarmMemberInfo]) -> bool {
+        if self
+            .snapshots
+            .get(source)
+            .is_some_and(|(seen, _)| *seen >= updated_at)
+        {
+            return false;
+        }
+        let ids = members
+            .iter()
+            .map(|member| member.session_id.clone())
+            .collect::<HashSet<_>>();
+        let mut changed = false;
+        if let Some((_, previous)) = self
+            .snapshots
+            .insert(source.to_owned(), (updated_at, ids.clone()))
+        {
+            for id in previous.difference(&ids) {
+                if let Some((seen, member)) = self.members.get_mut(id)
+                    && *seen < updated_at
+                {
+                    *seen = updated_at;
+                    if member.status != "stopped" {
+                        member.status = "stopped".into();
+                        changed = true;
+                    }
+                }
+            }
+        }
+        for member in members {
+            if let Some((seen, previous)) = self.members.get_mut(&member.session_id) {
+                if *seen < updated_at {
+                    *seen = updated_at;
+                    if previous != member {
+                        previous.clone_from(member);
+                        changed = true;
+                    }
+                }
+            } else {
+                self.members
+                    .insert(member.session_id.clone(), (updated_at, member.clone()));
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Protect a live rename from a catalog read already in flight. Once a
+    /// poll observes the rename, later durable title changes may win normally.
+    pub fn note_title(&mut self, session_id: &str, title: &str) {
+        self.pending_titles
+            .insert(session_id.to_owned(), title.to_owned());
+    }
+
+    pub fn merge_catalog(&mut self, sessions: &mut [SessionInfo]) {
+        for session in sessions.iter() {
+            if self.pending_titles.get(&session.session_id) == session.title.as_ref() {
+                self.pending_titles.remove(&session.session_id);
+            }
+        }
+        self.merge(sessions);
+    }
+
+    /// Overlay after each poll as well as each live event.
+    pub fn merge(&self, sessions: &mut [SessionInfo]) {
+        for session in sessions {
+            if let Some(title) = self.pending_titles.get(&session.session_id) {
+                session.title = Some(title.clone());
+            }
+            let Some((_, member)) = self.members.get(&session.session_id) else {
+                continue;
+            };
+            session.swarm_status = Some(member.status.clone());
+            session
+                .parent_session_id
+                .clone_from(&member.parent_session_id);
+            if member.agent_label.is_some() {
+                session.agent_label.clone_from(&member.agent_label);
+            }
+        }
+    }
+
+    pub fn merge_worker_routes(&self, workers: &mut HashMap<String, WorkerMeta>) {
+        for (id, (_, member)) in &self.members {
+            if member.parent_session_id.is_none() || member.model.is_none() {
+                continue;
+            }
+            let meta = workers.entry(id.clone()).or_default();
+            meta.model.clone_from(&member.model);
+            if member.provider.is_some() {
+                meta.provider.clone_from(&member.provider);
+            }
+            meta.effort.clone_from(&member.effort);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(status: &str) -> SwarmMemberInfo {
+        SwarmMemberInfo {
+            session_id: "worker".into(),
+            status: status.into(),
+            parent_session_id: Some("lead".into()),
+            agent_label: Some("task".into()),
+            model: None,
+            provider: None,
+            effort: None,
+        }
+    }
+
+    fn catalog() -> Vec<SessionInfo> {
+        serde_json::from_str(
+            r#"[{"session_id":"worker","status":"Active","swarm_status":"ready"}]"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn rapid_status_updates_win_over_older_events_duplicate_connections_and_slow_polls() {
+        let mut live = LiveSwarmStatus::default();
+        assert!(live.apply("lead", 1_000, &[member("ready")]));
+        assert!(live.apply("lead", 1_065, &[member("running")]));
+        assert!(!live.apply("lead", 1_000, &[member("ready")]));
+        live.apply("other-attachment", 1_000, &[member("ready")]);
+        let mut sessions = catalog();
+        live.merge(&mut sessions);
+        assert_eq!(sessions[0].swarm_status.as_deref(), Some("running"));
+        live.apply("lead", 1_100, &[member("ready")]);
+        live.merge(&mut sessions);
+        assert_eq!(sessions[0].swarm_status.as_deref(), Some("ready"));
+    }
+
+    #[test]
+    fn newer_duplicate_advances_the_watermark_without_a_visible_change() {
+        let mut live = LiveSwarmStatus::default();
+        assert!(live.apply("lead", 10, &[member("running")]));
+        assert!(!live.apply("lead", 30, &[member("running")]));
+        assert!(!live.apply("other", 20, &[member("ready")]));
+        assert!(live.apply("lead", 40, &[member("ready")]));
+    }
+
+    #[test]
+    fn removed_worker_cannot_be_resurrected_by_a_stale_catalog_or_snapshot() {
+        let mut live = LiveSwarmStatus::default();
+        live.apply("lead", 100, &[member("running")]);
+        live.apply("lead", 200, &[]);
+        live.apply("lead", 150, &[member("running")]);
+        let mut sessions = catalog();
+        live.merge(&mut sessions);
+        assert_eq!(sessions[0].swarm_status.as_deref(), Some("stopped"));
+    }
+
+    #[test]
+    fn live_event_before_catalog_is_retained() {
+        let mut live = LiveSwarmStatus::default();
+        live.apply("lead", 100, &[member("running")]);
+        live.merge(&mut []);
+        let mut sessions = catalog();
+        live.merge(&mut sessions);
+        assert_eq!(sessions[0].swarm_status.as_deref(), Some("running"));
+    }
+
+    #[test]
+    fn live_title_survives_a_read_in_flight_until_catalog_catches_up() {
+        let mut live = LiveSwarmStatus::default();
+        let mut sessions = catalog();
+        sessions[0].title = Some("old".into());
+        live.note_title("worker", "new");
+        live.merge(&mut sessions);
+        assert_eq!(sessions[0].title.as_deref(), Some("new"));
+        live.merge(&mut sessions);
+        live.merge_catalog(&mut sessions);
+        sessions[0].title = Some("later durable title".into());
+        live.merge_catalog(&mut sessions);
+        assert_eq!(sessions[0].title.as_deref(), Some("later durable title"));
+    }
+
+    #[test]
+    fn live_worker_route_wins_over_stale_sidebar_poll_without_losing_usage() {
+        let mut live = LiveSwarmStatus::default();
+        let mut worker = member("running");
+        worker.model = Some("new-model".into());
+        worker.provider = Some("new-provider".into());
+        assert!(live.apply("lead", 200, &[worker]));
+        assert!(!live.apply("other-attachment", 100, &[member("running")]));
+        let mut facts = HashMap::from([(
+            "worker".into(),
+            WorkerMeta {
+                model: Some("old-model".into()),
+                effort: Some("high".into()),
+                input_tokens: Some(100),
+                ..Default::default()
+            },
+        )]);
+        live.merge_worker_routes(&mut facts);
+        let worker = &facts["worker"];
+        assert_eq!(worker.model.as_deref(), Some("new-model"));
+        assert_eq!(worker.provider.as_deref(), Some("new-provider"));
+        assert_eq!(worker.effort, None);
+        assert_eq!(worker.input_tokens, Some(100));
+    }
+}

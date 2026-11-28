@@ -6,12 +6,12 @@
 - Always commit and push completed changes to `main`. Do this every time unless the user explicitly asks you not to.
 - Commit only the changes you made. Do not include unrelated or pre-existing modifications.
 - Use the user's configured Git identity. Never override it with `Jcode`, an invented agent email, `git -c user.*`, or `GIT_AUTHOR_*` / `GIT_COMMITTER_*` values. If identity is missing, resolve the user's established identity rather than inventing one.
-- Before committing, verify `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT`. On this checkout the established identity is Jeremy Huang <94247773+1jehuang@users.noreply.github.com>.
+- Before committing, verify `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT`.
 - Enable this repository's identity guard with `git config --local core.hooksPath .githooks`. Do not bypass these hooks. They reject agent identities both at commit time and before pushing, including commits created through plumbing commands.
 
 ## Jcode Repository Ownership
 
-- This project also owns and maintains the adjacent Jcode SDK, harness API, and supporting crates in `/home/jeremy/jcode`.
+- This project also owns and maintains the adjacent Jcode SDK, harness API, and supporting crates in the sibling `../jcode` checkout.
 - New desktop functionality usually requires SDK changes. When desktop work requires an SDK, protocol, or shared-runtime change, make the correct change in the Jcode repository directly rather than adding a desktop-only workaround or asking the user to coordinate it.
 - Do not change the Jcode TUI unless the task explicitly requires it. Desktop features should normally be delivered through the SDK, not TUI changes.
 - Keep cross-repository behavior aligned and commit and push the changes in each affected repository.
@@ -79,6 +79,11 @@
 - If rebuilding or reloading fails, diagnose and fix it before reporting the change complete. Do not silently leave the running application on stale code.
 
 ## Fork notes (xenking/jcode-desktop, keep at end for clean upstream merges)
+- The [shared fork ledger](https://github.com/xenking/jcode/blob/master/docs/FORK_LEDGER.md) (`../jcode/docs/FORK_LEDGER.md` locally) records deliberate removals, replacement owners and pending changes. Keep the retired upstream workflows, standalone session search, project dock and in-process Bedrock SDK out of Desktop. `/resume`, project headers and daemon provider routing remain.
+- Before publishing an upstream sync, run `../jcode/scripts/check_fork_removals.py desktop . HEAD` on the candidate commit, even after a clean merge. `../jcode/scripts/xk-upstream-sync.sh` enforces this even with `--skip-checks`, including after a late merge from origin.
 - Fork-only features: composer prompt autocompletion via jcode-cloud `/v1/completions/prompt`, inline ask card for the agent's `ask` tool, voice backend picker (`[dictation]`, Soniox, SuperWhisper bridge), updater/Sparkle feed pointing at the xenking fork.
-- Builds on macOS need `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`, e.g. `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer justrust check`.
+- Use `justrust` for Rust checks and tests; run Clippy on affected crates before publishing Rust changes. On macOS, set `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (for example, `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer justrust check`).
 - Depends on the sibling `../jcode` checkout, so jcode edits rebuild Desktop.
+- Parallel agents (swarm workers, other sessions) never share a checkout: each works in its own `git worktree` under `~/.jcode/wt/<name>-<repo>` off origin, ships by rebase + fast-forward push to the primary branch, then removes the worktree and branch. This overrides the "Work directly on main" line for parallel work.
+- Run [`deslop-please`](https://github.com/deterministic-machines/deslop-please) `--allow .deslop-please.allow` before publishing Rust changes. `.deslop-please.allow` is a burn-down list, not permission: the target is an empty file. New `module-cycle`, `tangle`, `field-leak`, `shallow-module`, `wide-directory` or `long-file` errors fail the check, and code you touch must leave its entries fixed, not kept. Fix them from first principles: decide which layer each module belongs to, why the fields or functions exist and what narrow interface hides them. Fix leaks of one type together, never by mechanical moves that only hide the error. After removing debt, run `--update-allow .deslop-please.allow` so the list only shrinks.
+- Before writing, reviewing or refactoring Rust, load the `rust-router` skill and the sub-skill it routes to (`m15-anti-pattern`, `m05-type-driven`, `m09-domain`, `rust-refactor-helper`, `m10-performance`, `m07-concurrency`), plus `rust-skills` for the rule checklist. Swarm worker briefs must say which of these skills to load.

@@ -1,0 +1,495 @@
+use gpui::{Context, Entity, FontWeight, Window, div, prelude::*, px};
+use jcode_desktop_openrig::{
+    HostTarget,
+    attention::Action,
+    inbox::{Inbox, Item, ItemId},
+};
+
+use super::{Palette, State, default_base_url};
+use crate::{input::PromptInput, ui_actions::OpenFleetSession};
+
+#[derive(Default)]
+pub(super) struct ActionState {
+    phase: Phase,
+    pub(super) revision: u64,
+}
+
+#[derive(Default)]
+enum Phase {
+    #[default]
+    Idle,
+    Confirm {
+        item: ItemId,
+        action: Action,
+        target: Box<HostTarget>,
+        input: Option<Entity<PromptInput>>,
+    },
+    Running {
+        item: ItemId,
+    },
+    Finished {
+        item: ItemId,
+        result: Result<(), String>,
+    },
+}
+
+impl ActionState {
+    pub(super) fn running(&self) -> bool {
+        matches!(self.phase, Phase::Running { .. })
+    }
+
+    pub(super) fn cancel(&mut self) -> bool {
+        if matches!(self.phase, Phase::Confirm { .. }) {
+            self.phase = Phase::Idle;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The confirmation's text field owns the keyboard while it is focused.
+    pub(super) fn input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        matches!(&self.phase, Phase::Confirm { input: Some(input), .. }
+            if input.read(cx).is_focused(window))
+    }
+
+    pub(super) fn handle_key(&mut self, key: &str) -> bool {
+        if matches!(self.phase, Phase::Confirm { .. }) {
+            if key == "escape" {
+                self.cancel();
+            }
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn keep_confirmation_for(&mut self, inbox: Option<&Inbox>) {
+        if let Phase::Confirm { item, .. } = &self.phase
+            && inbox.is_some_and(|inbox| {
+                inbox.waits_loaded() && !inbox.items.iter().any(|row| &row.id == item)
+            })
+        {
+            self.phase = Phase::Finished {
+                item: item.clone(),
+                result: Err(
+                    "This item is no longer in the latest OpenRig list. Nothing was sent.".into(),
+                ),
+            };
+        }
+    }
+
+    fn error(&self, id: &ItemId) -> Option<&str> {
+        match &self.phase {
+            Phase::Finished {
+                item,
+                result: Err(error),
+            } if item == id => Some(error),
+            _ => None,
+        }
+    }
+
+    pub(super) fn notice(&self, inbox: Option<&Inbox>) -> Option<(&str, bool)> {
+        match &self.phase {
+            Phase::Running { .. } => Some(("Waiting for OpenRig and refreshing…", false)),
+            Phase::Finished { item, result }
+                if inbox.is_none_or(|inbox| inbox.items.iter().all(|row| &row.id != item)) =>
+            {
+                Some(match result {
+                    Ok(()) => ("OpenRig accepted the action. List refreshed.", false),
+                    Err(error) => (error, true),
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// What the confirmation flow shows on one item.
+pub(super) enum Shown<'a> {
+    Confirming {
+        action: &'a Action,
+        target: &'a HostTarget,
+        input: Option<&'a Entity<PromptInput>>,
+    },
+    Running,
+    Accepted,
+    Failed(&'a str),
+    Quiet,
+}
+
+impl ActionState {
+    pub(super) fn shown_for(&self, id: &ItemId) -> Shown<'_> {
+        match &self.phase {
+            Phase::Confirm {
+                item,
+                action,
+                target,
+                input,
+            } if item == id => Shown::Confirming {
+                action,
+                target,
+                input: input.as_ref(),
+            },
+            Phase::Running { item } if item == id => Shown::Running,
+            Phase::Finished {
+                item,
+                result: Ok(()),
+            } if item == id => Shown::Accepted,
+            Phase::Finished {
+                item,
+                result: Err(error),
+            } if item == id => Shown::Failed(error),
+            _ => Shown::Quiet,
+        }
+    }
+
+    /// Ask the user to confirm `action` on `item`.
+    pub(super) fn stage(
+        &mut self,
+        item: ItemId,
+        action: Action,
+        target: HostTarget,
+        input: Option<Entity<PromptInput>>,
+    ) {
+        self.phase = Phase::Confirm {
+            item,
+            action,
+            target: Box::new(target),
+            input,
+        };
+    }
+
+    /// The item whose confirmation is open.
+    fn confirming_item(&self) -> Option<&ItemId> {
+        match &self.phase {
+            Phase::Confirm { item, .. } => Some(item),
+            _ => None,
+        }
+    }
+
+    /// Send the confirmed action: bump the revision and show the item as running.
+    fn start(&mut self, item: ItemId) {
+        self.revision += 1;
+        self.phase = Phase::Running { item };
+    }
+
+    fn finish(&mut self, item: ItemId, result: Result<(), String>) {
+        self.revision += 1;
+        self.phase = Phase::Finished { item, result };
+    }
+}
+
+fn pill(
+    theme: &Palette,
+    id: &'static str,
+    label: &'static str,
+    primary: bool,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .rounded_full()
+        .px_3()
+        .py_1()
+        .text_size(px(12.))
+        .cursor_pointer()
+        .bg(if primary {
+            theme.ACCENT_DIM
+        } else {
+            theme.PANEL_BG
+        })
+        .hover(|style| style.bg(theme.ACCENT_DIM))
+        .child(label)
+}
+
+impl State {
+    pub(super) fn render_attention_actions(
+        &self,
+        row: &Item,
+        theme: &Palette,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let state = &self.attention_action;
+        let mut content = div().flex().flex_col().gap_2();
+        if let Some(session) = &row.session {
+            let action = OpenFleetSession {
+                target: session.target.clone(),
+                native_id: session.native_id.clone(),
+            };
+            content = content.child(
+                div().flex().child(
+                    pill(
+                        theme,
+                        "openrig-attention-session",
+                        "Open Jcode session",
+                        false,
+                    )
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(Box::new(action.clone()), cx)
+                    }),
+                ),
+            );
+        }
+        match state.shown_for(&row.id) {
+            Shown::Confirming {
+                action,
+                target,
+                input,
+            } => {
+                let stale = !row.actions().contains(action)
+                    || self.snapshot.attention_target(&row.id) != Some(target);
+                return content.child(
+                    div()
+                        .id("openrig-attention-confirmation")
+                        .debug_selector(|| "openrig-attention-confirmation".into())
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .capture_action(
+                            cx.listener(|_, _: &crate::input::Submit, _, cx| cx.stop_propagation()),
+                        )
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(format!("Confirm: {}", action.label())),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(theme.TEXT_DIM)
+                                .child(action.effect()),
+                        )
+                        .when_some(input.cloned(), |el, input| el.child(input))
+                        .when(stale, |el| {
+                            el.child(
+                                div().text_color(theme.WARN).child(
+                                    "This item changed. Cancel and review the latest details.",
+                                ),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap_2()
+                                .child(
+                                    pill(theme, "openrig-attention-cancel", "Cancel", false)
+                                        .debug_selector(|| "openrig-attention-cancel".into())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.cancel_attention_action(window, cx)
+                                        })),
+                                )
+                                .when(!stale, |el| {
+                                    el.child(
+                                        pill(theme, "openrig-attention-confirm", "Confirm", true)
+                                            .debug_selector(|| "openrig-attention-confirm".into())
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.confirm_attention_action(window, cx)
+                                            })),
+                                    )
+                                }),
+                        ),
+                );
+            }
+            Shown::Running => {
+                return content.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(theme.TEXT_DIM)
+                        .child("Waiting for OpenRig and refreshing…"),
+                );
+            }
+            Shown::Accepted => {
+                content = content.child(
+                    div()
+                        .text_color(theme.OK)
+                        .text_size(px(12.))
+                        .child("OpenRig accepted the action. Item refreshed."),
+                );
+            }
+            Shown::Failed(error) => {
+                content = content.child(
+                    div()
+                        .id("openrig-attention-action-error")
+                        .debug_selector(|| "openrig-attention-action-error".into())
+                        .text_size(px(12.))
+                        .text_color(theme.ERROR)
+                        .child(error.to_owned()),
+                );
+            }
+            Shown::Quiet => {}
+        }
+        if state.running() || row.actions().is_empty() {
+            return content;
+        }
+        let buttons = row
+            .actions()
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, action)| {
+                let item = row.id.clone();
+                let label = action.label().to_owned();
+                div()
+                    .id(("openrig-attention-action", index))
+                    .rounded_full()
+                    .px_3()
+                    .py_1()
+                    .bg(theme.PANEL_BG)
+                    .hover(|style| style.bg(theme.ACCENT_DIM))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .child(label)
+                    .debug_selector(move || format!("openrig-attention-action:{index}"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.stage_attention_action(item.clone(), action.clone(), window, cx)
+                    }))
+            });
+        content.child(div().flex().flex_wrap().gap_2().children(buttons))
+    }
+
+    fn stage_attention_action(
+        &mut self,
+        item: ItemId,
+        action: Action,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.attention_action.running() {
+            return;
+        }
+        let Some(target) = self.snapshot.attention_target(&item).cloned() else {
+            return;
+        };
+        let input = action.input_label().map(|label| {
+            let weak = cx.weak_entity();
+            cx.new(|cx| {
+                PromptInput::new(cx, label, |_, _, _, _| {})
+                    .without_command_completion()
+                    .with_on_overlay_cancel(move |app| {
+                        let _ = weak.update(app, |this, cx| {
+                            this.attention_action.cancel();
+                            cx.notify();
+                        });
+                        true
+                    })
+            })
+        });
+        if let Some(input) = &input {
+            window.focus(&input.read(cx).editor_focus(), cx);
+        } else {
+            window.focus(&self.focus, cx);
+        }
+        self.attention_action.stage(item, action, target, input);
+        cx.notify();
+    }
+
+    fn cancel_attention_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.attention_action.cancel();
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    fn confirm_attention_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = self.attention_action.confirming_item().cloned() else {
+            return;
+        };
+        let Shown::Confirming {
+            action,
+            target,
+            input,
+        } = self.attention_action.shown_for(&item)
+        else {
+            return;
+        };
+        let offered = self.snapshot.inbox.as_ref().is_some_and(|inbox| {
+            inbox
+                .items
+                .iter()
+                .any(|row| row.id == item && row.actions().contains(action))
+        });
+        if !offered || self.snapshot.attention_target(&item) != Some(target) {
+            return;
+        }
+        let text = input.map_or_else(String::new, |input| input.read(cx).text_owned());
+        let Some(confirmed) = action.confirm(&text) else {
+            if let Some(input) = input {
+                window.focus(&input.read(cx).editor_focus(), cx);
+            }
+            return;
+        };
+        let target = target.clone();
+        self.attention_action.start(item.clone());
+        window.focus(&self.focus, cx);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let (result, snapshot) = cx
+                .background_executor()
+                .spawn(async move {
+                    // Fixtures never send mutations, even if the synthetic Confirm button is clicked.
+                    if cfg!(test) || crate::harness::screenshot_mode() {
+                        return (Err("This fixture refused the request.".into()), None);
+                    }
+                    let base = default_base_url();
+                    let result = confirmed.execute(&target);
+                    let mut snapshot = jcode_desktop_openrig::fetch_snapshot(&base);
+                    snapshot.load_attention();
+                    (result, Some(snapshot))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.attention_action.finish(item, result);
+                if let Some(snapshot) = snapshot {
+                    this.snapshot.fleet = snapshot.fleet;
+                    this.snapshot.inbox = snapshot.inbox;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::panel::Panel;
+
+    #[gpui::test]
+    fn typed_reason_reaches_the_confirmation_input(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new_openrig(crate::harness::spawn_recording().0, cx));
+        vcx.run_until_parked();
+        let click = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+            let bounds = vcx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        if vcx.debug_bounds("openrig-section-menu").is_some() {
+            click(vcx, "openrig-section-menu");
+        }
+        click(vcx, "openrig-section:Inbox");
+        click(vcx, "inbox-item:Queue { host: \"local\", item: \"q2\" }");
+        click(vcx, "openrig-attention-action:0");
+        vcx.simulate_keystrokes("o k");
+        vcx.run_until_parked();
+        let typed = panel.read_with(vcx, |panel, cx| {
+            match &panel
+                .openrig
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .attention_action
+                .phase
+            {
+                Phase::Confirm {
+                    input: Some(input), ..
+                } => input.read(cx).content.to_string(),
+                _ => panic!("confirmation with an input must stay open while typing"),
+            }
+        });
+        assert_eq!(typed, "ok");
+    }
+}

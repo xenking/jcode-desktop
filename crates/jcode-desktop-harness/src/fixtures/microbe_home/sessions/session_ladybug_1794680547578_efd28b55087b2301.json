@@ -1,0 +1,20 @@
+{
+ "id": "session_ladybug_1794680547578_efd28b55087b2301",
+ "parent_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+ "title": "Rebuild and install the user's Jcode Desktop fork (~/project",
+ "created_at": "2026-11-14T18:22:27.578372Z",
+ "updated_at": "2026-11-14T18:27:44.072956Z",
+ "model_usage_turn_id": "session_ladybug_1794680547578_efd28b55087b2301:message_1794680547593_10505976306758959581",
+ "provider_key": "openai-oauth",
+ "model": "gpt-6.1-terra",
+ "route_api_method": "openai-oauth@openai-otter",
+ "reasoning_effort": "low",
+ "is_canary": false,
+ "working_dir": "/Users/xenking/.jcode/scratch/probe",
+ "short_name": "ladybug",
+ "status": "Active",
+ "last_pid": 999999,
+ "last_active_at": "2026-11-14T18:22:27.578820Z",
+ "is_debug": true,
+ "saved": false
+}

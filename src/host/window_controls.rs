@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use gpui::{AnyWindowHandle, App, actions};
 
-use super::reload::ReloadManager;
+use super::{reload::ReloadManager, window_placement};
 
 actions!(jcode_desktop_host, [CloseWindow]);
 
@@ -26,6 +26,7 @@ pub fn install(
                     eprintln!("failed to suspend desktop workspace: {error:#}");
                     return;
                 }
+                window_placement::flush(window, cx);
                 *current.borrow_mut() = None;
                 window.remove_window();
             });
@@ -41,7 +42,10 @@ pub fn install_close_only(cx: &mut App) {
             return;
         };
         cx.defer(move |cx| {
-            let _ = handle.update(cx, |_, window, _| window.remove_window());
+            let _ = handle.update(cx, |_, window, cx| {
+                window_placement::flush(window, cx);
+                window.remove_window();
+            });
         });
     });
 }

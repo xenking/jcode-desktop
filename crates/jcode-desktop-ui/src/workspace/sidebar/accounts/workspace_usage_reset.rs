@@ -1,0 +1,677 @@
+//! Redeem banked usage resets from the accounts list.
+//!
+//! OpenAI banked resets and Claude session-limit resets are single-use and
+//! cannot be undone, so the flow is always: read-only preparation against the
+//! provider, an explicit review, then one confirmed redemption. Preparation
+//! pins the login, so switching accounts meanwhile cannot spend another one.
+use super::*;
+use crate::accounts::{BankedReset, ResetProvider};
+use gpui::DismissEvent;
+use jcode_base::usage::{
+    PendingAnthropicLimitReset, PendingOpenAiUsageReset, PendingSavedClaudeReset,
+};
+
+/// A prepared redemption. Holds credentials, so it never leaves this module.
+#[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
+pub(super) enum Pending {
+    OpenAi(PendingOpenAiUsageReset),
+    Claude(PendingAnthropicLimitReset),
+    SavedClaude(PendingSavedClaudeReset),
+}
+
+impl Pending {
+    fn account_display(&self) -> &str {
+        match self {
+            Self::OpenAi(pending) => pending.account_display(),
+            Self::Claude(pending) => pending.account_display(),
+            Self::SavedClaude(pending) => pending.account_display(),
+        }
+    }
+
+    fn details(&self) -> Vec<String> {
+        match self {
+            Self::OpenAi(pending) => pending.confirmation_details(),
+            Self::Claude(pending) => pending.confirmation_details(),
+            Self::SavedClaude(pending) => pending.confirmation_details(),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) enum Stage {
+    #[default]
+    Checking,
+    Review(Pending),
+    Redeeming(Pending),
+    /// Final message. `ok` colours it, and never implies money was spent.
+    Done {
+        message: String,
+        ok: bool,
+    },
+    /// The redemption outcome is unknown. The same pinned request may be
+    /// retried safely, because the provider will not spend twice.
+    Uncertain {
+        message: String,
+        pending: Pending,
+    },
+}
+
+/// The review dialog, one login's reset at a time.
+pub(super) struct UsageReset {
+    pub(super) provider: ResetProvider,
+    pub(super) account_label: Option<String>,
+    pub(super) stage: Stage,
+    focus: FocusHandle,
+    _task: Option<gpui::Task<()>>,
+}
+
+#[allow(clippy::large_enum_variant)]
+enum PrepareResult {
+    Ready(Pending),
+    Nothing(String),
+}
+
+/// `saved` says the row advertised a saved reset, so that one is looked up
+/// first; the weekly session reset is the other thing Claude can offer.
+async fn prepare(
+    provider: ResetProvider,
+    label: Option<String>,
+    saved: bool,
+) -> Result<PrepareResult, String> {
+    jcode_desktop_harness::network::run(async move {
+        match provider {
+            ResetProvider::OpenAi => {
+                match jcode_base::usage::prepare_openai_usage_reset_for_account(label).await {
+                    Ok(Some(pending)) => Ok(PrepareResult::Ready(Pending::OpenAi(pending))),
+                    Ok(None) => Ok(PrepareResult::Nothing(
+                        "No banked OpenAI resets are available. Nothing was changed.".into(),
+                    )),
+                    Err(error) => Err(first_line(&error.to_string())),
+                }
+            }
+            ResetProvider::Claude => {
+                let first = prepare_claude(label.clone(), saved).await?;
+                match first {
+                    PrepareResult::Ready(_) => Ok(first),
+                    PrepareResult::Nothing(_) => match prepare_claude(label, !saved).await? {
+                        ready @ PrepareResult::Ready(_) => Ok(ready),
+                        PrepareResult::Nothing(_) => Ok(first),
+                    },
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| "Could not start the reset check. Please try again.".to_string())?
+}
+
+async fn prepare_claude(label: Option<String>, saved: bool) -> Result<PrepareResult, String> {
+    if saved {
+        return match jcode_base::usage::prepare_saved_claude_reset(label).await {
+            Ok(Ok(pending)) => Ok(PrepareResult::Ready(Pending::SavedClaude(pending))),
+            Ok(Err(unavailable)) => Ok(PrepareResult::Nothing(unavailable.message().into())),
+            Err(error) => Err(first_line(&error.to_string())),
+        };
+    }
+    match jcode_base::usage::prepare_anthropic_limit_reset(label).await {
+        Ok(Ok(pending)) => Ok(PrepareResult::Ready(Pending::Claude(pending))),
+        Ok(Err(unavailable)) => Ok(PrepareResult::Nothing(unavailable.message())),
+        Err(error) => Err(first_line(&error.to_string())),
+    }
+}
+
+/// Provider errors carry a retry hint on later lines written for the TUI.
+fn first_line(message: &str) -> String {
+    message.lines().next().unwrap_or(message).to_string()
+}
+
+enum RedeemResult {
+    Done { message: String, ok: bool },
+    Uncertain(String),
+}
+
+async fn redeem(pending: &Pending) -> RedeemResult {
+    let pending = pending.clone();
+    let outcome = jcode_desktop_harness::network::run(async move {
+        match &pending {
+            Pending::OpenAi(pending) => jcode_base::usage::consume_openai_usage_reset(pending)
+                .await
+                .map(|outcome| {
+                    (
+                        outcome
+                            .message()
+                            .replace("Use /usage", "Check the accounts list"),
+                        true,
+                    )
+                }),
+            Pending::Claude(pending) => jcode_base::usage::consume_anthropic_limit_reset(pending)
+                .await
+                .map(|outcome| (outcome.message(), outcome.limits_cleared())),
+            Pending::SavedClaude(pending) => {
+                jcode_base::usage::consume_saved_claude_reset(pending)
+                    .await
+                    .map(|applied| {
+                        if applied {
+                            ("Saved Claude reset used.".to_owned(), true)
+                        } else {
+                            (
+                                "Claude did not apply the reset. Check Claude Settings > Usage before trying again."
+                                    .to_owned(),
+                                false,
+                            )
+                        }
+                    })
+            }
+        }
+    })
+    .await
+    .map_err(|_| "Could not start the reset check. Please try again.".to_string());
+    match outcome {
+        Ok(Ok((message, ok))) => RedeemResult::Done { message, ok },
+        Ok(Err(error)) => RedeemResult::Uncertain(first_line(&error.to_string())),
+        Err(message) => RedeemResult::Uncertain(message),
+    }
+}
+
+/// The daemon keeps its own quota caches and cooldowns. Tell it the login was
+/// reset so the next prompt is not refused on stale state. Best effort.
+fn notify_daemon(provider: ResetProvider, label: Option<&str>) {
+    let Ok(client) = jcode_sdk::JcodeClient::connect(jcode_sdk::ConnectOptions {
+        client_name: "jcode-desktop-usage-reset".into(),
+        ensure_runtime: false,
+        ..Default::default()
+    }) else {
+        return;
+    };
+    let _ = client.invalidate_usage(provider.api_id(), label);
+}
+
+fn live() -> bool {
+    !cfg!(test) && !harness::screenshot_mode()
+}
+
+impl Workspace {
+    /// `/reset` from the composer. Targets the active login of that provider
+    /// and starts the same read-only check as the accounts list pill.
+    pub(super) fn open_usage_reset_command(
+        &mut self,
+        request: &crate::ui_actions::OpenUsageReset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A redemption in flight keeps its dialog until the result is shown.
+        if self
+            .active_modal::<UsageReset>(cx)
+            .is_some_and(|dialog| dialog.read(cx).redeeming())
+        {
+            return;
+        }
+        let account_label = if live() {
+            match request.provider {
+                ResetProvider::OpenAi => jcode_base::auth::codex::active_account_label(),
+                ResetProvider::Claude => jcode_base::auth::claude::active_account_label(),
+            }
+        } else {
+            None
+        };
+        let reset = BankedReset {
+            provider: request.provider,
+            account_label,
+            // Availability is unknown until the read-only check answers.
+            available_count: 0,
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
+            limit_reached: false,
+            next_available_at: None,
+        };
+        self.open_usage_reset(&reset, window, cx);
+    }
+
+    /// Open the review for one login's reset and start the read-only check.
+    pub(super) fn open_usage_reset(
+        &mut self,
+        reset: &BankedReset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (provider, label) = (reset.provider, reset.account_label.clone());
+        let saved = reset.usable_count.unwrap_or(0) > 0;
+        let dialog = cx.new(|cx| UsageReset::new(provider, label, saved, cx));
+        self.modal_layer
+            .update(cx, |layer, cx| layer.show(dialog, window, cx));
+    }
+}
+
+impl UsageReset {
+    fn new(
+        provider: ResetProvider,
+        label: Option<String>,
+        saved: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let task = live().then(|| {
+            let check = {
+                let label = label.clone();
+                cx.background_executor()
+                    .spawn(async move { prepare(provider, label, saved).await })
+            };
+            cx.spawn(async move |this, cx| {
+                let result = check.await;
+                let _ = this.update(cx, |this, cx| {
+                    if !matches!(this.stage, Stage::Checking) {
+                        return;
+                    }
+                    this.stage = match result {
+                        Ok(PrepareResult::Ready(pending)) => Stage::Review(pending),
+                        Ok(PrepareResult::Nothing(message)) => Stage::Done { message, ok: false },
+                        Err(message) => Stage::Done { message, ok: false },
+                    };
+                    cx.notify();
+                });
+            })
+        });
+        Self {
+            provider,
+            account_label: label,
+            stage: Stage::Checking,
+            focus: cx.focus_handle(),
+            _task: task,
+        }
+    }
+
+    fn redeeming(&self) -> bool {
+        matches!(self.stage, Stage::Redeeming(_))
+    }
+
+    pub(super) fn close(&mut self, cx: &mut Context<Self>) {
+        // A redemption already sent cannot be recalled. Keep the dialog so the
+        // user sees its result instead of guessing.
+        if !self.redeeming() {
+            cx.emit(DismissEvent);
+        }
+    }
+
+    fn confirm(&mut self, cx: &mut Context<Self>) {
+        let pending = match &self.stage {
+            Stage::Review(pending) | Stage::Uncertain { pending, .. } => pending.clone(),
+            _ => return,
+        };
+        let provider = self.provider;
+        let label = self.account_label.clone();
+        self.stage = Stage::Redeeming(pending.clone());
+        if live() {
+            let work = cx.background_executor().spawn(async move {
+                let result = redeem(&pending).await;
+                // Invalidate even when uncertain: the reset may have applied.
+                notify_daemon(provider, label.as_deref());
+                (result, pending)
+            });
+            self._task = Some(cx.spawn(async move |this, cx| {
+                let (result, pending) = work.await;
+                let _ = this.update(cx, |this, cx| {
+                    this.stage = match result {
+                        RedeemResult::Done { message, ok } => Stage::Done { message, ok },
+                        RedeemResult::Uncertain(message) => Stage::Uncertain { message, pending },
+                    };
+                    accounts::request_refresh();
+                    cx.notify();
+                });
+            }));
+        }
+        cx.notify();
+    }
+}
+
+impl gpui::EventEmitter<DismissEvent> for UsageReset {}
+impl ModalView for UsageReset {}
+
+impl Focusable for UsageReset {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for UsageReset {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::global();
+        let dialog = &*self;
+        let saved_claude = matches!(
+            &dialog.stage,
+            Stage::Review(Pending::SavedClaude(_))
+                | Stage::Redeeming(Pending::SavedClaude(_))
+                | Stage::Uncertain {
+                    pending: Pending::SavedClaude(_),
+                    ..
+                }
+        );
+        let title = match (dialog.provider, saved_claude) {
+            (ResetProvider::OpenAi, _) => "Reset OpenAI usage limits",
+            (ResetProvider::Claude, true) => "Use a saved Claude reset",
+            (ResetProvider::Claude, false) => "Reset Claude session limit",
+        };
+        let login = match &dialog.stage {
+            Stage::Review(pending)
+            | Stage::Redeeming(pending)
+            | Stage::Uncertain { pending, .. } => pending.account_display().to_string(),
+            _ => dialog
+                .account_label
+                .clone()
+                .unwrap_or_else(|| format!("default {} login", dialog.provider.label())),
+        };
+
+        let line = |text: String| {
+            div()
+                .text_size(px(12.0))
+                .line_height(px(18.0))
+                .text_color(theme.TEXT_DIM)
+                .child(text)
+        };
+        let mut body = div().flex().flex_col().gap_1();
+        let mut primary: Option<(&'static str, bool)> = None;
+        let mut cancel_label = "Cancel";
+        match &dialog.stage {
+            Stage::Checking => {
+                body = body.child(line(
+                    "Checking which resets this login can use. Nothing is spent yet.".into(),
+                ));
+            }
+            Stage::Review(pending) => {
+                for detail in pending.details() {
+                    body = body.child(line(detail));
+                }
+                body = body.child(
+                    div()
+                        .debug_selector(|| "usage-reset-warning".into())
+                        .pt_1()
+                        .text_size(px(12.0))
+                        .line_height(px(18.0))
+                        .text_color(theme.WARN)
+                        .child("This spends one reset and cannot be undone. It does not buy credits or raise your plan limits."),
+                );
+                primary = Some(("Reset now", true));
+            }
+            Stage::Redeeming(_) => {
+                body = body.child(line("Requesting the reset…".into()));
+                primary = Some(("Resetting…", false));
+            }
+            Stage::Done { message, ok } => {
+                body = body.child(
+                    div()
+                        .debug_selector(|| "usage-reset-result".into())
+                        .text_size(px(12.0))
+                        .line_height(px(18.0))
+                        .text_color(if *ok { theme.OK } else { theme.TEXT_DIM })
+                        .child(message.clone()),
+                );
+                cancel_label = "Close";
+            }
+            Stage::Uncertain { message, .. } => {
+                body = body
+                    .child(
+                        div()
+                            .debug_selector(|| "usage-reset-result".into())
+                            .text_size(px(12.0))
+                            .line_height(px(18.0))
+                            .text_color(theme.WARN)
+                            .child(message.clone()),
+                    )
+                    .child(line(
+                        "The reset may already have applied. Retrying sends the same request, so it cannot spend a second reset.".into(),
+                    ));
+                primary = Some(("Retry same reset", true));
+                cancel_label = "Close";
+            }
+        }
+        let redeeming = matches!(dialog.stage, Stage::Redeeming(_));
+
+        let mut actions = div().pt_3().flex().justify_end().gap_2();
+        if !redeeming {
+            actions = actions.child(
+                div()
+                    .id("usage-reset-cancel")
+                    .debug_selector(|| "usage-reset-cancel".into())
+                    .px_4()
+                    .py_1()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .text_size(px(12.0))
+                    .bg(theme.HEADER_BG)
+                    .text_color(theme.TEXT)
+                    .hover(|el| el.bg(theme.INLINE_CODE_BG))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.close(cx);
+                    }))
+                    .child(cancel_label),
+            );
+        }
+        if let Some((label, enabled)) = primary {
+            actions = actions.child(
+                div()
+                    .id("usage-reset-confirm")
+                    .debug_selector(|| "usage-reset-confirm".into())
+                    .px_4()
+                    .py_1()
+                    .rounded_full()
+                    .text_size(px(12.0))
+                    .bg(if enabled {
+                        theme.ACCENT
+                    } else {
+                        theme.wash(crate::theme::Ink::Accent, 0.4)
+                    })
+                    .text_color(theme.BG)
+                    .when(enabled, |el| {
+                        el.cursor_pointer()
+                            .hover(|el| el.opacity(0.9))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.confirm(cx);
+                            }))
+                    })
+                    .child(label),
+            );
+        }
+
+        div()
+            .id("usage-reset-overlay")
+            .debug_selector(|| "usage-reset-overlay".into())
+            .track_focus(&self.focus)
+            .key_context(crate::menu::CONTEXT)
+            .on_action(cx.listener(|this, _: &crate::menu::Cancel, _, cx| this.close(cx)))
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui::rgba(0x00000099))
+            .occlude()
+            .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+            })
+            .child(
+                div()
+                    .id("usage-reset-dialog")
+                    .debug_selector(|| "usage-reset-dialog".into())
+                    .w(px(400.0))
+                    .max_w(relative(0.9))
+                    .p_4()
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(theme.PANEL_BORDER_FOCUS)
+                    .bg(theme.PANEL_BG)
+                    .shadow_md()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .debug_selector(|| "usage-reset-title".into())
+                            .text_size(px(14.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.TEXT)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "usage-reset-login".into())
+                            .text_size(px(11.0))
+                            .text_color(theme.TEXT_DIM)
+                            .child(login),
+                    )
+                    .child(body)
+                    .child(actions),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::accounts::{Account, UsageReport};
+
+    fn claude_account(reset: Option<BankedReset>) -> Account {
+        Account {
+            id: "claude".into(),
+            display_name: "Claude".into(),
+            status: "available".into(),
+            auth_kind: "OAuth".into(),
+            method: "OAuth".into(),
+            limits: vec![accounts::UsageLimit {
+                name: "5-hour window".into(),
+                usage_percent: 100.0,
+                reset_in: Some("2h".into()),
+            }],
+            usage_reports: vec![UsageReport {
+                identity: None,
+                credits: None,
+                provider_name: "Anthropic (Claude)".into(),
+                account_label: None,
+                limits: Vec::new(),
+                extra_info: Vec::new(),
+                banked_reset: reset,
+            }],
+        }
+    }
+
+    fn session_reset(available: bool) -> BankedReset {
+        BankedReset {
+            provider: ResetProvider::Claude,
+            account_label: None,
+            available_count: u64::from(available),
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
+            limit_reached: true,
+            next_available_at: None,
+        }
+    }
+
+    #[gpui::test]
+    fn reset_pill_opens_a_review_that_cannot_spend_without_confirmation(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.sidebar_view = SidebarView::Accounts;
+            w.set_test_accounts(vec![claude_account(Some(session_reset(true)))]);
+            w
+        });
+        vcx.run_until_parked();
+        let pill = vcx
+            .debug_bounds("account-claude-reset-0")
+            .expect("an offerable reset shows a pill");
+        vcx.simulate_click(pill.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("usage-reset-dialog").is_some());
+        workspace.read_with(vcx, |w, cx| {
+            let dialog = w.active_modal::<UsageReset>(cx).unwrap();
+            let dialog = dialog.read(cx);
+            assert_eq!(dialog.provider, ResetProvider::Claude);
+            // Tests never reach the network: the dialog waits in its read-only check.
+            assert!(matches!(dialog.stage, Stage::Checking));
+        });
+        // No confirm control exists until a prepared review is shown.
+        assert!(vcx.debug_bounds("usage-reset-confirm").is_none());
+        let cancel = vcx.debug_bounds("usage-reset-cancel").unwrap();
+        vcx.simulate_click(cancel.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("usage-reset-dialog").is_none());
+        workspace.read_with(vcx, |w, cx| {
+            assert!(w.active_modal::<UsageReset>(cx).is_none())
+        });
+    }
+
+    #[gpui::test]
+    fn spent_or_absent_resets_show_no_pill(cx: &mut gpui::TestAppContext) {
+        for reset in [None, Some(session_reset(false))] {
+            let (_, vcx) = cx.add_window_view(|_, cx| {
+                let mut w = Workspace::for_test(learning::Coach::new(), cx);
+                w.sidebar_view = SidebarView::Accounts;
+                w.sidebar_view = SidebarView::Accounts;
+                w.set_test_accounts(vec![claude_account(reset.clone())]);
+                w
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("account-claude").is_some());
+            assert!(vcx.debug_bounds("account-claude-reset-0").is_none());
+        }
+    }
+
+    #[gpui::test]
+    fn results_replace_the_confirm_action_and_can_be_closed(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.sidebar_view = SidebarView::Accounts;
+            w.set_test_accounts(vec![claude_account(Some(session_reset(true)))]);
+            w
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            workspace.update(cx, |w, cx| {
+                w.open_usage_reset(&session_reset(true), window, cx)
+            })
+        });
+        let dialog = workspace.read_with(vcx, |w, cx| w.active_modal::<UsageReset>(cx).unwrap());
+        dialog.update(vcx, |dialog, cx| {
+            dialog.stage = Stage::Done {
+                message: "Claude session limit reset.".into(),
+                ok: true,
+            };
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("usage-reset-result").is_some());
+        assert!(vcx.debug_bounds("usage-reset-confirm").is_none());
+        dialog.update(vcx, |dialog, cx| dialog.close(cx));
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert!(w.active_modal::<UsageReset>(cx).is_none())
+        });
+    }
+
+    #[test]
+    fn openai_resets_are_offered_only_once_the_limit_binds() {
+        let reset = |limit_reached| BankedReset {
+            provider: ResetProvider::OpenAi,
+            account_label: Some("work".into()),
+            available_count: 2,
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
+            limit_reached,
+            next_available_at: None,
+        };
+        assert!(reset(true).offerable());
+        assert!(!reset(false).offerable());
+        assert_eq!(reset(true).pill_label(), "Reset limits · 2");
+        assert!(session_reset(true).offerable());
+        assert!(!session_reset(false).offerable());
+        assert_eq!(first_line("first\nsecond"), "first");
+    }
+}

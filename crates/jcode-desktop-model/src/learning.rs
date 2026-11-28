@@ -498,9 +498,11 @@ impl Coach {
         self.traces.entry(id.to_string()).or_default()
     }
 
-    /// Whether the model has changed since it was last persisted.
-    pub fn take_dirty(&mut self) -> bool {
-        std::mem::replace(&mut self.dirty, false)
+    /// Hands the model to `persistence` if it changed since the last save.
+    pub fn save_changes(&mut self, persistence: &Persistence) {
+        if std::mem::replace(&mut self.dirty, false) {
+            persistence.save(self);
+        }
     }
 
     pub fn mastery(&self, id: &str, now: Seconds) -> f32 {
@@ -711,11 +713,10 @@ impl Coach {
             if self.active_hint(now).is_some() && self.hint_paused_at.is_none() {
                 self.hint_paused_at = Some(now);
             }
-        } else if let Some(paused_at) = self.hint_paused_at.take() {
-            if let Some(hint) = &mut self.active {
+        } else if let Some(paused_at) = self.hint_paused_at.take()
+            && let Some(hint) = &mut self.active {
                 hint.shown_at += now.saturating_sub(paused_at);
             }
-        }
     }
 
     /// The skill currently being taught, without touching expiry. For
@@ -1597,7 +1598,7 @@ mod tests {
         assert_eq!(coach.effort_saved, 0);
         assert_eq!(coach.effort_wasted, 0);
         assert_eq!(coach.active_hint_id(), None);
-        assert!(coach.take_dirty(), "practice must be persisted");
+        assert!(coach.dirty, "practice must be persisted");
     }
 
     #[test]

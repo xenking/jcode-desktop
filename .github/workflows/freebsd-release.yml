@@ -52,12 +52,12 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          repository: 1jehuang/jcode
-          ref: d2be4dc6a31d56791dbd7ba7de5805e179fb1748 # verified runtime: account labels, effective token budgets, voice, collections and session presence
+          repository: xenking/jcode
+          ref: dbd4ceafea0b97f3027ee7c707e9f29076e6551d
           path: jcode
           submodules: recursive
       - name: Verify runtime source compatibility
-        run: python3 jcode-desktop/scripts/verify-runtime-source.py --runtime jcode --expected-commit d2be4dc6a31d56791dbd7ba7de5805e179fb1748
+        run: python3 jcode-desktop/scripts/verify-runtime-source.py --runtime jcode --expected-commit dbd4ceafea0b97f3027ee7c707e9f29076e6551d
       - name: Test FreeBSD graphical gate contracts
         run: |
           python3 -m unittest discover -s jcode-desktop/tests -p test_freebsd_regular_smoke.py -v

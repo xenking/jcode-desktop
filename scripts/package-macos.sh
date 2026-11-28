@@ -18,8 +18,61 @@ ZIP="$OUT/Jcode-macOS-universal.zip"
 DMG_ROOT="$OUT/dmg-root"
 ENTITLEMENTS="$ROOT/packaging/macos/Jcode.entitlements"
 SPARKLE_ROOT="${SPARKLE_ROOT:-$OUT/sparkle}"
+read -r -a TARGETS <<< "${PACKAGE_TARGETS:-aarch64-apple-darwin}"
+# Extra cargo features for the Desktop build, comma separated. A Mac without
+# the Metal toolchain passes `gpui_platform/runtime_shaders` so shaders compile
+# when the app starts instead of when it is built.
+DESKTOP_CARGO_FEATURES="${DESKTOP_CARGO_FEATURES:-}"
+
+if [[ "${GITHUB_ACTIONS:-}" != true || "${RUNNER_ENVIRONMENT:-}" != github-hosted ]]; then
+  admission=(python3 "$JCODE_REPO/scripts/build-admission.py")
+  if [[ ! -r "${admission[1]}" && -n "${JCODE_BUILD_LEASE_FD:-}" && -n "${JCODE_BUILD_ADMISSION_PYTHON:-}" ]]; then
+    admission=(python3 -c "$JCODE_BUILD_ADMISSION_PYTHON")
+  elif [[ ! -r "${admission[1]}" ]]; then
+    echo "build admission blocked: owner=desktop-package paths=$OUT,$JCODE_REPO policy=desktop: missing ${admission[1]}; update the Jcode source checkout" >&2
+    exit 75
+  fi
+  admission+=(--owner desktop-package --kind desktop --units "${#TARGETS[@]}"
+    --path "$OUT" --path "$SPARKLE_ROOT" --workspace "$ROOT/Cargo.toml" --workspace "$JCODE_REPO/Cargo.toml")
+  if [[ -z "${JCODE_BUILD_LEASE_FD:-}" ]]; then
+    exec "${admission[@]}" -- "$0" "$@"
+  fi
+  "${admission[@]}" --check-inherited
+  unset JCODE_BUILD_ADMISSION_PYTHON
+fi
+
+# Keep local upgrades on the same signing identity so TCC grants survive.
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  APPLE_SIGNING_IDENTITY="$(/usr/bin/security find-identity -v -p codesigning 2>/dev/null |
+    sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Apple Development: .*"$/\1/p' | head -1)"
+fi
+IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
+
+# Local signed builds use the paired rollout. Public releases retain Sparkle.
+if [[ -z "${JCODE_DESKTOP_PAIRED_ROLLOUT:-}" ]]; then
+  JCODE_DESKTOP_PAIRED_ROLLOUT=0
+  if [[ "${GITHUB_ACTIONS:-}" != true && "${REQUIRE_SECURE_UPDATES:-0}" != 1 && "$IDENTITY" != - ]]; then
+    JCODE_DESKTOP_PAIRED_ROLLOUT=1
+  fi
+fi
+case "$JCODE_DESKTOP_PAIRED_ROLLOUT" in
+  0) ;;
+  1) [[ "$IDENTITY" != - && "${REQUIRE_SECURE_UPDATES:-0}" != 1 ]] || {
+       echo "error: paired rollout requires a stable Apple signing identity and no Sparkle feed" >&2
+       exit 1
+     } ;;
+  *) echo "error: JCODE_DESKTOP_PAIRED_ROLLOUT must be 0 or 1" >&2; exit 1 ;;
+esac
+export JCODE_DESKTOP_PAIRED_ROLLOUT
+
+# Only standalone Sparkle builds read the keypair from the 0600 env file.
+SPARKLE_ENV="${SPARKLE_ENV:-$HOME/Library/Application Support/jcode/sparkle.env}"
+if [[ "$JCODE_DESKTOP_PAIRED_ROLLOUT" == 0 && -z "${SPARKLE_PUBLIC_KEY:-}" && -r "$SPARKLE_ENV" ]]; then
+  SPARKLE_PUBLIC_KEY="$(sed -n 's/^SPARKLE_PUBLIC_KEY=//p' "$SPARKLE_ENV")"
+  SPARKLE_PRIVATE_KEY="${SPARKLE_PRIVATE_KEY:-$(sed -n 's/^SPARKLE_PRIVATE_KEY=//p' "$SPARKLE_ENV")}"
+fi
+RELEASES_BASE="${RELEASES_BASE:-https://github.com/xenking/jcode-desktop/releases/download}"
 UPDATE_FEED_URL="${UPDATE_FEED_URL:-https://github.com/xenking/jcode-desktop/releases/download/desktop-latest/appcast.xml}"
-TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
 BINS=(jcode-desktop jcode jcode-harness-api-bridge)
 
 notarize() {
@@ -84,7 +137,8 @@ for target in "${TARGETS[@]}"; do rustup target add "$target"; done
 "$ROOT/scripts/fetch-sparkle.sh" "$SPARKLE_ROOT"
 
 for target in "${TARGETS[@]}"; do
-  cargo build --manifest-path "$ROOT/Cargo.toml" --release --target "$target"
+  cargo build --manifest-path "$ROOT/Cargo.toml" --release --target "$target" \
+    ${DESKTOP_CARGO_FEATURES:+--features "$DESKTOP_CARGO_FEATURES"}
   cargo build --manifest-path "$JCODE_REPO/Cargo.toml" --release --target "$target" --bin jcode
   cargo build --manifest-path "$JCODE_REPO/Cargo.toml" --release --target "$target" \
     --package jcode-harness-api-server --bin jcode-harness-api-bridge
@@ -98,7 +152,9 @@ PLIST_ARGS=(
   --version "$VERSION"
   --build "$BUILD_NUMBER"
 )
-if [[ -n "${SPARKLE_PUBLIC_KEY:-}" ]]; then
+if [[ "$JCODE_DESKTOP_PAIRED_ROLLOUT" == 1 ]]; then
+  PLIST_ARGS+=(--paired-rollout)
+elif [[ -n "${SPARKLE_PUBLIC_KEY:-}" ]]; then
   PLIST_ARGS+=(--public-key "$SPARKLE_PUBLIC_KEY" --feed-url "$UPDATE_FEED_URL")
 fi
 if [[ "${REQUIRE_SECURE_UPDATES:-0}" == 1 ]]; then
@@ -109,11 +165,10 @@ ditto "$SPARKLE_ROOT/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framew
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 for bin in "${BINS[@]}"; do
-  if [[ "$bin" == jcode-desktop ]]; then base="$ROOT/target"; else base="$JCODE_REPO/target"; fi
-  lipo -create \
-    "$base/aarch64-apple-darwin/release/$bin" \
-    "$base/x86_64-apple-darwin/release/$bin" \
-    -output "$APP/Contents/MacOS/$bin"
+  if [[ "$bin" == jcode-desktop ]]; then base="${CARGO_TARGET_DIR:-$ROOT/target}"; else base="${CARGO_TARGET_DIR:-$JCODE_REPO/target}"; fi
+  inputs=()
+  for target in "${TARGETS[@]}"; do inputs+=("$base/$target/release/$bin"); done
+  lipo -create "${inputs[@]}" -output "$APP/Contents/MacOS/$bin"
   chmod 755 "$APP/Contents/MacOS/$bin"
 done
 
@@ -127,16 +182,18 @@ rm -rf "$OUT/icon.iconset"
 
 # Use the hardened runtime without broad exceptions. The explicit empty
 # entitlement set makes accidental privilege additions visible in review and in
-# verify-macos-package.sh. Ad-hoc signing remains available for local builds.
-IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
-SIGN_ARGS=(--force --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY")
-if [[ "$IDENTITY" != "-" ]]; then SIGN_ARGS+=(--timestamp); fi
+# verify-macos-package.sh.
+echo "package-macos: signing identity ${IDENTITY}" >&2
+# A secure timestamp needs Apple's server and only matters for notarized
+# Developer ID builds, so local identities sign without one.
+TIMESTAMP=()
+if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then TIMESTAMP=(--timestamp); fi
+SIGN_ARGS=(--force --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" ${TIMESTAMP[@]+"${TIMESTAMP[@]}"})
 # Sparkle's helper services need their own entitlements. Preserve those while
 # re-signing every nested bundle with the host application's identity, then
 # seal the framework. Avoid codesign --deep for signing because it can hide a
 # malformed or incompletely signed nested bundle.
-NESTED_SIGN_ARGS=(--force --options runtime --preserve-metadata=identifier,entitlements --sign "$IDENTITY")
-if [[ "$IDENTITY" != "-" ]]; then NESTED_SIGN_ARGS+=(--timestamp); fi
+NESTED_SIGN_ARGS=(--force --options runtime --preserve-metadata=identifier,entitlements --sign "$IDENTITY" ${TIMESTAMP[@]+"${TIMESTAMP[@]}"})
 # Autoupdate is a standalone Mach-O binary inside the framework rather than a
 # bundle, so sealing Sparkle.framework does not replace its upstream signature.
 # Sign it explicitly before the bundles that contain and seal it.
@@ -177,7 +234,7 @@ hdiutil create -volname "Jcode" -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG" >
 rm -rf "$DMG_ROOT"
 
 if [[ "$IDENTITY" != "-" ]]; then
-  codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+  codesign --force ${TIMESTAMP[@]+"${TIMESTAMP[@]}"} --sign "$IDENTITY" "$DMG"
 fi
 if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
   notarize "$DMG"
@@ -188,4 +245,15 @@ fi
 EXPECT_NOTARIZED="$([[ -n "${APPLE_NOTARY_PROFILE:-}" ]] && echo 1 || echo 0)" \
   "$ROOT/scripts/verify-macos-package.sh" "$APP" "$DMG"
 (cd "$OUT" && shasum -a 256 "$(basename "$ZIP")" "$(basename "$DMG")" > SHA256SUMS)
+if [[ "$JCODE_DESKTOP_PAIRED_ROLLOUT" == 0 && -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
+  UPDATES="$OUT/updates"
+  ARCHIVE="Jcode-${VERSION}-macOS-universal.zip"
+  rm -rf "$UPDATES" && mkdir -p "$UPDATES"
+  cp "$ZIP" "$UPDATES/$ARCHIVE"
+  printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$SPARKLE_ROOT/bin/generate_appcast" \
+    --ed-key-file - --download-url-prefix "$RELEASES_BASE/desktop-v$VERSION/" "$UPDATES"
+  grep -q 'sparkle:edSignature=' "$UPDATES/appcast.xml"
+  cp "$UPDATES/appcast.xml" "$OUT/appcast.xml"
+  echo "signed appcast: $OUT/appcast.xml"
+fi
 echo "macOS beta artifacts: $OUT"

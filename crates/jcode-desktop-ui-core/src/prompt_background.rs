@@ -97,9 +97,9 @@ fn path_key(lines: &[Bounds<Pixels>], radius: f32) -> PathKey {
 fn translated(path: &gpui::Path<Pixels>, offset: gpui::Point<Pixels>) -> gpui::Path<Pixels> {
     let mut path = path.clone();
     for vertex in &mut path.vertices {
-        vertex.xy_position = vertex.xy_position + offset;
+        vertex.xy_position += offset;
     }
-    path.bounds.origin = path.bounds.origin + offset;
+    path.bounds.origin += offset;
     path
 }
 

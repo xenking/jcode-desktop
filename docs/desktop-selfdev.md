@@ -58,13 +58,20 @@ with the same host, window, sessions, and draft. It also exercises the tool's
 fresh-build screenshot action. It never reloads the shared daemon or restarts
 the user's Desktop host.
 
-## Publish button
+## Publish Jcode Desktop
 
-Chats whose working directory is a Desktop checkout show a **Publish** pill in
-the composer row, next to the microphone. The first click arms it. A second
-click within four seconds opens a new **Publish Jcode Desktop** session in the
-checkout root. `/publish` does the same thing. Pressing it again while a run is
-active brings you back to that run instead of starting a second release.
+In a local chat inside a Jcode Desktop checkout, run `/publish`. The command is
+listed in the composer's slash menu and `/help`. Submitting it starts a
+**Publish Jcode Desktop** session at the checkout root. Running it again while
+a release is active brings you back to that tracker.
+
+The command does not publish arbitrary projects. It recognizes Desktop by
+`[package].name = "jcode-desktop"` in the root `Cargo.toml` and a
+`crates/jcode-desktop-ui` directory. Nested paths and worktrees qualify. No
+Git remote, branch name, or selfdev setting controls eligibility.
+
+`/fast-release`, `/fast-macos-release`, `/remote-release`, `/cut-release`, and
+`/commit-push-release` use the same Desktop tracker, not the TUI release flows.
 
 The tracker session commits current work, pushes it and lands it on
 `origin/main`, prepares the version and changelog, and then runs

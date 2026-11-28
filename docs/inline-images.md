@@ -14,6 +14,11 @@ Interaction state belongs to the currently mounted image row. Ordinary rerenders
 - `python3 -m unittest discover -s scripts -p test_image_preview_acceptance.py` checks the native acceptance harness.
 - `python3 scripts/screenshot.py target/inline-image-review.png --transcript image --image-interact` builds the real app and runs native inline zoom, drag, fit and full-window viewer regression checks on a private Xvfb display. Use a new output filename for each run.
 
+### Inline prompt chips
+
+- `justrust test -p jcode-desktop-ui --lib raw_image_references_in_paged_history_remain_compact -- --nocapture` checks chip width, original clipboard text, and that each click requests the matching image ID. The fixture uses no provider.
+- Build the macOS app locally. Run `python3 scripts/screenshot.py target/prompt-chips.png --transcript image-ordinals --no-build --binary /path/to/jcode-desktop`. Repeat with `--transcript image-ordinals-resolved` and a different output filename to see the session numbers. Pass `--panels 3` for narrower panes.
+
 ## Linux input patch
 
 Only `gpui_linux` is patched from the pinned Zed fork. Its shared GPUI dependencies still use the original upstream revision so the host and hot-reloaded UI keep identical event types. Wayland `dx/dy` and XInput pinch `delta_x/delta_y` are forwarded as precise pixel motion immediately after each scale update. Cumulative native scales are converted to multiplicative zoom deltas.

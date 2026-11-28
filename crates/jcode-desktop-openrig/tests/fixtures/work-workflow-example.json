@@ -1,0 +1,3 @@
+[
+  {"instanceId":"workflow-example","workflowName":"gated-release","workflowVersion":"1","status":"active","currentStepId":"verify","createdAt":"2026-11-21T07:00:00Z","createdBySession":"operator@kernel","currentFrontier":["qitem-example-open"]}
+]

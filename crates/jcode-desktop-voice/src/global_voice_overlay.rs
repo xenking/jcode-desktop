@@ -12,7 +12,7 @@
 //!   `NSPopUpWindowLevel` that joins all spaces.
 //! * Windows: `WindowKind::PopUp`, `WS_EX_TOOLWINDOW | WS_EX_TOPMOST`, shown
 //!   with `SW_SHOWNOACTIVATE` because `focus` is false.
-use crate::theme::Theme;
+use crate::theme::{Ink, Theme};
 use gpui::{
     App, Bounds, Context, Pixels, Window, WindowBackgroundAppearance, WindowBounds,
     WindowDecorations, WindowHandle, WindowKind, WindowOptions, div, point, prelude::*, px, size,
@@ -38,7 +38,7 @@ pub struct Snapshot {
     /// Visible status, including connecting, listening, transcribing or an error.
     pub title: String,
     /// The same 24 chronological RMS samples used by the panel voice meter.
-    pub levels: Option<[f32; 24]>,
+    pub levels: Option<[f32; crate::meter::BARS]>,
     /// The hold finished and `title` states what Jev decided (or why it did
     /// not act), so it reads as a result rather than a progress status.
     pub decided: bool,
@@ -222,9 +222,9 @@ fn layer_shell_options() -> anyhow::Result<WindowOptions> {
 }
 
 const METER_MAX: f32 = 16.;
-// The panel_voice_overlay RMS curve, scaled to the compact pill: 2px silence.
+// The panel's RMS curve, scaled to the compact pill: 2px silence.
 fn meter_height(level: f32) -> f32 {
-    2.0 + (level.max(0.0) * 4.0).sqrt().min(1.0) * (METER_MAX - 2.0)
+    crate::meter::bar_height(level, METER_MAX)
 }
 
 impl VoiceOverlay {
@@ -261,7 +261,7 @@ impl Render for VoiceOverlay {
                     .gap(px(8.))
                     .rounded_full()
                     .border_1()
-                    .border_color(theme.ACCENT.opacity(if decided { 0.35 } else { 0.25 }))
+                    .border_color(theme.wash(Ink::Accent, if decided { 0.35 } else { 0.25 }))
                     .bg(theme.PANEL_BG)
                     // The 44px surface leaves 6px around the pill, so a larger
                     // shadow would be clipped into a visible hard edge.
@@ -295,7 +295,7 @@ impl Render for VoiceOverlay {
                                         .w(px(BAR_WIDTH))
                                         .h(px(meter_height(level)))
                                         .rounded_full()
-                                        .bg(theme.ACCENT.opacity(0.9))
+                                        .bg(theme.wash(Ink::Accent, 0.9))
                                 })),
                         )
                     }),
@@ -308,6 +308,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn rms_meter_matches_panel_and_handles_invalid_samples() {
         assert_eq!(meter_height(0.), 2.);
         assert_eq!(meter_height(-1.), 2.);

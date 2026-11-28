@@ -28,6 +28,7 @@ class RenderMacOSPlistTests(unittest.TestCase):
             "public_key": "",
             "feed_url": "",
             "require_updates": False,
+            "paired_rollout": False,
         }
         values.update(overrides)
         RENDERER.render(argparse.Namespace(**values))
@@ -57,6 +58,19 @@ class RenderMacOSPlistTests(unittest.TestCase):
     def test_release_rejects_missing_update_credentials(self):
         with self.assertRaisesRegex(ValueError, "required"):
             self.render(require_updates=True)
+
+    def test_paired_rollout_disables_sparkle(self):
+        info = self.render(paired_rollout=True)
+        self.assertIs(info["JcodePairedRollout"], True)
+        self.assertNotIn("SUPublicEDKey", info)
+        self.assertNotIn("SUFeedURL", info)
+        self.assertNotIn("SUAutomaticallyUpdate", info)
+        with self.assertRaisesRegex(ValueError, "cannot use a Sparkle feed"):
+            self.render(
+                paired_rollout=True,
+                public_key=base64.b64encode(bytes(32)).decode(),
+                feed_url="https://example.com/appcast.xml",
+            )
 
     def test_rejects_insecure_feed(self):
         with self.assertRaisesRegex(ValueError, "HTTPS"):

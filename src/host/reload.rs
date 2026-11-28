@@ -208,6 +208,7 @@ impl ReloadManager {
 
     /// Snapshot every attached window before any of them changes. One
     /// failure cancels the whole reload, so no window loses its state.
+    #[allow(clippy::type_complexity)]
     fn snapshot_all(&self, cx: &mut App) -> Result<Vec<(AnyWindowHandle, (u32, Vec<u8>))>> {
         let windows = self.windows();
         anyhow::ensure!(!windows.is_empty(), "desktop window is not attached");
@@ -492,6 +493,32 @@ mod tests {
     use gpui::{Render, TestAppContext, WindowOptions, div, prelude::*};
     use jcode_desktop_api::{ACTIVATE_FAILED, GPUI_REVISION, HostApi, STATE_SCHEMA_VERSION};
     use std::ffi::c_void;
+
+    #[gpui::test]
+    fn replacing_ui_keymap_preserves_reload_and_rollback_shortcuts(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::bind_reload_keys(cx);
+            jcode_desktop_ui::bind_workspace_keys(cx);
+            jcode_desktop_ui::bind_workspace_keys(cx);
+
+            let keymap = cx.key_bindings();
+            let keymap = keymap.borrow();
+            let expected: [(&str, &dyn gpui::Action); 3] = [
+                ("ctrl-r", &crate::RebuildAndReloadUi),
+                ("ctrl-shift-r", &crate::RebuildAndReloadUi),
+                ("f6", &crate::RollbackUi),
+            ];
+            for (shortcut, action) in expected {
+                let key = gpui::Keystroke::parse(shortcut).unwrap();
+                let count = keymap
+                    .all_bindings_for_input(&[key])
+                    .into_iter()
+                    .filter(|binding| binding.action().partial_eq(action))
+                    .count();
+                assert_eq!(count, 1, "{shortcut}");
+            }
+        });
+    }
 
     struct StableRoot;
 

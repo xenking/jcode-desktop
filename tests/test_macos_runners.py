@@ -3,14 +3,7 @@ from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-ACTIVE_WORKFLOWS = (
-    "macos-beta.yml",
-    "macos-tests.yml",
-    "macos-update-matrix.yml",
-    "macos-public-release-verify.yml",
-    "macos-notary-log.yml",
-    "macos-installed-smoke.yml",
-)
+ACTIVE_WORKFLOWS = ("macos-beta.yml",)
 
 
 class MacosRunnerTests(unittest.TestCase):

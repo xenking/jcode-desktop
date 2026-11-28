@@ -18,7 +18,7 @@ Desktop has two independent login surfaces: the optional Jcode account welcome s
 | Account approval, pending, denial, expiry, 429 slowdown, transient failure, cancellation | `cargo test -p jcode-desktop-ui account_sign_in::tests --lib`, 13 tests including production HTTP/Tokio handling against a loopback server | Passed. Browser opening and credential writes disabled in these UI tests |
 | Account persistence and production service contract | Shared Jcode `account_login` tests use an isolated credential home for save, permissions and reload. Live start/pending check uses the deployed API | Passed. No email sent or live approval granted |
 | SDK callback security and compatibility | Shared `jcode-sdk` suite and opt-in installed CLI Claude/OpenAI begin/cancel | Passed. Includes invalid callbacks, occupied ports, cancellation, manual completion, and bounds |
-| Native provider mouse/keyboard and clipboard | `OMP_THREAD_LIMIT=1 python3 scripts/screenshot.py target/login-acceptance-final.png --transcript empty --login-interact` | Passed on private Xvfb |
+| Native provider mouse/keyboard and clipboard | `python3 scripts/screenshot.py target/login-acceptance-final.png --transcript empty --login-interact` | Passed on private Xvfb |
 | Native account welcome, browser fallback, copy, skip, re-entry and preferences | `python3 scripts/screenshot.py target/account-login-final.png --account-sign-in-interact` | Passed on private Xvfb |
 | Compact account UI | 360px GPUI bounds test plus real-app screenshots | Passed |
 | Running app receives the changes | Host Ctrl+R `rebuild_and_reload` action via `--reload-ui`, activation log and loaded-library SHA-256 compared with built plugin | Same-process reload verified |

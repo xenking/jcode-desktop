@@ -20,6 +20,11 @@ const PULSE_TICK: Duration = Duration::from_millis(50);
 /// Running tool rows breathe on this period, in step with sidebar titles.
 pub const TOOL_PULSE_PERIOD: Duration = Duration::from_millis(1400);
 
+/// `curve` and `format` are the function items the caller passed in; comparing
+/// them tells the ticker whether the same animation is being asked for, which
+/// is the identity this type is for. Two codegen units are never involved for
+/// the local functions used here.
+#[allow(unpredictable_function_pointer_comparisons)]
 #[derive(Clone, PartialEq)]
 pub enum Kind {
     /// Text whose opacity breathes with `curve`.
@@ -71,6 +76,12 @@ impl Ticker {
             kind,
             tick_pending: Rc::default(),
         }
+    }
+
+    /// Show `kind` from the next frame on.
+    fn show(&mut self, kind: Kind, cx: &mut Context<Self>) {
+        self.kind = kind;
+        cx.notify();
     }
 
     fn arm(&self, period: Duration, cx: &mut Context<Self>) {
@@ -166,10 +177,7 @@ impl Tickers {
         if let Some((ticker, shown)) = self.0.get_mut(key) {
             if *shown != kind {
                 *shown = kind.clone();
-                ticker.update(cx, |ticker, cx| {
-                    ticker.kind = kind;
-                    cx.notify();
-                });
+                ticker.update(cx, |ticker, cx| ticker.show(kind, cx));
             }
             return ticker.clone();
         }

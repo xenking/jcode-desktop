@@ -1,0 +1,19 @@
+{
+ "id": "session_horse_1794681786437_d7b06f01b47847f4",
+ "parent_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+ "title": "Continue the snapcompact port in ~/projects/github.com/xenki",
+ "created_at": "2026-11-14T18:43:06.437253Z",
+ "updated_at": "2026-11-14T18:53:39.299493Z",
+ "model_usage_turn_id": "session_horse_1794681786437_d7b06f01b47847f4:message_1794681786467_15643663098306712820",
+ "provider_key": "openai-oauth",
+ "model": "gpt-6.1-terra",
+ "reasoning_effort": "low",
+ "is_canary": false,
+ "working_dir": "/Users/xenking/.jcode/scratch/probe",
+ "short_name": "horse",
+ "status": "Closed",
+ "last_pid": 74031,
+ "last_active_at": "2026-11-14T18:43:06.438030Z",
+ "is_debug": true,
+ "saved": false
+}

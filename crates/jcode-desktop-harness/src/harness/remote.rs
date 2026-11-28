@@ -1,0 +1,286 @@
+//! Persistent session addresses for SSH-backed native panels.
+//!
+//! Only the address crosses the UI/snapshot boundary. SDK calls always receive
+//! the original remote ID, never its desktop namespace.
+
+pub(super) mod sessions;
+#[cfg(unix)]
+pub(super) mod transport;
+#[cfg(not(unix))]
+#[path = "remote/transport/portable.rs"]
+pub(super) mod transport;
+
+const PREFIX: &str = "ssh://";
+const CLOUD_PREFIX: &str = "cloud://";
+const PAIRED_PREFIX: &str = "paired://";
+
+/// Test whether an ID belongs to a remote namespace, even if malformed.
+pub fn is_remote_session(session_id: &str) -> bool {
+    is_remote(session_id)
+}
+
+/// Decode the destination carried by a persisted remote panel ID.
+pub fn remote_host(session_id: &str) -> Option<String> {
+    SessionAddress::parse(session_id).ok()?.host
+}
+
+/// The id a panel carries for session `session_id` of machine `host`: the
+/// machine's own id wrapped in the namespace that keeps it on that machine.
+pub fn remote_session_id(host: &str, session_id: &str) -> String {
+    namespace(host, session_id)
+}
+
+pub fn session_address(session_id: &str) -> Option<(Option<String>, String)> {
+    let address = SessionAddress::parse(session_id).ok()?;
+    Some((address.host, address.session_id))
+}
+
+enum Kind {
+    Ssh,
+    Cloud,
+    Paired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SessionAddress {
+    pub host: Option<String>,
+    pub session_id: String,
+}
+
+impl SessionAddress {
+    pub fn parse(id: &str) -> Result<Self, String> {
+        let (kind, remote) = if let Some(remote) = id.strip_prefix(CLOUD_PREFIX) {
+            (Kind::Cloud, remote)
+        } else if let Some(remote) = id.strip_prefix(PAIRED_PREFIX) {
+            (Kind::Paired, remote)
+        } else if let Some(remote) = id.strip_prefix(PREFIX) {
+            (Kind::Ssh, remote)
+        } else {
+            return Ok(Self {
+                host: None,
+                session_id: id.to_owned(),
+            });
+        };
+        let (host, session_id) = remote
+            .split_once('/')
+            .ok_or("Invalid remote session address")?;
+        let host = match kind {
+            Kind::Cloud => crate::managed_cloud::Destination::named(host)
+                .ok_or("Invalid Cloud machine name")?
+                .preference(),
+            Kind::Paired => {
+                let host = format!("paired:{host}");
+                crate::remote_targets::paired_id(&host).ok_or("Invalid paired machine ID")?;
+                host
+            }
+            Kind::Ssh => {
+                let host = decode(host)?;
+                if host != crate::remote_targets::validate_host(&host)? {
+                    return Err("Invalid remote session host".into());
+                }
+                host
+            }
+        };
+        let session_id = decode(session_id)?;
+        if session_id.is_empty() || session_id.chars().any(char::is_control) {
+            return Err("Invalid remote session ID".into());
+        }
+        Ok(Self {
+            host: Some(host),
+            session_id,
+        })
+    }
+
+    pub fn ui_id(&self, real_id: &str) -> String {
+        match &self.host {
+            Some(host) => namespace(host, real_id),
+            None => real_id.to_owned(),
+        }
+    }
+
+    pub fn session_info(&self, mut session: jcode_sdk::SessionInfo) -> jcode_sdk::SessionInfo {
+        session.session_id = self.ui_id(&session.session_id);
+        session.parent_session_id = session.parent_session_id.map(|id| self.ui_id(&id));
+        session
+    }
+}
+
+pub(super) fn is_remote(id: &str) -> bool {
+    id.starts_with(PREFIX) || id.starts_with(CLOUD_PREFIX) || id.starts_with(PAIRED_PREFIX)
+}
+
+pub(super) fn namespace(host: &str, session_id: &str) -> String {
+    if let Some(id) = crate::remote_targets::paired_id(host) {
+        return format!("{PAIRED_PREFIX}{id}/{}", encode(session_id));
+    }
+    match crate::managed_cloud::Destination::parse(host).and_then(|target| target.name()) {
+        Some(name) => format!("{CLOUD_PREFIX}{name}/{}", encode(session_id)),
+        None => format!("{PREFIX}{}/{}", encode(host), encode(session_id)),
+    }
+}
+
+fn encode(value: &str) -> String {
+    let mut output = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            output.push(char::from(byte));
+        } else {
+            use std::fmt::Write;
+            let _ = write!(output, "%{byte:02X}");
+        }
+    }
+    output
+}
+
+fn decode(value: &str) -> Result<String, String> {
+    let mut bytes = value.bytes();
+    let mut output = Vec::new();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let high = bytes.next().and_then(|b| char::from(b).to_digit(16));
+            let low = bytes.next().and_then(|b| char::from(b).to_digit(16));
+            match (high, low) {
+                (Some(high), Some(low)) => output.push((high * 16 + low) as u8),
+                _ => return Err("Invalid remote session percent encoding".into()),
+            }
+        } else if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            output.push(byte);
+        } else {
+            return Err("Remote session address must be percent encoded".into());
+        }
+    }
+    String::from_utf8(output).map_err(|_| "Remote session address is not UTF-8".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paired_addresses_are_distinct_and_round_trip() {
+        let host = "paired:0123456789abcdef0123456789abcdef";
+        let id = namespace(host, "folder/session");
+        assert_eq!(
+            id,
+            "paired://0123456789abcdef0123456789abcdef/folder%2Fsession"
+        );
+        let parsed = SessionAddress::parse(&id).unwrap();
+        assert_eq!(parsed.host.as_deref(), Some(host));
+        assert_eq!(parsed.session_id, "folder/session");
+        assert!(is_remote(&id));
+        assert_ne!(
+            id,
+            namespace("0123456789abcdef0123456789abcdef", "folder/session")
+        );
+        assert!(SessionAddress::parse("paired://broken/session").is_err());
+        assert!(crate::remote_targets::validate_host(host).is_err());
+    }
+
+    #[test]
+    fn remote_namespace_preserves_source_connection_presence() {
+        for connected in [false, true] {
+            let session: jcode_sdk::SessionInfo = serde_json::from_value(serde_json::json!({
+                "session_id": "same-id",
+                "status": "idle",
+                "user_connected": connected,
+            }))
+            .unwrap();
+            let address = SessionAddress::parse("ssh://remote.example/same-id").unwrap();
+            let namespaced = address.session_info(session);
+            assert_eq!(namespaced.session_id, "ssh://remote.example/same-id");
+            assert_eq!(namespaced.user_connected, connected);
+        }
+        let legacy: jcode_sdk::SessionInfo = serde_json::from_value(serde_json::json!({
+            "session_id": "legacy", "status": "active",
+        }))
+        .unwrap();
+        assert!(!legacy.user_connected);
+    }
+
+    #[test]
+    fn sidebar_swarm_remote_ownership_uses_the_same_host_namespace() {
+        let address = SessionAddress::parse(&namespace("server", "child")).unwrap();
+        let session: jcode_sdk::SessionInfo = serde_json::from_value(serde_json::json!({
+            "session_id": "child", "status": "running", "parent_session_id": "root"
+        }))
+        .unwrap();
+        let mapped = address.session_info(session);
+        assert_eq!(mapped.session_id, namespace("server", "child"));
+        assert_eq!(mapped.parent_session_id, Some(namespace("server", "root")));
+        assert_ne!(
+            mapped.parent_session_id,
+            Some(namespace("other-server", "root"))
+        );
+    }
+
+    #[test]
+    fn local_ids_are_unchanged() {
+        let address = SessionAddress::parse("session_example_123").unwrap();
+        assert_eq!(address.host, None);
+        assert_eq!(address.ui_id(&address.session_id), "session_example_123");
+    }
+
+    #[test]
+    fn remote_ids_round_trip_without_collisions() {
+        for host in ["desktop", "user@host", "user@[::1]", "fe80::1%eth0"] {
+            for id in ["session_123", "id/with?reserved%characters", "unicode-猫"] {
+                let encoded = namespace(host, id);
+                let address = SessionAddress::parse(&encoded).unwrap();
+                assert_eq!(address.host.as_deref(), Some(host));
+                assert_eq!(address.session_id, id);
+                assert_eq!(address.ui_id(id), encoded);
+                assert_ne!(encoded, namespace("other-host", id));
+            }
+        }
+        assert_eq!(
+            namespace("user@host", "session_1"),
+            "ssh://user%40host/session_1"
+        );
+    }
+
+    #[test]
+    fn malformed_remote_ids_never_fall_back_to_local() {
+        for id in [
+            "cloud://",
+            "cloud://ai-core/",
+            "cloud://-ai-core/id",
+            "cloud://user@ai-core/id",
+            "cloud://ai-core.example/id",
+            "cloud://%61i-core/id",
+            "cloud://ai-core/%00",
+            "ssh://cloud%3Aai-core/id",
+            "ssh://",
+            "ssh://host",
+            "ssh:///id",
+            "ssh://host/",
+            "ssh://host/id/extra",
+            "ssh://host/%",
+            "ssh://host/%FF",
+            "ssh://host/%00",
+            "ssh://-oProxyCommand/id",
+            "ssh://bad%20host/id",
+            "ssh://user@host/id",
+        ] {
+            assert!(SessionAddress::parse(id).is_err(), "accepted {id}");
+            assert!(is_remote(id));
+        }
+    }
+
+    #[test]
+    fn cloud_session_addresses_keep_named_default_and_ssh_routes_distinct() {
+        for (destination, id) in [
+            ("cloud:ai-core", "cloud://ai-core/a%2Fb"),
+            ("ai-core", "ssh://ai-core/a%2Fb"),
+            ("jcode-cloud", "ssh://jcode-cloud/a%2Fb"),
+            ("cloud:jcode-cloud", "cloud://jcode-cloud/a%2Fb"),
+        ] {
+            assert_eq!(namespace(destination, "a/b"), id);
+            assert!(is_remote(id));
+            let restored = SessionAddress::parse(id).unwrap();
+            assert_eq!(restored.host.as_deref(), Some(destination));
+            assert_eq!(restored.session_id, "a/b");
+            assert_eq!(restored.ui_id("a/b"), id);
+        }
+        assert!(crate::remote_targets::validate_host("cloud:ai-core").is_err());
+    }
+}

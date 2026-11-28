@@ -1,0 +1,50 @@
+name: Desktop CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop-contracts:
+    name: Desktop contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: jcode-desktop
+          persist-credentials: false
+      - name: Read the native release runtime pin
+        id: runtime
+        working-directory: jcode-desktop
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import runpy
+
+          policy = runpy.run_path('scripts/auto-release.py')
+          repository, revision = policy['validate_runtime_pins']('HEAD')
+          print(f'repository={repository}')
+          print(f'revision={revision}')
+          PY
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ steps.runtime.outputs.repository }}
+          ref: ${{ steps.runtime.outputs.revision }}
+          path: jcode
+          persist-credentials: false
+      - name: Verify the pinned runtime source
+        env:
+          RUNTIME_REVISION: ${{ steps.runtime.outputs.revision }}
+        run: python3 jcode-desktop/scripts/verify-runtime-source.py --runtime jcode --expected-commit "$RUNTIME_REVISION"
+      - name: Test Desktop script and release contracts
+        working-directory: jcode-desktop
+        run: python3 -m unittest discover -s tests -v

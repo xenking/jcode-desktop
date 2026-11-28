@@ -20,7 +20,7 @@ from PIL import Image, ImageChops
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
-RUNTIME = ROOT / 'crates/jcode-desktop-ui/src/html_preview_runtime.py'
+RUNTIME = ROOT / 'crates/jcode-desktop-ui/src/documents/html_preview_runtime.py'
 spec = importlib.util.spec_from_file_location('html_runtime', RUNTIME)
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)

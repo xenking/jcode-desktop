@@ -12,8 +12,11 @@ mod host {
     pub mod reload_config;
     pub mod resources;
     pub mod window_controls;
+    pub mod window_placement;
 }
 mod diagnostics;
+#[cfg(target_os = "macos")]
+mod main_watchdog;
 #[cfg(test)]
 mod voice_command_tests;
 #[cfg(test)]
@@ -41,12 +44,21 @@ use host::{
     instance::{self, Command as InstanceCommand, Instance},
     reload::ReloadManager,
     resources::HostState,
+    window_placement,
 };
 
 actions!(
     jcode_desktop_host,
     [ReloadUi, RebuildAndReloadUi, RollbackUi]
 );
+
+fn bind_reload_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("ctrl-r", RebuildAndReloadUi, None),
+        KeyBinding::new("ctrl-shift-r", RebuildAndReloadUi, None),
+        KeyBinding::new("f6", RollbackUi, None),
+    ]);
+}
 
 fn rebuild_ui(force: bool) -> anyhow::Result<()> {
     let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
@@ -226,7 +238,8 @@ fn titlebar_options() -> TitlebarOptions {
         appears_transparent: true,
         traffic_light_position: Some(Point {
             x: px(16.0),
-            y: px(16.0),
+            // AppKit's 14pt buttons center at 20pt, like the workspace row.
+            y: px(13.0),
         }),
     }
 }
@@ -257,6 +270,36 @@ fn fit_window_bounds(
     Bounds::centered_at(visible.center(), fitted)
 }
 
+fn open_host_window(
+    mode: LaunchMode,
+    default_size: (u32, u32),
+    options: WindowOptions,
+    cx: &mut App,
+) -> anyhow::Result<gpui::WindowHandle<HostFallback>> {
+    let (display_id, bounds) = window_placement::restore(mode, cx)
+        .map(|(display, bounds)| (Some(display), bounds))
+        .unwrap_or_else(|| {
+            (
+                None,
+                WindowBounds::Windowed(initial_window_bounds(default_size, cx)),
+            )
+        });
+    cx.open_window(
+        WindowOptions {
+            app_id: Some(jcode_desktop_ui::APP_ID.into()),
+            display_id,
+            window_bounds: Some(bounds),
+            titlebar: Some(titlebar_options()),
+            app_owns_titlebar_drag: cfg!(target_os = "macos"),
+            ..options
+        },
+        |window, cx| {
+            window_placement::observe(mode, bounds, window, cx);
+            cx.new(|_| HostFallback)
+        },
+    )
+}
+
 /// Bring the desktop window back, whatever the traffic lights did to it.
 ///
 /// If a window still exists (visible or minimized), activate it. If the red
@@ -268,8 +311,8 @@ fn restore_window(
     current_window: &Rc<RefCell<Option<gpui::AnyWindowHandle>>>,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    if let Some(window) = *current_window.borrow() {
-        if window
+    if let Some(window) = *current_window.borrow()
+        && window
             .update(cx, |_, window, cx| {
                 window.activate_window();
                 cx.activate(true);
@@ -278,21 +321,13 @@ fn restore_window(
         {
             return Ok(());
         }
-    }
 
-    let bounds = initial_window_bounds(
-        LaunchMode::from_args(env::args_os()).initial_window_size(),
+    let mode = LaunchMode::from_args(env::args_os());
+    let replacement = open_host_window(
+        mode,
+        mode.initial_window_size(),
+        WindowOptions::default(),
         cx,
-    );
-    let replacement = cx.open_window(
-        WindowOptions {
-            app_id: Some(jcode_desktop_ui::APP_ID.into()),
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(titlebar_options()),
-            app_owns_titlebar_drag: cfg!(target_os = "macos"),
-            ..Default::default()
-        },
-        |_, cx| cx.new(|_| HostFallback),
     )?;
     replacement.update(cx, {
         let manager = manager.clone();
@@ -331,6 +366,7 @@ fn install_close_handler(
             eprintln!("failed to suspend desktop workspace: {error:#}");
             return false;
         }
+        window_placement::flush(window, cx);
         *current_window.borrow_mut() = None;
         true
     });
@@ -396,18 +432,17 @@ fn dispatch_instance_command(
     cx: &mut App,
 ) -> anyhow::Result<()> {
     if let InstanceCommand::OpenWindow(launch) = command {
-        return open_shared_window(manager, launch, cx);
+        return open_shared_window(manager, launch, true, true, cx).map(|_| ());
     }
     // Releasing a global chord must not pull focus back from another app or
     // reopen a closed surface. Suspending the UI cancels its recording.
     if command != InstanceCommand::VoiceRelease {
         restore_window(manager, current_window, cx)?;
     }
-    if let Some(action) = voice_action(command.clone()) {
-        if let Some(window) = *current_window.borrow() {
+    if let Some(action) = voice_action(command.clone())
+        && let Some(window) = *current_window.borrow() {
             dispatch_ui_action(window, action, cx)?;
         }
-    }
     Ok(())
 }
 
@@ -459,18 +494,20 @@ fn dispatch_global_voice(
 fn open_shared_window(
     manager: &Rc<RefCell<ReloadManager>>,
     launch: jcode_desktop_api::WindowLaunch,
+    show: bool,
+    focus: bool,
     cx: &mut App,
-) -> anyhow::Result<()> {
-    let bounds = initial_window_bounds(LaunchMode::SinglePanel.initial_window_size(), cx);
-    let window = cx.open_window(
+) -> anyhow::Result<u64> {
+    let mode = LaunchMode::SinglePanel;
+    let window = open_host_window(
+        mode,
+        mode.initial_window_size(),
         WindowOptions {
-            app_id: Some(jcode_desktop_ui::APP_ID.into()),
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(titlebar_options()),
-            app_owns_titlebar_drag: cfg!(target_os = "macos"),
+            show,
+            focus,
             ..Default::default()
         },
-        |_, cx| cx.new(|_| HostFallback),
+        cx,
     )?;
     let handle = gpui::AnyWindowHandle::from(window);
     jcode_desktop_api::WindowLaunches::insert(cx, handle.window_id().as_u64(), launch);
@@ -479,9 +516,11 @@ fn open_shared_window(
         let _ = handle.update(cx, |_, window, _| window.remove_window());
         return Err(error);
     }
-    let _ = handle.update(cx, |_, window, _| window.activate_window());
-    cx.activate(true);
-    Ok(())
+    if focus {
+        let _ = handle.update(cx, |_, window, _| window.activate_window());
+        cx.activate(true);
+    }
+    Ok(handle.window_id().as_u64())
 }
 
 /// The request a single-panel launch forwards to the shared host.
@@ -553,6 +592,11 @@ fn detach_console() {
 #[cfg(not(windows))]
 fn detach_console() {}
 
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn jcode_ime_log_start();
+}
+
 fn main() {
     attach_parent_console();
     if let Some(code) = jcode_desktop_ui::run_restart_worker_if_requested() {
@@ -582,6 +626,9 @@ fn main() {
         eprintln!("{error}");
         std::process::exit(1);
     }
+    #[cfg(target_os = "macos")]
+    // The host owns these hooks for the entire process, including UI reloads.
+    unsafe { jcode_ime_log_start() };
     // Single-panel windows share one host unless `--new-process` isolates them.
     let shared_single_panel = LaunchMode::shared_single_panel(env::args_os());
     let instance_name =
@@ -620,10 +667,15 @@ fn main() {
             Instance::Secondary => return,
         };
     let instance_socket = Rc::new(instance_socket);
+    // Isolated acceptance instances must never activate or expose a window on
+    // the user's desktop. Only the offline fixture may request this mode.
+    let screenshot = env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1");
+    let control_fixture =
+        screenshot && env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1");
     let plugin_path = host::reload_config::plugin_path();
     let app = application().with_quit_mode(launch_quit_mode(
         launch_mode,
-        env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1"),
+        screenshot,
         env::var("JCODE_DESKTOP_SCREENSHOT_MACOS_LIFECYCLE").as_deref() == Ok("1"),
     ));
     // Clicking the Dock icon after the red button closed the last window must
@@ -631,47 +683,68 @@ fn main() {
     // does through the instance socket. GPUI only fires this when no window is
     // visible, which also covers a window hidden by the yellow minimize button.
     type ReopenState = Rc<RefCell<Option<gpui::AnyWindowHandle>>>;
+    #[allow(clippy::type_complexity)]
     let reopen_state: Rc<RefCell<Option<(Rc<RefCell<ReloadManager>>, ReopenState)>>> =
         Rc::new(RefCell::new(None));
     app.on_reopen({
         let reopen_state = reopen_state.clone();
         move |cx| {
             let state = reopen_state.borrow().clone();
-            if let Some((manager, current_window)) = state {
-                if let Err(error) = restore_window(&manager, &current_window, cx) {
+            if let Some((manager, current_window)) = state
+                && let Err(error) = restore_window(&manager, &current_window, cx) {
                     eprintln!("failed to reopen desktop window from the Dock: {error:#}");
                 }
-            }
         }
     });
+    #[cfg(target_os = "macos")]
+    if let Err(error) = main_watchdog::start() {
+        log::warn!("Could not start Desktop main-thread watchdog: {error}");
+    }
     app.run(move |cx: &mut App| {
+        #[cfg(target_os = "macos")]
+        if control_fixture
+            && env::var_os("JCODE_TEST_SESSION").is_some_and(|v| v == "1")
+            && env::var_os("JCODE_DESKTOP_TEST_MAIN_HANG").is_some_and(|v| v == "1")
+        {
+            let timer = cx.background_executor().timer(std::time::Duration::from_secs(1));
+            cx.spawn(async move |_| {
+                timer.await;
+                main_watchdog::block_main_for_test();
+            })
+            .detach();
+        }
+        if !screenshot && let Some(dir) = jcode_desktop_model::platform_dirs::state_dir() {
+            window_placement::install(dir, cx);
+        }
         let quit_socket = instance_socket.clone();
         cx.on_app_quit(move |_| {
             quit_socket.cleanup();
             std::future::ready(())
         })
         .detach();
-        cx.bind_keys([
-            // Ctrl+R must always activate code built from the current checkout,
-            // rather than silently reloading a stale cdylib from an earlier build.
-            KeyBinding::new("ctrl-r", RebuildAndReloadUi, None),
-            KeyBinding::new("ctrl-shift-r", RebuildAndReloadUi, None),
-            KeyBinding::new("f6", RollbackUi, None),
-        ]);
+        bind_reload_keys(cx);
 
-        let bounds = initial_window_bounds(launch_mode.initial_window_size(), cx);
-        let window = cx
-            .open_window(
-                WindowOptions {
-                    app_id: Some(jcode_desktop_ui::APP_ID.into()),
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(titlebar_options()),
-                    app_owns_titlebar_drag: cfg!(target_os = "macos"),
-                    ..Default::default()
-                },
-                |_, cx| cx.new(|_| HostFallback),
-            )
-            .expect("failed to open native Jcode Desktop window");
+        let (width, height) = launch_mode.initial_window_size();
+        let width = if control_fixture {
+            env::var("JCODE_DESKTOP_CONTROL_WINDOW_WIDTH")
+                .ok()
+                .and_then(|width| width.parse::<u32>().ok())
+                .filter(|width| (360..=1600).contains(width))
+                .unwrap_or(width)
+        } else {
+            width
+        };
+        let window = open_host_window(
+            launch_mode,
+            (width, height),
+            WindowOptions {
+                focus: !control_fixture,
+                show: !control_fixture,
+                ..Default::default()
+            },
+            cx,
+        )
+        .expect("failed to open native Jcode Desktop window");
 
         let host = Rc::new(HostState::default());
         let manager = Rc::new(RefCell::new(
@@ -685,11 +758,15 @@ fn main() {
         ));
 
         let current_window = Rc::new(RefCell::new(Some(gpui::AnyWindowHandle::from(window))));
-        if shared_single_panel {
-            // Marks the App as a shared host for the UI. Later windows
-            // register their own launch arguments under their window ID.
-            jcode_desktop_api::WindowLaunches::install(cx);
-        }
+        // A shared host marks the App for the UI. Later windows register
+        // their own launch arguments under their window ID.
+        jcode_desktop_api::WindowLaunches::install(cx, shared_single_panel, {
+            let manager = manager.clone();
+            move |launch, cx| {
+                open_shared_window(&manager, launch, !control_fixture, false, cx)
+                    .map_err(|error| error.to_string())
+            }
+        });
         cx.on_window_closed({
             let manager = manager.clone();
             move |cx, closed| {
@@ -708,8 +785,8 @@ fn main() {
         // Only the main desktop owns the global shortcut. Auxiliary workspace
         // instances must not steal it or report a spurious registration conflict.
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if instance_name.is_none() {
-            if let Err(error) = host::global_shortcut::install(cx, {
+        if instance_name.is_none() && !control_fixture
+            && let Err(error) = host::global_shortcut::install(cx, {
                 let manager = manager.clone();
                 let current_window = current_window.clone();
                 move |event, cx| {
@@ -738,7 +815,6 @@ fn main() {
             }) {
                 eprintln!("could not register global desktop shortcuts: {error:#}");
             }
-        }
         // A shared single-panel host closes windows outright, like separate
         // processes did. Suspending would keep an invisible chat alive.
         if !shared_single_panel {
@@ -860,7 +936,9 @@ fn main() {
                 );
             }
         }
-        cx.activate(true);
+        if !control_fixture {
+            cx.activate(true);
+        }
     });
 }
 

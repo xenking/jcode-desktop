@@ -13,7 +13,7 @@ SPEC.loader.exec_module(AUTO)
 class RuntimePinTests(unittest.TestCase):
     def runtime_pin(self, workflow):
         text = (ROOT / '.github/workflows' / workflow).read_text()
-        match = re.search(r'repository: 1jehuang/jcode\s+ref: ([0-9a-f]{40})\b', text)
+        match = re.search(r'repository: xenking/jcode\s+ref: ([0-9a-f]{40})\b', text)
         self.assertIsNotNone(match, workflow)
         return match[1]
 
@@ -31,6 +31,14 @@ class RuntimePinTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "same Jcode runtime"):
                 AUTO.validate_runtime_pins("HEAD")
 
+    def test_repository_drift_is_rejected_even_with_an_identical_sha(self):
+        def workflow(_, path):
+            owner = "1jehuang" if path.endswith("freebsd-release.yml") else "xenking"
+            return f"repository: {owner}/jcode\n          ref: {'a' * 40}"
+        with patch.object(AUTO, "git", side_effect=workflow):
+            with self.assertRaisesRegex(ValueError, "same Jcode runtime"):
+                AUTO.validate_runtime_pins("HEAD")
+
     def test_native_preflight_checks_the_exact_checkout_before_building(self):
         for workflow in ('cross-platform-release.yml', 'macos-beta.yml', 'freebsd-release.yml'):
             with self.subTest(workflow=workflow):
@@ -40,18 +48,6 @@ class RuntimePinTests(unittest.TestCase):
                 self.assertIn(command, text)
                 self.assertLess(text.index(command), text.index('dtolnay/rust-toolchain')
                                 if 'dtolnay/rust-toolchain' in text else text.index('vmactions/freebsd-vm'))
-
-    def test_update_matrix_and_testing_defaults_match_native_runtime(self):
-        pin = self.runtime_pin('cross-platform-release.yml')
-        text = (ROOT / '.github/workflows/update-matrix.yml').read_text()
-        pins = re.findall(r'repository: 1jehuang/jcode\s+ref: ([0-9a-f]{40})\b', text)
-        self.assertEqual(pins, [pin, pin])
-        macos = (ROOT / '.github/workflows/macos-tests.yml').read_text()
-        self.assertIn(f'default: {pin}', macos)
-        self.assertIn("inputs.jcode_ref || '" + pin + "'", macos)
-        hosted = (ROOT / '.github/workflows/linux-hosted-validation.yml').read_text()
-        self.assertIn(f'default: {pin}', hosted)
-        self.assertIn('verify-runtime-source.py --runtime jcode --expected-commit "$JCODE_REVISION"', hosted)
 
     def test_runtime_preflight_is_a_fingerprinted_release_input(self):
         self.assertTrue(AUTO.release_input('scripts/verify-runtime-source.py'))

@@ -6,11 +6,16 @@
 use std::sync::OnceLock;
 
 pub mod accounts;
+pub mod connect_failure;
 pub mod harness;
 pub mod managed_cloud;
-pub mod managed_cloud_parity;
+pub mod network;
+pub mod paired;
 pub mod platform;
 pub mod remote_targets;
+pub mod routing;
+pub mod swarm_status;
+pub mod swarm_usage;
 
 static CLIENT_VERSION: OnceLock<&'static str> = OnceLock::new();
 

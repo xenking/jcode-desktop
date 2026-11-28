@@ -235,7 +235,8 @@ subprocess.run(['xdotool', 'key', '--clearmodifiers', chords[0]], check=True, ti
         verify('super+Return', pinned_directory, 'enter')
         verify('ctrl+alt+Return', pinned_directory, 'forwarded-enter')
         verify('super+semicolon', pinned_directory, 'favorite')
-        verify('super+apostrophe', root / 'home', 'home')
+        verify('super+apostrophe', pinned_directory, 'apostrophe')
+        verify('super+n', pinned_directory, 'new-session')
         # Make a different directory overwhelmingly more common, then restart
         # Desktop to exercise disk persistence, not just in-memory stability.
         seed('new-leader', other, 8)

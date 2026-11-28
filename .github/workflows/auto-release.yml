@@ -1,12 +1,6 @@
 name: Automatic desktop release
 
 on:
-  push:
-    branches: [main]
-  schedule:
-    # Catch changes deferred by the quiet period, cooldown, or an active build.
-    # No sleeping runners, and no build at all if the inputs are unchanged.
-    - cron: "23 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -40,7 +34,7 @@ jobs:
       - name: Coalesce commits and dispatch eligible release
         env:
           GH_TOKEN: ${{ github.token }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          DRY_RUN: ${{ inputs.dry_run }}
           INTERVAL_HOURS: ${{ vars.DESKTOP_RELEASE_INTERVAL_HOURS || '6' }}
         run: |
           args=(--interval-hours "$INTERVAL_HOURS")

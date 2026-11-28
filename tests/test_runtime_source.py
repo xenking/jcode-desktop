@@ -21,10 +21,11 @@ class RuntimeSourceTests(unittest.TestCase):
         sources.update({
             'crates/jcode-harness-api/src/events.rs': (
                 'pub user_connected: bool\naccount_label: Option<String>\neffective_budget: Option<usize>\n'
-                'pub struct HistoryTool {\npub tool: Option<HistoryTool>'
+                'pub struct HistoryTool {\npub tool: Option<HistoryTool>\n'
+                'pub codemode: Option<Box<jcode_session_types::CodemodeSummary>>'
             ),
-            'crates/jcode-sdk/src/client.rs': 'pub supports_user_response: bool\npub fn runtime_command(',
-            'crates/jcode-sdk/src/ssh.rs': 'pub supports_user_response: bool',
+            'crates/jcode-sdk/src/client.rs': 'pub supports_user_response: bool\npub supports_applets: bool\npub fn runtime_command(',
+            'crates/jcode-sdk/src/ssh.rs': 'pub supports_user_response: bool\npub supports_applets: bool',
             'crates/jcode-sdk/src/collections.rs': 'pub fn create_with_id(',
             'crates/jcode-harness-api/src/runtime_commands.rs': 'pub enum RuntimeCommand {',
             'crates/jcode-voice/src/lib.rs': 'pub mod dictation;\npub mod global;\npub use streaming_capture::',
@@ -36,6 +37,21 @@ class RuntimeSourceTests(unittest.TestCase):
         self.assertIn(('crates/jcode-voice/Cargo.toml', 'jcode-voice', ['voice-capture']), deps)
         self.assertGreater(sum(package == 'jcode-base' for _, package, _ in deps), 1)
         self.assertIn(('crates/jcode-core/Cargo.toml', 'jcode-core', []), deps)
+
+    def test_sibling_runtime_symlink_does_not_hide_manifest_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            desktop = root / 'desktop'
+            desktop.mkdir()
+            (desktop / 'Cargo.toml').write_text(
+                '[dependencies]\njcode-sdk = { path = "../jcode/crates/jcode-sdk" }\n'
+            )
+            runtime = root / 'runtime-worktree'
+            runtime.mkdir()
+            (root / 'jcode').symlink_to(runtime, target_is_directory=True)
+            self.assertEqual(RUNTIME.runtime_dependencies(desktop), [
+                ('crates/jcode-sdk/Cargo.toml', 'jcode-sdk', []),
+            ])
 
     def test_compatible_source_passes(self):
         manifests = RUNTIME.verify(ROOT, self.sources().__getitem__)
@@ -62,7 +78,8 @@ class RuntimeSourceTests(unittest.TestCase):
     def test_required_runtime_metadata_fields_cannot_be_omitted(self):
         path = 'crates/jcode-harness-api/src/events.rs'
         for field in ('account_label: Option<String>', 'effective_budget: Option<usize>',
-                      'pub struct HistoryTool', 'pub tool: Option<HistoryTool>'):
+                      'pub struct HistoryTool', 'pub tool: Option<HistoryTool>',
+                      'codemode: Option<Box<jcode_session_types::CodemodeSummary>>'):
             with self.subTest(field=field):
                 sources = self.sources()
                 sources[path] = sources[path].replace(field, '')

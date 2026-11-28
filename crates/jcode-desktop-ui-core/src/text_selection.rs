@@ -59,7 +59,66 @@ struct Endpoint {
 struct LeafGeometry {
     bounds: Bounds<Pixels>,
     layout: TextLayout,
+    offsets: LayoutOffsets,
+}
+
+type LayoutReplacement = (Range<usize>, Range<usize>);
+
+/// Byte positions in a selectable leaf and its shaped text. Replacements such
+/// as inline images are atomic in the layout but retain their source bytes.
+#[derive(Clone, Default)]
+pub struct LayoutOffsets {
     prefix_len: usize,
+    replacements: Option<Rc<[LayoutReplacement]>>,
+}
+
+impl LayoutOffsets {
+    /// Replacements are ordered and non-overlapping. Display ranges include the prefix.
+    pub fn new(prefix_len: usize, replacements: Vec<LayoutReplacement>) -> Self {
+        Self {
+            prefix_len,
+            replacements: (!replacements.is_empty()).then(|| replacements.into()),
+        }
+    }
+
+    pub fn layout_range(&self, range: Range<usize>) -> Range<usize> {
+        self.layout_index(range.start, false)..self.layout_index(range.end, true)
+    }
+
+    fn layout_index(&self, index: usize, end: bool) -> usize {
+        let (mut source_end, mut display_end) = (0, self.prefix_len);
+        for (source, display) in self.replacements.as_deref().unwrap_or_default() {
+            if index <= source.start {
+                break;
+            }
+            if index < source.end {
+                return if end { display.end } else { display.start };
+            }
+            (source_end, display_end) = (source.end, display.end);
+        }
+        display_end + index - source_end
+    }
+
+    /// Map a shaped display byte offset back through inline replacements.
+    pub fn source_index(&self, index: usize, text_len: usize) -> usize {
+        let (mut source_end, mut display_end) = (0, self.prefix_len);
+        for (source, display) in self.replacements.as_deref().unwrap_or_default() {
+            if index <= display.start {
+                break;
+            }
+            if index < display.end {
+                return if index - display.start < display.end - index {
+                    source.start
+                } else {
+                    source.end
+                };
+            }
+            (source_end, display_end) = (source.end, display.end);
+        }
+        source_end
+            .saturating_add(index.saturating_sub(display_end))
+            .min(text_len)
+    }
 }
 
 /// Where the leaves were painted on the last frame. Paint records it here,
@@ -80,6 +139,7 @@ struct PaintedGeometry {
 /// Selection and focus shared by the selectable leaves in one transcript.
 pub struct TextSelection {
     focus_handle: FocusHandle,
+    scoped_focus: bool,
     selection: Option<Selection>,
     selecting: bool,
     document: Vec<(SharedString, SharedString)>,
@@ -104,6 +164,7 @@ impl TextSelection {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
+            scoped_focus: false,
             selection: None,
             selecting: false,
             document: Vec::new(),
@@ -114,6 +175,24 @@ impl TextSelection {
             last_scroll: None,
             copied: None,
         }
+    }
+
+    /// Use [`Self::focus_scope`] on the containing surface instead of
+    /// registering the same keyboard anchor for each selectable leaf.
+    pub fn new_scoped(cx: &mut Context<Self>) -> Self {
+        Self {
+            scoped_focus: true,
+            ..Self::new(cx)
+        }
+    }
+
+    pub fn focus_scope<T: InteractiveElement>(element: T, model: &Entity<Self>, cx: &App) -> T {
+        let focus = model.read(cx).focus_handle();
+        let model = model.clone();
+        element
+            .track_focus(&focus)
+            .key_context(KEY_CONTEXT)
+            .on_action(move |_: &Copy, _, cx| model.update(cx, |selection, cx| selection.copy(cx)))
     }
 
     pub fn focus_handle(&self) -> FocusHandle {
@@ -332,12 +411,166 @@ impl TextSelection {
         self.last_scroll = None;
     }
 
+    /// Where the "Copied" pill goes for the leaf `key`, if it holds the end
+    /// of the selection that was just copied.
+    fn copied_bounds(&self, key: &SharedString) -> Option<Bounds<Pixels>> {
+        (self.copied_visible() && self.tail_key() == Some(key))
+            .then(|| {
+                let painted = self.painted.borrow();
+                painted.selection_bounds.or(painted.tail_bounds)
+            })
+            .flatten()
+    }
+
+    /// Forget last frame's geometry; the surface paints first and the leaves
+    /// rebuild it.
+    fn begin_surface_paint(&self, bounds: Bounds<Pixels>) {
+        let mut painted = self.painted.borrow_mut();
+        painted.leaves.clear();
+        painted.selected_row = None;
+        painted.surface_bounds = Some(bounds);
+        painted.selection_bounds = None;
+    }
+
+    /// Paint the selected part of the leaf `key` and record where it landed,
+    /// for the copied pill and the bridge to the next selected leaf.
+    fn paint_selected_lines(
+        &self,
+        key: &SharedString,
+        text_len: usize,
+        layout: &TextLayout,
+        offsets: &LayoutOffsets,
+        window: &mut Window,
+    ) {
+        let Some(range) = self
+            .range_for(key, text_len)
+            .filter(|range| !range.is_empty())
+        else {
+            return;
+        };
+        let index = self.document_index.get(key).copied();
+        let continues = index
+            .zip(self.document_range())
+            .is_some_and(|(index, (_, _, last, _))| index < last);
+        let mut lines = selected_line_bounds(
+            layout,
+            offsets.layout_range(range),
+            window.text_style().text_align,
+        );
+        if continues && let Some((last, _, _)) = lines.last_mut() {
+            last.size.width = layout.bounds().right() + px(SELECTION_PAD_X) - last.left();
+        }
+        // Bridge paragraph spacing only between consecutive selected leaves,
+        // never across columns or skipped rows.
+        let mut painted = self.painted.borrow_mut();
+        if let Some((first, _, _)) = lines.first()
+            && let Some((previous_index, previous)) = painted.selected_row
+            && index == Some(previous_index + 1)
+            && let Some(bridge) = selection_bridge(previous, *first)
+        {
+            window.paint_quad(gpui::fill(bridge, Theme::global().SELECTION));
+        }
+        painted.selected_row = index.zip(lines.last().map(|(row, _, _)| *row));
+        drop(painted);
+        paint_selection(&lines, window);
+        let mask = window.content_mask().bounds;
+        let visible = lines
+            .iter()
+            .map(|(line, _, _)| line.intersect(&mask))
+            .filter(|line| line.size.width > px(0.) && line.size.height > px(0.))
+            .reduce(|a, b| a.union(&b));
+        let mut painted = self.painted.borrow_mut();
+        if let Some(visible) = visible {
+            painted.selection_bounds = Some(
+                painted
+                    .selection_bounds
+                    .map_or(visible, |bounds| bounds.union(&visible)),
+            );
+        }
+        if let Some((last, _, row_end)) = lines.last() {
+            let mut last = *last;
+            last.size.width = (*row_end - last.left()).max(last.size.width);
+            if self.tail_key() == Some(key) {
+                painted.tail_bounds = Some(last);
+            }
+        }
+    }
+
+    /// A document drag moved to `position`. Whether a redraw is due.
+    fn drag_pointer(&mut self, position: Point<Pixels>) -> bool {
+        let previous = self.pointer;
+        self.drag_at(position) || previous != Some(position)
+    }
+
+    /// A document drag was released at `position`: take the final head if it
+    /// is inside the transcript, then copy.
+    fn release_at(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        // A fast drag may finish before its last move is delivered. A release
+        // outside the transcript keeps the last head.
+        let inside = self
+            .painted
+            .borrow()
+            .surface_bounds
+            .is_some_and(|surface| surface.contains(&position));
+        if inside && self.drag_at(position) {
+            cx.notify();
+        }
+        self.finish_and_copy(cx);
+    }
+
+    /// A document drag is held still and may need to follow its pointer.
+    fn is_following_pointer(&self) -> bool {
+        self.document_drag() && self.pointer.is_some()
+    }
+
+    /// Resolve the held pointer again after all leaves painted, scrolling
+    /// `list` when the pointer rests at the edge of `surface`. This follows a
+    /// stationary drag while wheel or edge scrolling changes the geometry
+    /// under it, without an idle animation loop.
+    fn follow_pointer(
+        &mut self,
+        list: Option<&ListState>,
+        surface: Bounds<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.document_drag() {
+            return;
+        }
+        let Some(pointer) = self.pointer else {
+            return;
+        };
+        let mut changed = self.drag_at(pointer);
+        if let Some(list) = list {
+            let viewport = list.viewport_bounds().intersect(&surface);
+            let speed = edge_scroll_speed(pointer, viewport);
+            if speed != 0. {
+                let now = Instant::now();
+                let elapsed = self.last_scroll.replace(now).map_or(1. / 60., |last| {
+                    now.duration_since(last).as_secs_f32().min(0.05)
+                });
+                let before = list.logical_scroll_top();
+                let offset = -list.scroll_px_offset_for_scrollbar().y;
+                let maximum = list.max_offset_for_scrollbar().y;
+                let target = (offset + px(speed * elapsed)).max(px(0.)).min(maximum);
+                list.scroll_by(target - offset);
+                let after = list.logical_scroll_top();
+                changed |= before.item_ix != after.item_ix
+                    || before.offset_in_item != after.offset_in_item;
+            } else {
+                self.last_scroll = None;
+            }
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
     fn register_geometry(
         &self,
         key: SharedString,
         bounds: Bounds<Pixels>,
         layout: TextLayout,
-        prefix_len: usize,
+        offsets: LayoutOffsets,
     ) {
         let mut painted = self.painted.borrow_mut();
         let bounds = painted
@@ -352,7 +585,7 @@ impl TextSelection {
                 LeafGeometry {
                     bounds,
                     layout,
-                    prefix_len,
+                    offsets,
                 },
             );
         }
@@ -391,11 +624,9 @@ impl TextSelection {
             })
             .map(|(key, geometry)| {
                 let text = &self.document[self.document_index[key]].1;
-                let offset = source_index(
-                    layout_index(&geometry.layout, position),
-                    geometry.prefix_len,
-                    text.len(),
-                );
+                let offset = geometry
+                    .offsets
+                    .source_index(layout_index(&geometry.layout, position), text.len());
                 (key.clone(), nearest_char_boundary(text, offset))
             });
         let Some((key, offset)) = target else {
@@ -597,45 +828,50 @@ pub fn selectable_with_prefix(
     prefix_len: usize,
     cx: &App,
 ) -> gpui::AnyElement {
+    selectable_with_offsets(
+        model,
+        key,
+        text,
+        layout,
+        child,
+        LayoutOffsets::new(prefix_len, vec![]),
+        cx,
+    )
+}
+
+pub fn selectable_with_offsets(
+    model: Entity<TextSelection>,
+    key: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    layout: TextLayout,
+    child: impl IntoElement,
+    offsets: LayoutOffsets,
+    cx: &App,
+) -> gpui::AnyElement {
     let key = key.into();
     let text = text.into();
-    let focus_handle = model.read(cx).focus_handle();
+    let selection = model.read(cx);
+    let focus_handle = selection.focus_handle();
     let element_id: SharedString = format!("selectable-text-{key}").into();
-    let copied = {
-        let selection = model.read(cx);
-        (selection.copied_visible() && selection.tail_key() == Some(&key))
-            .then(|| {
-                let painted = selection.painted.borrow();
-                painted.selection_bounds.or(painted.tail_bounds)
-            })
-            .flatten()
-            .map(copied_pill)
-    };
+    let copied = selection.copied_bounds(&key).map(copied_pill);
 
     div()
         .relative()
         .id(element_id.clone())
         .debug_selector(move || element_id.to_string())
         .cursor(CursorStyle::IBeam)
-        .track_focus(&focus_handle)
-        // Leaves also appear in pinned tasks and document headers, outside a
-        // transcript key context. Keep keyboard copy local to the focused leaf.
-        .key_context(KEY_CONTEXT)
-        .on_action({
-            let model = model.clone();
-            move |_: &Copy, _, cx| model.update(cx, |selection, cx| selection.copy(cx))
+        .when(!selection.scoped_focus, |leaf| {
+            TextSelection::focus_scope(leaf, &model, cx)
         })
         .on_mouse_down(MouseButton::Left, {
             let model = model.clone();
             let key = key.clone();
             let text = text.clone();
             let layout = layout.clone();
+            let offsets = offsets.clone();
             move |event, window, cx| {
-                let offset = source_index(
-                    layout_index(&layout, event.position),
-                    prefix_len,
-                    text.len(),
-                );
+                let offset =
+                    offsets.source_index(layout_index(&layout, event.position), text.len());
                 model.update(cx, |selection, cx| {
                     selection.begin(
                         key.clone(),
@@ -657,68 +893,23 @@ pub fn selectable_with_prefix(
             canvas(
                 |_, _, _| (),
                 move |bounds, _, window, cx| {
-                    if let Some(range) = model.read(cx).range_for(&key, text.len())
-                        && !range.is_empty()
-                    {
-                        let selection = model.read(cx);
-                        let index = selection.document_index.get(&key).copied();
-                        let continues = index
-                            .zip(selection.document_range())
-                            .is_some_and(|(index, (_, _, last, _))| index < last);
-                        let mut lines = selected_line_bounds(
-                            &layout,
-                            range.start + prefix_len..range.end + prefix_len,
-                            window.text_style().text_align,
-                        );
-                        if continues && let Some((last, _, _)) = lines.last_mut() {
-                            last.size.width =
-                                layout.bounds().right() + px(SELECTION_PAD_X) - last.left();
-                        }
-                        // Bridge paragraph spacing only between consecutive
-                        // selected leaves, never across columns or skipped rows.
-                        let mut painted = selection.painted.borrow_mut();
-                        if let Some((first, _, _)) = lines.first()
-                            && let Some((previous_index, previous)) = painted.selected_row
-                            && index == Some(previous_index + 1)
-                            && let Some(bridge) = selection_bridge(previous, *first)
-                        {
-                            window.paint_quad(gpui::fill(bridge, Theme::global().SELECTION));
-                        }
-                        painted.selected_row = index.zip(lines.last().map(|(row, _, _)| *row));
-                        drop(painted);
-                        paint_selection(&lines, window);
-                        let mask = window.content_mask().bounds;
-                        let visible = lines
-                            .iter()
-                            .map(|(line, _, _)| line.intersect(&mask))
-                            .filter(|line| line.size.width > px(0.) && line.size.height > px(0.))
-                            .reduce(|a, b| a.union(&b));
-                        let selection = model.read(cx);
-                        let mut painted = selection.painted.borrow_mut();
-                        if let Some(visible) = visible {
-                            painted.selection_bounds = Some(
-                                painted
-                                    .selection_bounds
-                                    .map_or(visible, |bounds| bounds.union(&visible)),
-                            );
-                        }
-                        if let Some((last, _, row_end)) = lines.last() {
-                            let mut last = *last;
-                            last.size.width = (*row_end - last.left()).max(last.size.width);
-                            if selection.tail_key() == Some(&key) {
-                                painted.tail_bounds = Some(last);
-                            }
-                        }
-                    }
+                    model.read(cx).paint_selected_lines(
+                        &key,
+                        text.len(),
+                        &layout,
+                        &offsets,
+                        window,
+                    );
                     model.read(cx).register_geometry(
                         key.clone(),
                         bounds.intersect(&window.content_mask().bounds),
                         layout.clone(),
-                        prefix_len,
+                        offsets.clone(),
                     );
                     let moved = model.clone();
                     let moved_key = key.clone();
                     let moved_layout = layout.clone();
+                    let moved_offsets = offsets.clone();
                     let text_len = text.len();
                     window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                         if !phase.capture() || !moved.read(cx).is_selecting(&moved_key) {
@@ -726,9 +917,8 @@ pub fn selectable_with_prefix(
                         }
                         moved.update(cx, |selection, cx| {
                             if event.pressed_button == Some(MouseButton::Left) {
-                                let offset = source_index(
+                                let offset = moved_offsets.source_index(
                                     layout_index(&moved_layout, event.position),
-                                    prefix_len,
                                     text_len,
                                 );
                                 selection.drag_to(&moved_key, offset);
@@ -826,15 +1016,7 @@ pub fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> gpui::A
     canvas(
         |_, _, _| (),
         move |bounds, _, window, cx| {
-            {
-                let selection = model.read(cx);
-                let mut painted = selection.painted.borrow_mut();
-                painted.leaves.clear();
-                painted.selected_row = None;
-                painted.surface_bounds = Some(bounds);
-                // Leaves repaint after the surface and rebuild the union.
-                painted.selection_bounds = None;
-            }
+            model.read(cx).begin_surface_paint(bounds);
             let moved = model.clone();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                 if !phase.capture() || !moved.read(cx).document_drag() {
@@ -842,10 +1024,7 @@ pub fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> gpui::A
                 }
                 moved.update(cx, |selection, cx| {
                     if event.pressed_button == Some(MouseButton::Left) {
-                        let previous_pointer = selection.pointer;
-                        if selection.drag_at(event.position)
-                            || previous_pointer != Some(event.position)
-                        {
+                        if selection.drag_pointer(event.position) {
                             cx.notify();
                         }
                     } else {
@@ -860,21 +1039,11 @@ pub fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> gpui::A
                     && released.read(cx).document_drag()
                 {
                     released.update(cx, |selection, cx| {
-                        // A fast drag may finish before its last move is delivered.
-                        // A release outside the transcript keeps the last head.
-                        let inside = selection
-                            .painted
-                            .borrow()
-                            .surface_bounds
-                            .is_some_and(|surface| surface.contains(&event.position));
-                        if inside && selection.drag_at(event.position) {
-                            cx.notify();
-                        }
-                        selection.finish_and_copy(cx);
+                        selection.release_at(event.position, cx);
                     });
                 }
             });
-            if model.read(cx).document_drag() && model.read(cx).pointer.is_some() {
+            if model.read(cx).is_following_pointer() {
                 let model = model.clone();
                 let list = list.clone();
                 // Resolve again after all leaves have painted. This follows a
@@ -882,38 +1051,7 @@ pub fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> gpui::A
                 // the geometry under it, without an idle animation loop.
                 window.on_next_frame(move |_, cx| {
                     model.update(cx, |selection, cx| {
-                        if !selection.document_drag() {
-                            return;
-                        }
-                        let Some(pointer) = selection.pointer else {
-                            return;
-                        };
-                        let mut changed = selection.drag_at(pointer);
-                        if let Some(list) = &list {
-                            let viewport = list.viewport_bounds().intersect(&bounds);
-                            let speed = edge_scroll_speed(pointer, viewport);
-                            if speed != 0. {
-                                let now = Instant::now();
-                                let elapsed =
-                                    selection.last_scroll.replace(now).map_or(1. / 60., |last| {
-                                        now.duration_since(last).as_secs_f32().min(0.05)
-                                    });
-                                let before = list.logical_scroll_top();
-                                let offset = -list.scroll_px_offset_for_scrollbar().y;
-                                let maximum = list.max_offset_for_scrollbar().y;
-                                let target =
-                                    (offset + px(speed * elapsed)).max(px(0.)).min(maximum);
-                                list.scroll_by(target - offset);
-                                let after = list.logical_scroll_top();
-                                changed |= before.item_ix != after.item_ix
-                                    || before.offset_in_item != after.offset_in_item;
-                            } else {
-                                selection.last_scroll = None;
-                            }
-                        }
-                        if changed {
-                            cx.notify();
-                        }
+                        selection.follow_pointer(list.as_ref(), bounds, cx);
                     });
                 });
             }
@@ -1073,10 +1211,6 @@ pub fn plain(
     selectable(model, key, text, layout, styled, cx)
 }
 
-fn source_index(display_index: usize, prefix_len: usize, text_len: usize) -> usize {
-    display_index.saturating_sub(prefix_len).min(text_len)
-}
-
 fn layout_index(layout: &TextLayout, position: gpui::Point<gpui::Pixels>) -> usize {
     match layout.index_for_position(position) {
         Ok(index) | Err(index) => index,
@@ -1129,16 +1263,32 @@ mod tests {
     fn layout_prefix_maps_back_to_source_without_copying_spacer() {
         let text = "βeta and code";
         let prefix = 8;
+        let map = LayoutOffsets::new(prefix, vec![]);
         for offset in 0..=prefix {
-            assert_eq!(source_index(offset, prefix, text.len()), 0);
+            assert_eq!(map.source_index(offset, text.len()), 0);
         }
         for (offset, _) in text.char_indices() {
-            assert_eq!(source_index(prefix + offset, prefix, text.len()), offset);
+            assert_eq!(map.source_index(prefix + offset, text.len()), offset);
         }
-        assert_eq!(source_index(usize::MAX, prefix, text.len()), text.len());
-        let start = source_index(prefix, prefix, text.len());
-        let end = source_index(prefix + "βeta".len(), prefix, text.len());
+        assert_eq!(map.source_index(usize::MAX, text.len()), text.len());
+        let start = map.source_index(prefix, text.len());
+        let end = map.source_index(prefix + "βeta".len(), text.len());
         assert_eq!(&text[start..end], "βeta");
+    }
+
+    #[test]
+    fn inline_replacements_keep_cyrillic_and_original_copy_ranges() {
+        let source = "до [#image 123456789] и [#image 2] после";
+        let first = source.find('[').unwrap()..source.find(']').unwrap() + 1;
+        let second = source.rfind('[').unwrap()..source.rfind(']').unwrap() + 1;
+        let map = LayoutOffsets::new(0, vec![(first.clone(), 5..13), (second.clone(), 17..29)]);
+        assert_eq!(map.layout_range(first.start + 1..first.end - 1), 5..13);
+        assert_eq!(map.layout_range(first.end..second.start), 13..17);
+        assert_eq!(map.source_index(6, source.len()), first.start);
+        assert_eq!(map.source_index(12, source.len()), first.end);
+        let start = map.source_index(30, source.len());
+        let end = map.source_index(40, source.len());
+        assert_eq!(&source[start..end], "после");
     }
 
     #[test]

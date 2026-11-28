@@ -6,71 +6,40 @@ use gpui::{
     Focusable, GlobalElementId, LayoutId, MouseButton, PaintQuad, Pixels, SharedString, Style,
     TextRun, UTF16Selection, Window, WrappedLine, div, fill, point, prelude::*, px, relative, size,
 };
+use jcode_desktop_model::text_field::{
+    FieldSelection, byte_to_utf16, next_char_boundary, previous_char_boundary, range_from_utf16,
+    range_to_utf16, utf16_to_byte,
+};
+use jcode_desktop_ui_core::ime_geometry::ImeGeometry;
 use std::ops::Range;
 
 #[derive(Default)]
 struct Secret {
     text: String,
-    selection: Range<usize>,
-    marked: Option<Range<usize>>,
-    reversed: bool,
+    sel: FieldSelection,
 }
 impl Secret {
-    fn cursor(&self) -> usize {
-        if self.reversed {
-            self.selection.start
-        } else {
-            self.selection.end
-        }
-    }
     fn move_to(&mut self, offset: usize, extend: bool) {
-        let anchor = if !extend {
-            offset
-        } else if self.reversed {
-            self.selection.end
+        if extend {
+            self.sel.extend_to(offset);
         } else {
-            self.selection.start
-        };
-        self.selection = anchor.min(offset)..anchor.max(offset);
-        self.reversed = offset < anchor;
+            self.sel.collapse_to(offset);
+        }
     }
     fn masked(&self) -> String {
         "•".repeat(self.text.encode_utf16().count())
     }
-    fn utf16(&self, offset: usize) -> usize {
-        self.text[..offset].encode_utf16().count()
-    }
-    fn byte(&self, offset: usize) -> usize {
-        byte_offset(&self.text, offset)
-    }
-    fn range(&self, range: Range<usize>) -> Range<usize> {
-        let start = self.byte(range.start);
-        start..self.byte(range.end).max(start)
-    }
     fn replace(&mut self, range: Range<usize>, text: &str) {
         self.text.replace_range(range.clone(), text);
-        let end = range.start + text.len();
-        self.move_to(end, false);
-        self.marked = None;
+        self.sel.commit(range.start, text.len());
     }
     fn take(&mut self) -> String {
-        self.move_to(0, false);
-        self.marked = None;
+        self.sel = FieldSelection::default();
         std::mem::take(&mut self.text)
     }
     fn clear(&mut self) {
         self.take().into_bytes().fill(0);
     }
-}
-fn byte_offset(text: &str, offset: usize) -> usize {
-    let mut count = 0;
-    for (index, ch) in text.char_indices() {
-        if count + ch.len_utf16() > offset {
-            return index;
-        }
-        count += ch.len_utf16();
-    }
-    text.len()
 }
 
 pub struct LoginInput {
@@ -79,6 +48,7 @@ pub struct LoginInput {
     placeholder: SharedString,
     last_layout: Option<WrappedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    ime_geometry: Option<ImeGeometry>,
 }
 impl LoginInput {
     pub fn new(cx: &mut Context<Self>, placeholder: impl Into<String>) -> Self {
@@ -88,6 +58,7 @@ impl LoginInput {
             placeholder: placeholder.into().into(),
             last_layout: None,
             last_bounds: None,
+            ime_geometry: None,
         }
     }
     pub fn content_empty(&self) -> bool {
@@ -122,24 +93,17 @@ impl LoginInput {
             match key {
                 "v" => self.paste(window, cx),
                 "a" => {
-                    self.secret.selection = 0..self.secret.text.len();
-                    self.secret.reversed = false;
+                    self.secret.sel.select_all(self.secret.text.len());
                 }
                 // Explicitly swallow secret extraction and history commands.
                 "c" | "x" | "z" | "y" => {}
                 _ => return,
             }
         } else {
-            let range = self.secret.selection.clone();
-            let cursor = self.secret.cursor();
-            let previous = self.secret.text[..cursor]
-                .char_indices()
-                .next_back()
-                .map_or(0, |(i, _)| i);
-            let next = self.secret.text[cursor..]
-                .chars()
-                .next()
-                .map_or(cursor, |ch| cursor + ch.len_utf8());
+            let range = self.secret.sel.range.clone();
+            let cursor = self.secret.sel.cursor();
+            let previous = previous_char_boundary(&self.secret.text, cursor);
+            let next = next_char_boundary(&self.secret.text, cursor);
             match key {
                 "backspace" => self.secret.replace(
                     if range.is_empty() {
@@ -180,7 +144,7 @@ impl LoginInput {
                 _ => return,
             }
         }
-        self.secret.marked = None;
+        self.secret.sel.marked = None;
         cx.stop_propagation();
         cx.notify();
     }
@@ -203,8 +167,10 @@ impl EntityInputHandler for LoginInput {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<String> {
-        let range = self.secret.range(range);
-        let range = self.secret.utf16(range.start)..self.secret.utf16(range.end);
+        let range = range_to_utf16(
+            &self.secret.text,
+            &range_from_utf16(&self.secret.text, &range),
+        );
         *actual = Some(range.clone());
         Some("•".repeat(range.len()))
     }
@@ -215,19 +181,19 @@ impl EntityInputHandler for LoginInput {
         _: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
         Some(UTF16Selection {
-            range: self.secret.utf16(self.secret.selection.start)
-                ..self.secret.utf16(self.secret.selection.end),
-            reversed: self.secret.reversed,
+            range: range_to_utf16(&self.secret.text, &self.secret.sel.range),
+            reversed: self.secret.sel.reversed,
         })
     }
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
         self.secret
+            .sel
             .marked
             .as_ref()
-            .map(|r| self.secret.utf16(r.start)..self.secret.utf16(r.end))
+            .map(|range| range_to_utf16(&self.secret.text, range))
     }
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.secret.marked = None;
+        self.secret.sel.marked = None;
         cx.notify();
     }
     fn replace_text_in_range(
@@ -237,10 +203,10 @@ impl EntityInputHandler for LoginInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range
-            .map(|r| self.secret.range(r))
-            .or(self.secret.marked.clone())
-            .unwrap_or(self.secret.selection.clone());
+        let range = self
+            .secret
+            .sel
+            .replacement_range(&self.secret.text, range.as_ref());
         let text: String = text.chars().filter(|ch| !ch.is_control()).collect();
         self.secret.replace(range, &text);
         cx.notify();
@@ -253,17 +219,13 @@ impl EntityInputHandler for LoginInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range
-            .map(|r| self.secret.range(r))
-            .or(self.secret.marked.clone())
-            .unwrap_or(self.secret.selection.clone());
+        let range = self
+            .secret
+            .sel
+            .replacement_range(&self.secret.text, range.as_ref());
         let start = range.start;
         self.secret.replace(range, text);
-        self.secret.marked = (!text.is_empty()).then_some(start..start + text.len());
-        if let Some(r) = selected {
-            let a = byte_offset(text, r.start);
-            self.secret.selection = start + a..start + byte_offset(text, r.end).max(a);
-        }
+        self.secret.sel.mark(start, text, selected.as_ref());
         cx.notify();
     }
     fn bounds_for_range(
@@ -273,23 +235,16 @@ impl EntityInputHandler for LoginInput {
         window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let line = self.last_layout.as_ref()?;
-        let range = self.secret.range(range);
-        let start = line.position_for_index(
-            self.secret.utf16(range.start) * "•".len(),
-            window.line_height(),
-        )?;
-        let end = line.position_for_index(
-            self.secret.utf16(range.end) * "•".len(),
-            window.line_height(),
-        )?;
-        Some(Bounds::from_corners(
-            bounds.origin + start,
-            point(
-                bounds.left() + end.x,
-                bounds.top() + end.y + window.line_height(),
-            ),
-        ))
+        let range = range_to_utf16(
+            &self.secret.text,
+            &range_from_utf16(&self.secret.text, &range),
+        );
+        self.ime_geometry.as_ref()?.bounds_for_range(
+            self.secret.masked().into(),
+            range.start * "•".len()..range.end * "•".len(),
+            bounds.origin,
+            window,
+        )
     }
     fn character_index_for_point(
         &mut self,
@@ -312,6 +267,7 @@ struct TextElement {
 }
 
 struct PrepaintState {
+    ime_geometry: ImeGeometry,
     line: Option<WrappedLine>,
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
@@ -395,9 +351,10 @@ impl Element for TextElement {
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
         let content: SharedString = input.secret.masked().into();
-        let selected_range = input.secret.utf16(input.secret.selection.start) * "•".len()
-            ..input.secret.utf16(input.secret.selection.end) * "•".len();
-        let cursor = input.secret.utf16(input.secret.cursor()) * "•".len();
+        let text = &input.secret.text;
+        let selected = range_to_utf16(text, &input.secret.sel.range);
+        let selected_range = selected.start * "•".len()..selected.end * "•".len();
+        let cursor = byte_to_utf16(text, input.secret.sel.cursor()) * "•".len();
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
@@ -417,6 +374,8 @@ impl Element for TextElement {
         let runs = vec![run];
 
         let font_size = style.font_size.to_pixels(window.rem_size());
+        let line_height = window.line_height();
+        let ime_geometry = ImeGeometry::new(runs[0].font.clone(), font_size, line_height, None);
         let line = window
             .text_system()
             .shape_text(display_text, font_size, &runs, None, None)
@@ -424,7 +383,6 @@ impl Element for TextElement {
             .into_iter()
             .next()
             .expect("shape_text always returns a line");
-        let line_height = window.line_height();
         let cursor_pos = line
             .position_for_index(cursor, line_height)
             .unwrap_or_default();
@@ -448,6 +406,7 @@ impl Element for TextElement {
             )
         };
         PrepaintState {
+            ime_geometry,
             line: Some(line),
             cursor,
             selection,
@@ -492,6 +451,7 @@ impl Element for TextElement {
         }
 
         self.input.update(cx, |input, _cx| {
+            input.ime_geometry = Some(prepaint.ime_geometry.clone());
             input.last_layout = Some(line);
             input.last_bounds = Some(prepaint.text_bounds);
         });
@@ -519,7 +479,7 @@ impl Render for LoginInput {
                     this.focus_handle.focus(window, cx);
                     if let Some(offset) = this.character_index_for_point(event.position, window, cx)
                     {
-                        let offset = this.secret.byte(offset);
+                        let offset = utf16_to_byte(&this.secret.text, offset);
                         this.secret.move_to(offset, false);
                     }
                     cx.stop_propagation();
@@ -532,6 +492,50 @@ impl Render for LoginInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn masked_ime_bounds_follow_preedit_without_paint(cx: &mut gpui::TestAppContext) {
+        let window = cx.update(|cx| {
+            cx.open_window(gpui::WindowOptions::default(), |_, cx| {
+                cx.new(|cx| LoginInput::new(cx, "API key"))
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "x", window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |input, window, cx| {
+                let bounds = input.last_bounds.unwrap();
+                let anchor = input.bounds_for_range(1..1, bounds, window, cx).unwrap();
+                let mut widths = Vec::new();
+                for marked in ["a", "abcde", "😀", "ab", "W"] {
+                    let end = marked.encode_utf16().count();
+                    input.replace_and_mark_text_in_range(None, marked, Some(end..end), window, cx);
+                    let rect = input
+                        .bounds_for_range(1..1 + end, bounds, window, cx)
+                        .expect("masked preedit must have bounds before the next paint");
+                    assert_eq!(rect.origin, anchor.origin);
+                    assert_eq!(rect.size.height, anchor.size.height);
+                    widths.push(rect.size.width);
+                }
+                assert!(widths[0] > px(0.));
+                assert!(widths[1] > widths[2]);
+                assert!(widths[2] > widths[0]);
+                assert_eq!(
+                    widths[2], widths[3],
+                    "one emoji and two ASCII letters use two bullets"
+                );
+                assert_eq!(
+                    widths[0], widths[4],
+                    "ASCII glyph widths must not reveal the secret"
+                );
+            })
+            .unwrap();
+    }
+
     #[gpui::test]
     fn native_input_masks_layout_and_readback_and_clears(cx: &mut gpui::TestAppContext) {
         let window = cx.update(|cx| {
@@ -564,10 +568,10 @@ mod tests {
                 assert_eq!(input.take(cx), "secret-😀");
                 assert!(input.content_empty());
                 input.replace_and_mark_text_in_range(None, "😀ab", Some(2..3), window, cx);
-                assert_eq!(input.secret.selection, 4..5);
+                assert_eq!(input.secret.sel.range, 4..5);
                 input.clear(cx);
                 assert!(input.content_empty());
-                assert!(input.secret.marked.is_none());
+                assert!(input.secret.sel.marked.is_none());
             })
             .unwrap();
     }
@@ -610,6 +614,199 @@ mod tests {
             .unwrap();
     }
 
+    // ---- Characterization pins -------------------------------------------
+    //
+    // Pinned before the caret, selection and IME rules moved into
+    // jcode-desktop-model::text_field. They read the field through the platform
+    // input handler where possible so they survive the move.
+
+    fn login_window(cx: &mut gpui::TestAppContext) -> gpui::WindowHandle<LoginInput> {
+        let window = cx.update(|cx| {
+            cx.open_window(gpui::WindowOptions::default(), |_, cx| {
+                cx.new(|cx| LoginInput::new(cx, "API key"))
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |input, window, cx| {
+                window.focus(&input.focus_handle, cx)
+            })
+            .unwrap();
+        window
+    }
+
+    #[gpui::test]
+    fn arrow_keys_step_by_scalar_and_extend_around_the_anchor(cx: &mut gpui::TestAppContext) {
+        let window = login_window(cx);
+        // `e` + combining acute is one grapheme but two scalars.
+        cx.simulate_input(*window, "abé😀e\u{301}");
+        let mut cx = gpui::VisualTestContext::from_window(*window, cx);
+        cx.simulate_keystrokes("left");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.sel.range, 9..9, "left steps over one scalar");
+            })
+            .unwrap();
+        cx.simulate_keystrokes("left left");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.sel.range, 4..4, "emoji is one step");
+            })
+            .unwrap();
+        cx.simulate_keystrokes("shift-right shift-right");
+        window
+            .update(&mut cx, |input, window, cx| {
+                assert_eq!(input.secret.sel.range, 4..9);
+                let selected = input.selected_text_range(false, window, cx).unwrap();
+                assert_eq!(selected.range, 3..6);
+                assert!(!selected.reversed);
+            })
+            .unwrap();
+        cx.simulate_keystrokes("shift-left shift-left shift-left");
+        window
+            .update(&mut cx, |input, window, cx| {
+                assert_eq!(input.secret.sel.range, 2..4, "the anchor stays at 4");
+                let selected = input.selected_text_range(false, window, cx).unwrap();
+                assert!(selected.reversed);
+            })
+            .unwrap();
+        // A plain arrow collapses to the matching edge.
+        cx.simulate_keystrokes("right");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.sel.range, 4..4);
+            })
+            .unwrap();
+        cx.simulate_keystrokes("home shift-end");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.sel.range, 0..input.secret.text.len());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn backspace_and_delete_remove_one_scalar_or_the_selection(cx: &mut gpui::TestAppContext) {
+        let window = login_window(cx);
+        cx.simulate_input(*window, "a😀e\u{301}b");
+        let mut cx = gpui::VisualTestContext::from_window(*window, cx);
+        cx.simulate_keystrokes("left left backspace");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.text, "a😀\u{301}b", "one scalar, not the cluster");
+                assert_eq!(input.secret.sel.range, 5..5);
+            })
+            .unwrap();
+        cx.simulate_keystrokes("delete delete");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.text, "a😀");
+            })
+            .unwrap();
+        cx.simulate_keystrokes("delete home right shift-right backspace");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(input.secret.text, "a");
+                assert_eq!(input.secret.sel.range, 1..1);
+            })
+            .unwrap();
+        cx.simulate_keystrokes("backspace backspace delete");
+        window
+            .update(&mut cx, |input, _, _| {
+                assert!(input.content_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn ime_marked_text_replaces_in_place_and_selects_relative_to_it(cx: &mut gpui::TestAppContext) {
+        let window = login_window(cx);
+        window
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "你好，", window, cx);
+                let start = "你好，".len();
+                for marked in ["n", "ni", "ni h"] {
+                    let caret = marked.encode_utf16().count();
+                    input.replace_and_mark_text_in_range(
+                        None,
+                        marked,
+                        Some(caret..caret),
+                        window,
+                        cx,
+                    );
+                    assert_eq!(input.secret.text, format!("你好，{marked}"));
+                    assert_eq!(input.secret.sel.marked, Some(start..start + marked.len()));
+                    assert_eq!(
+                        input.secret.sel.range,
+                        start + marked.len()..start + marked.len()
+                    );
+                    assert_eq!(
+                        input.marked_text_range(window, cx),
+                        Some(3..3 + caret),
+                        "reported in UTF-16 units"
+                    );
+                }
+                // The IME selection is relative to the new text and clamped.
+                input.replace_and_mark_text_in_range(None, "你好", Some(1..9), window, cx);
+                assert_eq!(input.secret.text, "你好，你好");
+                assert_eq!(input.secret.sel.range, start + 3..start + 6);
+                // Committing without a range replaces the marked text.
+                input.replace_text_in_range(None, "你好🚀", window, cx);
+                assert_eq!(input.secret.text, "你好，你好🚀");
+                assert!(input.secret.sel.marked.is_none());
+                assert_eq!(
+                    input.secret.sel.range,
+                    input.secret.text.len()..input.secret.text.len()
+                );
+                // An empty marked string clears the composition.
+                input.replace_and_mark_text_in_range(None, "x", None, window, cx);
+                assert!(input.secret.sel.marked.is_some());
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+                assert!(input.secret.sel.marked.is_none());
+                assert_eq!(input.secret.text, "你好，你好🚀");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn platform_ranges_clamp_and_floor_inside_a_surrogate_pair(cx: &mut gpui::TestAppContext) {
+        let window = login_window(cx);
+        window
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "a😀b", window, cx);
+                let mut actual = None;
+                // Offset 2 is inside the emoji and rounds down to its start.
+                let text = input.text_for_range(0..2, &mut actual, window, cx);
+                assert_eq!(actual, Some(0..1));
+                assert_eq!(text.as_deref(), Some("•"));
+                input.text_for_range(1..99, &mut actual, window, cx);
+                assert_eq!(actual, Some(1..4));
+                // Inverted ranges are ordered rather than sliced blindly.
+                #[allow(clippy::reversed_empty_ranges)]
+                let inverted = 3..1;
+                input.replace_text_in_range(Some(inverted), "x", window, cx);
+                assert_eq!(input.secret.text, "a😀xb");
+                input.replace_text_in_range(Some(0..1), "", window, cx);
+                assert_eq!(input.secret.text, "😀xb");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn committed_text_drops_control_characters_but_marked_text_keeps_them(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let window = login_window(cx);
+        window
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "a\tb\r\nc", window, cx);
+                assert_eq!(input.secret.text, "abc");
+                input.replace_and_mark_text_in_range(None, "\t", None, window, cx);
+                assert_eq!(input.secret.text, "abc\t");
+            })
+            .unwrap();
+    }
+
     #[test]
     fn secret_is_never_display_text() {
         let mut secret = Secret::default();
@@ -623,24 +820,15 @@ mod tests {
     fn take_and_clear_remove_content_and_composition() {
         let mut secret = Secret::default();
         secret.replace(0..0, "secret");
-        secret.marked = Some(0..6);
+        secret.sel.marked = Some(0..6);
         assert_eq!(secret.take(), "secret");
         assert!(secret.text.is_empty());
         assert!(secret.masked().is_empty());
-        assert_eq!(secret.selection, 0..0);
-        assert_eq!(secret.marked, None);
+        assert_eq!(secret.sel.range, 0..0);
+        assert_eq!(secret.sel.marked, None);
         secret.replace(0..0, "another");
         secret.clear();
         assert!(secret.text.is_empty());
         assert!(secret.masked().is_empty());
-    }
-    #[test]
-    fn utf16_ranges_preserve_unicode_boundaries() {
-        let mut secret = Secret::default();
-        secret.replace(0..0, "a😀é");
-        assert_eq!(secret.range(1..3), 1..5);
-        assert_eq!(secret.range(2..999), 1..7);
-        secret.replace(secret.range(1..3), "x");
-        assert_eq!(secret.text, "axé");
     }
 }

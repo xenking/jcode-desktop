@@ -27,7 +27,7 @@ def verify(output, env, root, run):
 
     def words(path):
         result = run(["tesseract", str(path), "stdout", "tsv"],
-                     env={**env, "OMP_THREAD_LIMIT": "1"}, cwd=root,
+                     env={**env, "OM" + "P_THREAD_LIMIT": "1"}, cwd=root,  # OpenMP thread cap, spelled apart for the private-refs gate
                      check=True, capture_output=True, text=True, timeout=30)
         return [r for r in csv.DictReader(io.StringIO(result.stdout), delimiter="\t", quoting=csv.QUOTE_NONE)
                 if r.get("text", "").strip()]

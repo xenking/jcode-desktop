@@ -1,7 +1,7 @@
 //! The voice button's chrome: the platform shortcut keycap, its tooltip,
 //! short pill labels for voice outcomes, and the idle microphone/shortcut
 //! crossfade. Holds no panel state, so it is testable without a Panel.
-use crate::theme::Theme;
+use crate::theme::{Palette, Theme};
 use gpui::{
     Context, IntoElement, ParentElement, Render, Styled, Task, Window, div, prelude::*, px,
 };
@@ -24,7 +24,7 @@ const VOICE_SHORTCUT_KEYCAP: &str = "⌘⇧M";
 
 /// Linux: a small outlined keycap holding the Copilot key glyph.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn voice_shortcut_keycap(color: gpui::Hsla, _theme: &Theme) -> gpui::AnyElement {
+pub fn voice_shortcut_keycap(color: gpui::Hsla, _theme: &Palette) -> gpui::AnyElement {
     div()
         .debug_selector(|| "voice-shortcut".into())
         .flex_none()
@@ -46,7 +46,7 @@ pub fn voice_shortcut_keycap(color: gpui::Hsla, _theme: &Theme) -> gpui::AnyElem
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-pub fn voice_shortcut_keycap(color: gpui::Hsla, theme: &Theme) -> gpui::AnyElement {
+pub fn voice_shortcut_keycap(color: gpui::Hsla, theme: &Palette) -> gpui::AnyElement {
     div()
         .debug_selector(|| "voice-shortcut".into())
         .flex_none()
@@ -60,24 +60,8 @@ pub fn voice_shortcut_keycap(color: gpui::Hsla, theme: &Theme) -> gpui::AnyEleme
 
 pub fn voice_tooltip(action: &str, status: &str) -> String {
     format!(
-        "{action} · {VOICE_SHORTCUT}\nHold {VOICE_SHORTCUT} to transcribe, release to finish. {status}. Ctrl+Shift+V toggles recording in the composer. Audio streams to Nari. After transcription, Jev chooses a coding agent or a quick navigation action."
+        "{action} · {VOICE_SHORTCUT}\nHold {VOICE_SHORTCUT} to transcribe, release to finish. {status}. Ctrl+Shift+V toggles recording in the composer. Audio streams to the speech backend chosen in Settings > Voice. After transcription, Jev chooses a coding agent or a quick navigation action."
     )
-}
-
-pub struct VoiceTooltip(pub String);
-impl Render for VoiceTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let _render_scope = crate::render_stats::scope("VoiceTooltip");
-        div()
-            .debug_selector(|| "voice-shortcut-tooltip".into())
-            .max_w(px(300.))
-            .p_2()
-            .rounded_md()
-            .bg(Theme::global().HEADER_BG)
-            .text_size(px(12.))
-            .text_color(Theme::global().TEXT)
-            .child(self.0.clone())
-    }
 }
 
 /// Compact OS-pill label for Jev's decision, e.g. "Jev → Coding agent".
@@ -152,7 +136,7 @@ pub fn voice_shortcut_face(color: gpui::Hsla) -> gpui::Div {
         .flex()
         .items_center()
         .justify_center()
-        .child(voice_shortcut_keycap(color, &Theme::global()))
+        .child(voice_shortcut_keycap(color, Theme::global()))
 }
 
 /// The voice button's two faces, alternating on their own clock, so a
