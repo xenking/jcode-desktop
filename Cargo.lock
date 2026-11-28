@@ -3921,6 +3921,7 @@ name = "jcode-harness-api-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "jcode-build-meta",
  "jcode-build-support",
  "jcode-harness-api",
@@ -4172,6 +4173,7 @@ name = "jcode-sdk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "futures",
  "jcode-applet-types",
  "jcode-build-support",
