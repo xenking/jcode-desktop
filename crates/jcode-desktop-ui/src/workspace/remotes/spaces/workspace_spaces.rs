@@ -452,6 +452,63 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_paired_machines_unopened_sessions_are_rows_under_its_heading_newest_first_and_capped(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = sectioned_workspace(cx, &["work"]);
+        let host = workspace.read_with(vcx, |w, _| w.remotes.paired[0].host());
+        let id = |n: usize| format!("paired://{}/s{n:02}", "0a".repeat(16));
+        workspace.update(vcx, |w, cx| {
+            // One of them is already open here: it is a panel, not a second row.
+            w.open_session_with_identity(id(24), Some("session 24".into()), None, ROWS_PER_SPACE, cx);
+            let listed = (0..25)
+                .map(|n| {
+                    let mut session = crate::workspace::tests::session_info(&id(n), Some(&format!("session {n}")));
+                    session.updated_at_ms = Some(1_000 + n as i64);
+                    session
+                })
+                .collect();
+            w.apply(Update::MachineSessions { host: host.clone(), result: Ok(listed) }, cx);
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, _| {
+            let rows: Vec<_> = w.sidebar_session_layout.iter().map(|row| row.session_id.clone()).collect();
+            let machine_rows: Vec<_> = rows.iter().filter(|r| r.starts_with("paired://")).collect();
+            assert_eq!(machine_rows.iter().filter(|r| **r == &id(24)).count(), 1, "an open session is not repeated");
+            assert_eq!(machine_rows.len(), 20, "the newest twenty, the open one among them");
+            assert!(machine_rows.contains(&&id(5)) && !machine_rows.contains(&&id(4)), "newest first, the oldest left to search");
+            let first = rows.iter().position(|r| r.starts_with("paired://")).unwrap();
+            assert!(rows[..first].iter().all(|r| !r.starts_with("paired://")), "after this machine's own");
+        });
+        // The picker and its search reach every session the machine listed, the capped-out ones too.
+        workspace.update_in(vcx, |w, window, cx| {
+            w.open_resume(&OpenResume, window, cx);
+            assert_eq!(w.resume_matches(cx).iter().filter(|s| s.session_id.starts_with("paired://")).count(), 25);
+            w.resume.as_mut().unwrap().query = "session 4".into();
+            let found: Vec<_> = w.resume_matches(cx).into_iter().map(|s| s.session_id).collect();
+            assert!(found.contains(&id(4)), "{found:?}");
+        });
+    }
+
+    #[gpui::test]
+    fn a_paired_machines_unopened_sessions_show_even_while_this_machines_own_work_is_live(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = sectioned_workspace(cx, &["work"]);
+        let host = workspace.read_with(vcx, |w, _| w.remotes.paired[0].host());
+        let id = format!("paired://{}/unopened", "0a".repeat(16));
+        workspace.update(vcx, |w, cx| {
+            let listed = vec![crate::workspace::tests::session_info(&id, Some("unopened"))];
+            w.apply(Update::MachineSessions { host, result: Ok(listed) }, cx);
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, _| {
+            let row = w.sidebar_session_layout.iter().find(|row| row.session_id == id).expect("listed");
+            assert!(!row.collapsed, "the local panel is live, the machine's group still opens");
+        });
+    }
+
+    #[gpui::test]
     fn a_failed_listing_keeps_what_was_known_and_names_the_failure_in_the_header(
         cx: &mut gpui::TestAppContext,
     ) {

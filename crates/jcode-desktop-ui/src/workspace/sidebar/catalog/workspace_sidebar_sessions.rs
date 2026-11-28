@@ -109,6 +109,23 @@ pub(super) fn sidebar_session_order(sessions: &[jcode_sdk::SessionInfo]) -> Vec<
     ordered
 }
 
+/// Unopened sessions a paired machine lists under its own heading. The rest
+/// stay reachable from the picker and search.
+const MACHINE_SIDEBAR_SESSIONS: usize = 20;
+
+impl Workspace {
+    /// The newest sessions each paired machine reported. Unlike this machine's
+    /// own, which are listed once opened here, a paired machine's work happens
+    /// elsewhere, so its heading has to show it.
+    pub(super) fn machine_sidebar_sessions(&self) -> impl Iterator<Item = String> + '_ {
+        self.remotes.machine_sessions.values().flat_map(|listed| {
+            let mut newest: Vec<_> = listed.iter().collect();
+            newest.sort_by_key(|session| sidebar_session_sort_key(session));
+            newest.into_iter().take(MACHINE_SIDEBAR_SESSIONS).map(|session| session.session_id.clone())
+        })
+    }
+}
+
 pub(super) fn sort_sidebar_sessions(
     ordered: &mut [jcode_sdk::SessionInfo],
     sort: sidebar_session_catalog::Sort,

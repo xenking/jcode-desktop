@@ -295,6 +295,7 @@ impl Workspace {
         let live_swarms =
             sidebar_swarm::live_swarm_roots(&catalog, &self.worker_meta, swarm_now_ms());
         kept.extend(live_swarms.iter().cloned());
+        kept.extend(self.machine_sidebar_sessions());
         // Headless swarm workers are never opened or closed in this window,
         // but they belong under a coordinator that is listed here.
         sidebar_swarm::keep_workers_of(&catalog, &mut kept);
@@ -594,11 +595,14 @@ impl Workspace {
         let any_live = groups.iter().any(|(_, live, _)| *live > 0);
         let collapsed_projects = groups
             .iter()
-            .map(|(project, live, _)| {
-                // A collection the user built stays open unless they fold it.
+            .zip(&members)
+            .map(|((project, live, _), rows)| {
+                // A collection the user built stays open unless they fold it, and so does
+                // a paired machine's work: its sessions are the reason its heading is there.
                 let default = sidebar_collections::id_from_key(&project.key).is_none()
                     && any_live
-                    && *live == 0;
+                    && *live == 0
+                    && rows.first().is_none_or(|row| self.session_machine(&row.session) == 0);
                 headers && self.sidebar_projects.collapsed(&project.key, default)
             })
             .collect::<Vec<_>>();
